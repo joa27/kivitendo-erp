@@ -35,9 +35,13 @@
 
 package WH;
 
+use Carp qw(croak);
+
 use SL::AM;
 use SL::DBUtils;
+use SL::DB::Inventory;
 use SL::Form;
+use SL::Locale::String qw(t8);
 use SL::Util qw(trim);
 
 use warnings;
@@ -56,7 +60,6 @@ sub transfer {
   require SL::DB::TransferType;
   require SL::DB::Part;
   require SL::DB::Employee;
-  require SL::DB::Inventory;
 
   my $employee   = SL::DB::Manager::Employee->find_by(login => $::myconfig{login});
   my ($now)      = selectrow_query($::form, $::form->get_standard_dbh, qq|SELECT current_date|);
@@ -80,7 +83,8 @@ sub transfer {
   my $db = SL::DB::Inventory->new->db;
   $db->with_transaction(sub{
     while (my $transfer = shift @args) {
-      my ($trans_id) = selectrow_query($::form, $::form->get_standard_dbh, qq|SELECT nextval('id')|);
+      my $trans_id;
+      ($trans_id) = selectrow_query($::form, $::form->get_standard_dbh, qq|SELECT nextval('id')|) if $transfer->{qty};
 
       my $part          = $objectify->($transfer, 'parts',         'SL::DB::Part');
       my $unit          = $objectify->($transfer, 'unit',          'SL::DB::Unit',         name => $transfer->{unit});
@@ -98,13 +102,21 @@ sub transfer {
       $direction |= 1 if $src_bin;
       $direction |= 2 if $dst_bin;
 
-      my $transfer_type = $objectify->($transfer, 'transfer_type', 'SL::DB::TransferType', direction   => $directions[$direction],
-                                                                                           description => $transfer->{transfer_type});
+      my $transfer_type_id;
+      if ($transfer->{transfer_type_id}) {
+        $transfer_type_id = $transfer->{transfer_type_id};
+      } else {
+        my $transfer_type = $objectify->($transfer, 'transfer_type', 'SL::DB::TransferType', direction   => $directions[$direction],
+                                                                                             description => $transfer->{transfer_type});
+        $transfer_type_id = $transfer_type->id;
+      }
+
+      my $stocktaking_qty = $transfer->{stocktaking_qty};
 
       my %params = (
           part             => $part,
           employee         => $employee,
-          trans_type       => $transfer_type,
+          trans_type_id    => $transfer_type_id,
           project          => $project,
           trans_id         => $trans_id,
           shippingdate     => !$transfer->{shippingdate} || $transfer->{shippingdate} eq 'current_date'
@@ -113,13 +125,15 @@ sub transfer {
       );
 
       if ($unit) {
-        $qty = $unit->convert_to($qty, $part->unit_obj);
+        $qty             = $unit->convert_to($qty,             $part->unit_obj);
+        $stocktaking_qty = $unit->convert_to($stocktaking_qty, $part->unit_obj);
       }
 
       $params{chargenumber} ||= '';
 
-      if ($direction & 1) {
-        SL::DB::Inventory->new(
+      my @inventories;
+      if ($qty && $direction & 1) {
+        push @inventories, SL::DB::Inventory->new(
           %params,
           warehouse => $src_wh,
           bin       => $src_bin,
@@ -127,8 +141,8 @@ sub transfer {
         )->save;
       }
 
-      if ($direction & 2) {
-        SL::DB::Inventory->new(
+      if ($qty && $direction & 2) {
+        push @inventories, SL::DB::Inventory->new(
           %params,
           warehouse => $dst_wh->id,
           bin       => $dst_bin->id,
@@ -138,6 +152,30 @@ sub transfer {
         if (defined($transfer->{change_default_bin})){
           $part->update_attributes(warehouse_id  => $dst_wh->id, bin_id => $dst_bin->id);
         }
+      }
+
+      # Record stocktaking if requested.
+      # This is only possible if transfer was a stock in or stock out,
+      # but not both (transfer).
+      if ($transfer->{record_stocktaking}) {
+        die 'Stocktaking can only be recorded for stock in or stock out, but not on a transfer.' if scalar @inventories > 1;
+
+        my $inventory_id;
+        $inventory_id = $inventories[0]->id if $inventories[0];
+
+        SL::DB::Stocktaking->new(
+          inventory_id => $inventory_id,
+          warehouse    => $src_wh  || $dst_wh,
+          bin          => $src_bin || $dst_bin,
+          parts_id     => $part->id,
+          employee_id  => $employee->id,
+          qty          => $stocktaking_qty,
+          comment      => $transfer->{comment},
+          cutoff_date  => $transfer->{stocktaking_cutoff_date},
+          chargenumber => $transfer->{chargenumber},
+          bestbefore   => $transfer->{bestbefore},
+        )->save;
+
       }
 
       push @trans_ids, $trans_id;
@@ -772,8 +810,9 @@ sub get_warehouse_report {
      "chargeid"             => "c.id",
      "warehousedescription" => "w.description",
      "partunit"             => "p.unit",
-     "stock_value"          => "p.lastcost / COALESCE(pfac.factor, 1)",
+     "stock_value"          => ($form->{stock_value_basis} // '') eq 'list_price' ? "p.listprice / COALESCE(pfac.factor, 1)" : "p.lastcost / COALESCE(pfac.factor, 1)",
      "purchase_price"       => "p.lastcost",
+     "list_price"           => "p.listprice",
   );
   $form->{l_classification_id}  = 'Y';
   $form->{l_part_type}          = 'Y';
@@ -1091,6 +1130,31 @@ $main::lxdebug->enter_sub();
   return ($max_qty_parts, $error);
 }
 
+sub get_wh_and_bin_for_charge {
+  $main::lxdebug->enter_sub();
+
+  my $self     = shift;
+  my %params   = @_;
+  my %bin_qty;
+
+  croak t8('Need charge number!') unless $params{chargenumber};
+
+  my $inv_items = SL::DB::Manager::Inventory->get_all(where => [chargenumber => $params{chargenumber} ]);
+
+  croak t8("Invalid charge number: #1", $params{chargenumber}) unless (ref @{$inv_items}[0] eq 'SL::DB::Inventory');
+  # add all qty for one bin and add wh_id
+  ($bin_qty{$_->bin_id}{qty}, $bin_qty{$_->bin_id}{wh}) = ($bin_qty{$_->bin_id}{qty} + $_->qty, $_->warehouse_id) for @{ $inv_items };
+
+  while (my ($bin, $value) = each (%bin_qty)) {
+    if ($value->{qty} > 0) {
+      $main::lxdebug->leave_sub();
+      return ($value->{qty}, $value->{wh}, $bin, $params{chargenumber});
+    }
+  }
+
+  $main::lxdebug->leave_sub();
+  return undef;
+}
 1;
 
 __END__
@@ -1132,6 +1196,13 @@ a destination or a src is mandatory.
 transfer accepts more than one transaction parameter, each being a hash ref. If
 more than one is supplied, it is guaranteed, that all are processed in the same
 transaction.
+
+It is possible to record stocktakings within this transaction as well.
+This is useful if the transfer is the result of stocktaking (see also
+C<SL::Controller::Inventory>). To do so the parameters C<record_stocktaking>,
+C<stocktaking_qty> and C<stocktaking_cutoff_date> hava to be given.
+If stocktaking should be saved, then the transfer quantity can be zero. In this
+case no entry in inventory will be made, but only the stocktaking entry.
 
 Here is a full list of parameters. All "_id" parameters except oe and
 orderitems can be called without id with RDB objects as well.
@@ -1199,6 +1270,18 @@ An optional comment.
 
 An expiration date. Note that this is not by default used by C<warehouse_report>.
 
+=item record_stocktaking
+
+A boolean flag to indicate that a stocktaking entry should be saved.
+
+=item stocktaking_qty
+
+The quantity for the stocktaking entry.
+
+=item stocktaking_cutoff_date
+
+The cutoff date for the stocktaking entry.
+
 =back
 
 =head2 create_assembly \%PARAMS, [ \%PARAMS, ... ]
@@ -1224,6 +1307,16 @@ The typical params would be:
     'qty'              => $form->{qty},
     'comment'          => $form->{comment}
   );
+
+
+=head2 get_wh_and_bin_for_charge C<$params{chargenumber}>
+
+Gets the current qty from the inventory entries with the mandatory chargenumber: C<$params{chargenumber}>.
+Croaks if the chargenumber is missing or no entry currently exists.
+If there is one bin and warehouse with a positive qty, this fields are returned:
+C<qty> C<warehouse_id>, C<bin_id>, C<chargenumber>.
+Otherwise returns undef.
+
 
 =head3 Prerequisites
 
@@ -1280,7 +1373,7 @@ as the specific reason.
 The method is transaction safe, in case of errors not a single entry will be made
 in inventory.
 
-Two prerequisites can be changed with this global parameters
+Two prerequisites can be changed with these global parameters
 
 =over 2
 

@@ -43,6 +43,7 @@ use List::Util qw(max sum);
 use List::UtilsBy qw(sort_by);
 use English qw(-no_match_vars);
 
+use SL::DB::BankTransactionAccTrans;
 use SL::DB::Default;
 use SL::DB::Customer;
 use SL::DB::Department;
@@ -57,6 +58,20 @@ use strict;
 1;
 
 # end of main
+
+sub _may_view_or_edit_this_invoice {
+  return 1 if  $::auth->assert('invoice_edit', 1); # may edit all invoices
+  return 0 if !$::form->{id};                      # creating new invoices isn't allowed without invoice_edit
+  return 0 if !$::form->{globalproject_id};        # existing records without a project ID are not allowed
+  return SL::DB::Project->new(id => $::form->{globalproject_id})->load->may_employee_view_project_invoices(SL::DB::Manager::Employee->current);
+}
+
+sub _assert_access {
+  my $cache = $::request->cache('is.pl::_assert_access');
+
+  $cache->{_may_view_or_edit_this_invoice} = _may_view_or_edit_this_invoice()                              if !exists $cache->{_may_view_or_edit_this_invoice};
+  $::form->show_generic_error($::locale->text("You do not have the permissions to access this function.")) if !       $cache->{_may_view_or_edit_this_invoice};
+}
 
 sub add {
   $main::lxdebug->enter_sub();
@@ -92,10 +107,12 @@ sub add {
 sub edit {
   $main::lxdebug->enter_sub();
 
+  # Delay access check to after the invoice's been loaded in
+  # "invoice_links" so that project-specific invoice rights can be
+  # evaluated.
+
   my $form     = $main::form;
   my $locale   = $main::locale;
-
-  $main::auth->assert('invoice_edit');
 
   $form->{show_details}                = $::myconfig{show_form_details};
   $form->{taxincluded_changed_by_user} = 1;
@@ -134,15 +151,18 @@ sub edit {
 sub invoice_links {
   $main::lxdebug->enter_sub();
 
+  # Delay access check to after the invoice's been loaded so that
+  # project-specific invoice rights can be evaluated.
+
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
-
-  $main::auth->assert('invoice_edit');
 
   $form->{vc} = 'customer';
 
   # create links
   $form->create_links("AR", \%myconfig, "customer");
+
+  _assert_access();
 
   my $editing = $form->{id};
 
@@ -206,10 +226,10 @@ sub invoice_links {
 sub prepare_invoice {
   $main::lxdebug->enter_sub();
 
+  _assert_access();
+
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
-
-  $main::auth->assert('invoice_edit');
 
   if ($form->{type} eq "credit_note") {
     $form->{type}     = "credit_note";
@@ -258,15 +278,24 @@ sub setup_is_action_bar {
   my $change_on_same_day_only = $::instance_conf->get_is_changeable == 2 && ($form->current_date(\%::myconfig) ne $form->{gldate});
   my $payments_balanced       = ($::form->{oldtotalpaid} == 0);
   my $has_storno              = ($::form->{storno} && !$::form->{storno_id});
+  my $may_edit_create         = $::auth->assert('invoice_edit', 1);
+  my $is_linked_bank_transaction;
+    if ($::form->{id}
+        && SL::DB::Default->get->payments_changeable != 0
+        && SL::DB::Manager::BankTransactionAccTrans->find_by(ar_id => $::form->{id})) {
+
+      $is_linked_bank_transaction = 1;
+    }
 
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       action => [
         t8('Update'),
         submit    => [ '#form', { action => "update" } ],
-        disabled  => $form->{locked} ? t8('The billing period has already been locked.') : undef,
+        disabled  => !$may_edit_create ? t8('You must not change this invoice.')
+                   : $form->{locked}   ? t8('The billing period has already been locked.')
+                   :                     undef,
         id        => 'update_button',
-        checks    => [ 'kivi.validate_form' ],
         accesskey => 'enter',
       ],
 
@@ -275,22 +304,29 @@ sub setup_is_action_bar {
           t8('Post'),
           submit   => [ '#form', { action => "post" } ],
           checks   => [ 'kivi.validate_form' ],
-          disabled => $form->{locked}                           ? t8('The billing period has already been locked.')
+          disabled => !$may_edit_create                         ? t8('You must not change this invoice.')
+                    : $form->{locked}                           ? t8('The billing period has already been locked.')
                     : $form->{storno}                           ? t8('A canceled invoice cannot be posted.')
                     : ($form->{id} && $change_never)            ? t8('Changing invoices has been disabled in the configuration.')
                     : ($form->{id} && $change_on_same_day_only) ? t8('Invoices can only be changed on the day they are posted.')
+                    : $is_linked_bank_transaction               ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
                     :                                             undef,
         ],
         action => [
           t8('Post Payment'),
           submit   => [ '#form', { action => "post_payment" } ],
           checks   => [ 'kivi.validate_form' ],
-          disabled => !$form->{id} ? t8('This invoice has not been posted yet.') : undef,
+          disabled => !$may_edit_create           ? t8('You must not change this invoice.')
+                    : !$form->{id}                ? t8('This invoice has not been posted yet.')
+                    : $is_linked_bank_transaction ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
+                    :                               undef,
         ],
         action => [ t8('Mark as paid'),
           submit   => [ '#form', { action => "mark_as_paid" } ],
           confirm  => t8('This will remove the invoice from showing as unpaid even if the unpaid amount does not match the amount. Proceed?'),
-          disabled => !$form->{id} ? t8('This invoice has not been posted yet.') : undef,
+          disabled => !$may_edit_create ? t8('You must not change this invoice.')
+                    : !$form->{id}      ? t8('This invoice has not been posted yet.')
+                    :                     undef,
           only_if  => $::instance_conf->get_is_show_mark_as_paid,
         ],
       ], # end of combobox "Post"
@@ -300,7 +336,8 @@ sub setup_is_action_bar {
           submit   => [ '#form', { action => "storno" } ],
           confirm  => t8('Do you really want to cancel this invoice?'),
           checks   => [ 'kivi.validate_form' ],
-          disabled => !$form->{id}        ? t8('This invoice has not been posted yet.')
+          disabled => !$may_edit_create   ? t8('You must not change this invoice.')
+                    : !$form->{id}        ? t8('This invoice has not been posted yet.')
                     : !$payments_balanced ? t8('Cancelling is disallowed. Either undo or balance the current payments until the open amount matches the invoice amount')
                     : undef,
         ],
@@ -308,7 +345,8 @@ sub setup_is_action_bar {
           submit   => [ '#form', { action => "delete" } ],
           confirm  => t8('Do you really want to delete this object?'),
           checks   => [ 'kivi.validate_form' ],
-          disabled => !$form->{id}             ? t8('This invoice has not been posted yet.')
+          disabled => !$may_edit_create        ? t8('You must not change this invoice.')
+                    : !$form->{id}             ? t8('This invoice has not been posted yet.')
                     : $form->{locked}          ? t8('The billing period has already been locked.')
                     : $change_never            ? t8('Changing invoices has been disabled in the configuration.')
                     : $change_on_same_day_only ? t8('Invoices can only be changed on the day they are posted.')
@@ -325,13 +363,16 @@ sub setup_is_action_bar {
           t8('Use As New'),
           submit   => [ '#form', { action => "use_as_new" } ],
           checks   => [ 'kivi.validate_form' ],
-          disabled => !$form->{id} ? t8('This invoice has not been posted yet.') : undef,
+          disabled => !$may_edit_create ? t8('You must not change this invoice.')
+                    : !$form->{id}      ? t8('This invoice has not been posted yet.')
+                    :                     undef,
         ],
         action => [
           t8('Credit Note'),
           submit   => [ '#form', { action => "credit_note" } ],
           checks   => [ 'kivi.validate_form' ],
-          disabled => $form->{type} eq "credit_note" ? t8('Credit notes cannot be converted into other credit notes.')
+          disabled => !$may_edit_create              ? t8('You must not change this invoice.')
+                    : $form->{type} eq "credit_note" ? t8('Credit notes cannot be converted into other credit notes.')
                     : !$form->{id}                   ? t8('This invoice has not been posted yet.')
                     :                                  undef,
         ],
@@ -349,17 +390,23 @@ sub setup_is_action_bar {
           ($form->{id} ? t8('Print') : t8('Preview')),
           call     => [ 'kivi.SalesPurchase.show_print_dialog', $form->{id} ? 'print' : 'preview' ],
           checks   => [ 'kivi.validate_form' ],
-          disabled => !$form->{id} && $form->{locked} ? t8('The billing period has already been locked.') : undef,
+          disabled => !$may_edit_create               ? t8('You must not print this invoice.')
+                    : !$form->{id} && $form->{locked} ? t8('The billing period has already been locked.')
+                    :                                   undef,
         ],
         action => [ t8('Print and Post'),
           call     => [ 'kivi.SalesPurchase.show_print_dialog', $form->{id} ? 'print' : 'print_and_post' ],
           checks   => [ 'kivi.validate_form' ],
-          disabled => $form->{id} ? t8('This invoice has already been posted.') : undef,,
+          disabled => !$may_edit_create ? t8('You must not print this invoice.')
+                    : $form->{id}       ? t8('This invoice has already been posted.')
+                    :                     undef,,
         ],
         action => [ t8('E Mail'),
           call     => [ 'kivi.SalesPurchase.show_email_dialog' ],
           checks   => [ 'kivi.validate_form' ],
-          disabled => !$form->{id} ? t8('This invoice has not been posted yet.') : undef,
+          disabled => !$may_edit_create ? t8('You must not print this invoice.')
+                    : !$form->{id}      ? t8('This invoice has not been posted yet.')
+                    :                     undef,
         ],
       ], # end of combobox "Export"
 
@@ -378,9 +425,10 @@ sub setup_is_action_bar {
         action => [
           t8('Drafts'),
           call     => [ 'kivi.Draft.popup', 'is', 'invoice', $form->{draft_id}, $form->{draft_description} ],
-          disabled => $form->{id}     ? t8('This invoice has already been posted.')
-                    : $form->{locked} ? t8('The billing period has already been locked.')
-                    :                   undef,
+          disabled => !$may_edit_create ? t8('You must not change this invoice.')
+                    :  $form->{id}      ? t8('This invoice has already been posted.')
+                    : $form->{locked}   ? t8('The billing period has already been locked.')
+                    :                     undef,
         ],
       ], # end of combobox "more"
     );
@@ -391,12 +439,12 @@ sub setup_is_action_bar {
 sub form_header {
   $main::lxdebug->enter_sub();
 
+  _assert_access();
+
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
   my $locale   = $main::locale;
   my $cgi      = $::request->{cgi};
-
-  $main::auth->assert('invoice_edit');
 
   my %TMPL_VAR = ();
   my @custom_hiddens;
@@ -417,6 +465,7 @@ sub form_header {
                    "price_factors" => "ALL_PRICE_FACTORS");
 
   $form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
+  $form->{ALL_LANGUAGES}   = SL::DB::Manager::Language->get_all_sorted;
 
   # Projects
   my @old_project_ids = uniq grep { $_ } map { $_ * 1 } ($form->{"globalproject_id"}, map { $form->{"project_id_$_"} } 1..$form->{"rowcount"});
@@ -488,7 +537,7 @@ sub form_header {
     invoice_id
     show_details
   ), @custom_hiddens,
-  map { $_.'_rate', $_.'_description', $_.'_taxnumber' } split / /, $form->{taxaccounts}];
+  map { $_.'_rate', $_.'_description', $_.'_taxnumber', $_.'_tax_id' } split / /, $form->{taxaccounts}];
 
   $::request->{layout}->use_javascript(map { "${_}.js" } qw(kivi.Draft kivi.File kivi.SalesPurchase kivi.Part kivi.CustomerVendor kivi.Validator ckeditor/ckeditor ckeditor/adapters/jquery kivi.io client_js));
 
@@ -526,19 +575,13 @@ sub _sort_payments {
 sub form_footer {
   $main::lxdebug->enter_sub();
 
+  _assert_access();
+
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
   my $locale   = $main::locale;
 
-  $main::auth->assert('invoice_edit');
-
   $form->{invtotal}    = $form->{invsubtotal};
-
-  # note rows
-  $form->{rows} = max 2,
-    $form->numtextrows($form->{notes},    26, 8),
-    $form->numtextrows($form->{intnotes}, 35, 8);
-
 
   # tax, total and subtotal calculations
   my ($tax, $subtotal);
@@ -615,6 +658,12 @@ sub form_footer {
 
   $form->{ALL_DELIVERY_TERMS} = SL::DB::Manager::DeliveryTerm->get_all_sorted();
 
+  my $shipto_cvars       = SL::DB::Shipto->new->cvars_by_config;
+  foreach my $var (@{ $shipto_cvars }) {
+    my $name = "shiptocvar_" . $var->config->name;
+    $var->value($form->{$name}) if exists $form->{$name};
+  }
+
   print $form->parse_html_template('is/form_footer', {
     is_type_credit_note => ($form->{type} eq "credit_note"),
     totalpaid           => $totalpaid,
@@ -626,6 +675,7 @@ sub form_footer {
                              : ($::instance_conf->get_is_changeable == 1),
     today               => DateTime->today,
     vc_obj              => $form->{customer_id} ? SL::DB::Customer->load_cached($form->{customer_id}) : undef,
+    shipto_cvars        => $shipto_cvars,
   });
 ##print $form->parse_html_template('is/_payments'); # parser
 ##print $form->parse_html_template('webdav/_list'); # parser
@@ -651,10 +701,10 @@ sub show_draft {
 sub update {
   $main::lxdebug->enter_sub();
 
+  _assert_access();
+
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
-
-  $main::auth->assert('invoice_edit');
 
   my ($recursive_call) = @_;
 
@@ -678,10 +728,7 @@ sub update {
 
   for my $i (1 .. $form->{paidaccounts}) {
     next unless $form->{"paid_$i"};
-    map { $form->{"${_}_$i"} = $form->parse_amount(\%myconfig, $form->{"${_}_$i"}) } qw(paid exchangerate);
-    if (!$form->{"forex_$i"}) {   #read exchangerate from input field (not hidden)
-      $form->{exchangerate} = $form->{"exchangerate_$i"};
-    }
+    map { $form->{"${_}_$i"}   = $form->parse_amount(\%myconfig, $form->{"${_}_$i"}) } qw(paid exchangerate);
     $form->{"forex_$i"}        = $form->check_exchangerate(\%myconfig, $form->{currency}, $form->{"datepaid_$i"}, 'buy');
     $form->{"exchangerate_$i"} = $form->{"forex_$i"} if $form->{"forex_$i"};
   }
@@ -776,7 +823,7 @@ sub update {
       # ask if it is a part or service item
 
       if (   $form->{"partsgroup_$i"}
-          && ($form->{"partsnumber_$i"} eq "")
+          && ($form->{"partnumber_$i" } eq "")
           && ($form->{"description_$i"} eq "")) {
         $form->{rowcount}--;
         $form->{"discount_$i"} = "";
@@ -1173,7 +1220,7 @@ sub credit_note {
 sub display_form {
   $::lxdebug->enter_sub;
 
-  $::auth->assert('invoice_edit');
+  _assert_access();
 
   relink_accounts();
 

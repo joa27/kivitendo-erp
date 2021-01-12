@@ -18,7 +18,7 @@ use File::Basename;
 use IO::File;
 use List::MoreUtils qw(all);
 use List::Util qw(first);
-use SL::ArchiveZipFixes;
+use POSIX qw(setlocale);
 use SL::Auth;
 use SL::Dispatcher::AuthHandler;
 use SL::LXDebug;
@@ -29,6 +29,7 @@ use SL::Common;
 use SL::Form;
 use SL::Helper::DateTime;
 use SL::InstanceConfiguration;
+use SL::MoreCommon qw(uri_encode);
 use SL::Template::Plugin::HTMLFixes;
 use SL::User;
 
@@ -49,7 +50,10 @@ sub new {
   $self->{interface} = lc($interface || 'cgi');
   $self->{auth_handler} = SL::Dispatcher::AuthHandler->new;
 
-  SL::ArchiveZipFixes->apply_fixes;
+  # Initialize character type locale to be UTF-8 instead of C:
+  foreach my $locale (qw(de_DE.UTF-8 en_US.UTF-8)) {
+    last if setlocale('LC_CTYPE', $locale);
+  }
 
   return $self;
 }
@@ -225,7 +229,7 @@ sub handle_all_requests {
   while ($request->Accept() >= 0) {
     $self->handle_request($request);
 
-    $self->restart_after_request(1) if $self->_interface_is_fcgi && $self->_memory_usage_is_too_high;
+    $self->restart_after_request(1) if $self->_interface_is_fcgi && SL::System::Process::memory_usage_is_too_high();
     $request->LastCall              if $self->restart_after_request;
   }
 
@@ -243,7 +247,7 @@ sub handle_request {
 
   my $session_result = $self->pre_request_initialization;
 
-  $::form->read_cgi_input;
+  $::request->read_cgi_input($::form);
 
   my %routing;
   eval { %routing = $self->_route_request($ENV{SCRIPT_NAME}); 1; } or return;
@@ -285,8 +289,11 @@ sub handle_request {
     if (   (($script eq 'login') && !$action)
         || ($script eq 'admin')
         || (SL::Auth::SESSION_EXPIRED() == $session_result)) {
-      $self->redirect_to_login(script => $script, error => 'session');
-
+      $self->handle_login_error(routing_type => $routing_type,
+                                script       => $script,
+                                controller   => $script_name,
+                                action       => $action,
+                                error        => 'session');
     }
 
     my %auth_result = $self->{auth_handler}->handle(
@@ -354,13 +361,102 @@ sub handle_request {
   $::lxdebug->leave_sub;
 }
 
-sub redirect_to_login {
+sub reply_with_json_error {
   my ($self, %params) = @_;
+
+  my %errors = (
+    session  => { code => '401 Unauthorized',          text => 'session expired' },
+    password => { code => '401 Unauthorized',          text => 'incorrect username or password' },
+    action   => { code => '400 Bad request',           text => 'incorrect or missing action' },
+    access   => { code => '403 Forbidden',             text => 'no permissions for accessing this function' },
+    _default => { code => '500 Internal server error', text => 'general server-side error' },
+  );
+
+  my $error = $errors{$params{error}} // $errors{_default};
+  my $reply = SL::JSON::to_json({ status => 'failed', error => $error->{text} });
+
+  print $::request->cgi->header(
+    -type    => 'application/json',
+    -charset => 'utf-8',
+    -status  => $error->{code},
+  );
+
+  print $reply;
+
+  $self->end_request;
+}
+
+sub handle_login_error {
+  my ($self, %params) = @_;
+
+  return $self->reply_with_json_error(error => $params{error}) if $::request->type eq 'json';
+
   my $action          = ($params{script} // '') =~ m/^admin/i ? 'Admin/login' : 'LoginScreen/user_login';
   $action            .= '&error=' . $params{error} if $params{error};
 
-  print $::request->cgi->redirect("controller.pl?action=${action}");
+  my $redirect_url = "controller.pl?action=${action}";
+
+  if (   $action =~ m/LoginScreen\/user_login/
+      && $params{action}
+      && 'get' eq lc($ENV{REQUEST_METHOD})
+      && !_is_callback_blacklisted(map {$_ => $params{$_}} qw(routing_type script controller action) )
+  ) {
+
+    require SL::Controller::Base;
+    my $controller = SL::Controller::Base->new;
+
+    delete $params{error};
+    delete $params{routing_type};
+    delete @{ $::form }{ grep { m/^\{AUTH\}/ } keys %{ $::form } };
+
+    my $callback   = $controller->url_for(%params, %{$::form});
+    $redirect_url .= '&callback=' . uri_encode($callback);
+  }
+
+  print $::request->cgi->redirect($redirect_url);
   $self->end_request;
+}
+
+sub _is_callback_blacklisted {
+  my (%params) = @_;
+
+  # You can give a name only, then all actions are blackisted.
+  # Or you can give name and action, then only this action is blacklisted
+  # examples:
+  # {name => 'is',      action => 'edit'}
+  # {name => 'Project', action => 'edit'},
+  my @script_blacklist = (
+    {name => 'admin'},
+    {name => 'login'},
+  );
+
+  my @controller_blacklist = (
+    {name => 'Admin'},
+    {name => 'LoginScreen'},
+  );
+
+  my ($name, $blacklist);
+  if ('old' eq ($params{routing_type} // '')) {
+    $name      = $params{script};
+    $blacklist = \@script_blacklist;
+  } else {
+    $name      = $params{controller};
+    $blacklist = \@controller_blacklist;
+  }
+
+  foreach my $bl (@$blacklist) {
+    return 1 if _is_name_action_blacklisted($bl->{name}, $bl->{action}, $name, $params{action});
+  }
+
+  return;
+}
+
+sub _is_name_action_blacklisted {
+  my ($blacklisted_name, $blacklisted_action, $name, $action) = @_;
+
+  return 1 if ($name // '') eq $blacklisted_name && !$blacklisted_action;
+  return 1 if ($name // '') eq $blacklisted_name && ($action // '') eq $blacklisted_action;
+  return;
 }
 
 sub unrequire_bin_mozilla {
@@ -426,7 +522,7 @@ sub _route_controller_request {
   eval {
     # Redirect simple requests to controller.pl without any GET/POST
     # param to the login page.
-    $self->redirect_to_login(error => 'action') if !$::form->{action};
+    $self->handle_login_error(error => 'action') if !$::form->{action};
 
     # Show an error if the »action« parameter doesn't match the
     # pattern »Controller/action«.
@@ -489,54 +585,6 @@ sub _check_for_old_config_files {
   print $::form->parse_html_template('login_screen/old_configuration_files', { FILES => \@old_files });
 
   end_request();
-}
-
-sub _parse_number_with_unit {
-  my ($number) = @_;
-
-  return undef   unless defined $number;
-  return $number unless $number =~ m{^ \s* (\d+) \s* ([kmg])b \s* $}xi;
-
-  my %factors = (K => 1024, M => 1024 * 1024, G => 1024 * 1024 * 1024);
-
-  return $1 * $factors{uc $2};
-}
-
-sub _memory_usage_is_too_high {
-  return undef unless $::lx_office_conf{system};
-
-  my %limits = (
-    rss  => _parse_number_with_unit($::lx_office_conf{system}->{memory_limit_rss}),
-    size => _parse_number_with_unit($::lx_office_conf{system}->{memory_limit_vsz}),
-  );
-
-  # $::lxdebug->dump(0, "limits", \%limits);
-
-  return undef unless $limits{rss} || $limits{vsz};
-
-  my %usage;
-
-  my $in = IO::File->new("/proc/$$/status", "r") or return undef;
-
-  while (<$in>) {
-    chomp;
-    $usage{lc $1} = _parse_number_with_unit($2) if m{^ vm(rss|size): \s* (\d+ \s* [kmg]b) \s* $}ix;
-  }
-
-  $in->close;
-
-  # $::lxdebug->dump(0, "usage", \%usage);
-
-  foreach my $type (keys %limits) {
-    next if !$limits{$type};
-    next if $limits{$type} >= ($usage{$type} // 0);
-
-    $::lxdebug->message(LXDebug::WARN(), "Exiting due to memory size limit reached for type '${type}': limit " . $limits{$type} . " bytes, usage " . $usage{$type} . " bytes");
-
-    return 1;
-  }
-
-  return 0;
 }
 
 sub end_request {

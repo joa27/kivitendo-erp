@@ -103,8 +103,10 @@ sub add {
 
   DN->get_config(\%myconfig, \%$form);
 
+  $form->get_lists("departments" => "ALL_DEPARTMENTS");
+
   $form->{SHOW_DUNNING_LEVEL_SELECTION} = $form->{DUNNING}         && scalar @{ $form->{DUNNING} };
-  $form->{SHOW_DEPARTMENT_SELECTION}    = $form->{all_departments} && scalar @{ $form->{all_departments} || [] };
+  $form->{SHOW_DEPARTMENT_SELECTION}    = $form->{ALL_DEPARTMENTS} && scalar @{ $form->{ALL_DEPARTMENTS} || [] };
 
   $form->{title}    = $locale->text('Start Dunning Process');
 
@@ -207,7 +209,7 @@ sub save_dunning {
 
   my $saved_language_id = $form->{language_id};
 
-  if ($form->{groupinvoices}) {
+  if ($form->{groupinvoices} || $form->{l_include_credit_notes}) {
     my %dunnings_for;
 
     for my $i (1 .. $form->{rowcount}) {
@@ -221,9 +223,11 @@ sub save_dunning {
 
       push @{ $level }, { "row"                    => $i,
                           "invoice_id"             => $form->{"inv_id_$i"},
+                          "credit_note"            => $form->{"credit_note_$i"},
                           "customer_id"            => $form->{"customer_id_$i"},
                           "language_id"            => $form->{"language_id_$i"},
                           "next_dunning_config_id" => $form->{"next_dunning_config_id_$i"},
+                          "print_invoice"          => $form->{"include_invoice_$i"},
                           "email"                  => $form->{"email_$i"}, };
     }
 
@@ -246,6 +250,7 @@ sub save_dunning {
                       "customer_id"            => $form->{"customer_id_$i"},
                       "language_id"            => $form->{"language_id_$i"},
                       "next_dunning_config_id" => $form->{"next_dunning_config_id_$i"},
+                      "print_invoice"          => $form->{"include_invoice_$i"},
                       "email"                  => $form->{"email_$i"}, } ];
       if (!$form->{force_lang}) {
         $form->{language_id} = @{$level}[0]->{language_id};
@@ -362,6 +367,7 @@ sub show_dunning {
     'checkbox'            => { 'text' => '', 'visible' => 'HTML' },
     'dunning_description' => { 'text' => $locale->text('Dunning Level') },
     'customername'        => { 'text' => $locale->text('Customername') },
+    'departmentname'      => { 'text' => $locale->text('Department') },
     'language'            => { 'text' => $locale->text('Language') },
     'invnumber'           => { 'text' => $locale->text('Invnumber') },
     'transdate'           => { 'text' => $locale->text('Invdate') },

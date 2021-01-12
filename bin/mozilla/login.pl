@@ -56,11 +56,13 @@ sub company_logo {
   my $git             = SL::Git->new;
   ($form->{git_head}) = $git->get_log(since => 'HEAD~1', until => 'HEAD') if $git->is_git_installation;
   $form->{xmas}       = '_xmas' if (DateTime->today->month == 12 && DateTime->today->day < 27);
+  $form->{xmas}       = '_corona' if (DateTime->today->month >= 7 && DateTime->today->year == 2020
+                                      && DateTime->today->month <= 11);
 
   # create the logo screen
   $form->header() unless $form->{noheader};
 
-  print $form->parse_html_template('login/company_logo');
+  print $form->parse_html_template('login/company_logo', { version => $::form->read_version });
 
   $main::lxdebug->leave_sub();
 }

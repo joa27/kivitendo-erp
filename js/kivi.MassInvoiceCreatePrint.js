@@ -20,15 +20,6 @@ namespace('kivi.MassInvoiceCreatePrint', function(ns) {
     return false;
   };
 
-  this.submitMassCreationForm = function() {
-    if (!kivi.MassInvoiceCreatePrint.checkDeliveryOrderSelection())
-      return false;
-
-    $('body').addClass('loading');
-    kivi.submit_form_with_action('form', 'MassInvoiceCreatePrint/create_invoices');
-    return false;
-  };
-
   this.createPrintAllInitialize = function() {
     kivi.popup_dialog({
       id: 'create_print_all_dialog',
@@ -104,6 +95,7 @@ namespace('kivi.MassInvoiceCreatePrint', function(ns) {
     $('#print_options').dialog('close');
 
     $('#printer_id').val($('#print_options_printer_id').val());
+    $('#bothsided').val($('#print_options_bothsided').prop('checked') ? 1 : 0);
     $('#action').val('MassInvoiceCreatePrint/print');
 
     $('#report_form').submit();

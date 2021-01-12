@@ -83,10 +83,12 @@
 
 \hfill
 
-% Anrede nach Geschlecht unterscheiden
-\ifthenelse{\equal{<%cp_name%>}{}}{\anrede}{
-  \ifthenelse{\equal{<%cp_gender%>}{f}}
-    {\anredefrau}{\anredeherr} <%cp_title%> <%cp_name%>,}\\
+% Bei Kontaktperson Anrede nach Geschlecht unterscheiden.
+% Bei natürlichen Personen persönliche Anrede, sonst allgemeine Anrede.
+\ifthenelse{\equal{<%cp_name%>}{}}{
+    <%if natural_person%><%greeting%> <%name%>,<%else%>\anrede<%end if%>}{
+    \ifthenelse{\equal{<%cp_gender%>}{f}}
+      {\anredefrau}{\anredeherr} <%cp_title%> <%cp_name%>,}\\
 
 \angebotsformel\\
 
@@ -145,15 +147,20 @@
           <%if serialnumber%> && \scriptsize \seriennummer: <%serialnumber%>\\<%end serialnumber%>
           <%if ean%> && \scriptsize \ean: <%ean%>\\<%end ean%>
           <%if projectnumber%> && \scriptsize \projektnummer: <%projectnumber%>\\<%end projectnumber%>
+          <%if customer_make%>
+            <%foreach customer_make%>
+              \ifthenelse{\equal{<%customer_make%>}{<%name%>}}{&& \kundenartnr: <%customer_model%>\\}{}
+            <%end foreach%>
+          <%end if%>
           \\[-0.8em]
 <%end number%>
 
 \end{longtable}
 
-
-space{5mm}
-        <%notes%>
-        \vspace{5mm}
+<%if notes%>
+ \vspace{5mm}
+  <%notes%>
+  \vspace{5mm}
 <%end if%>
 
 <%if delivery_term%>

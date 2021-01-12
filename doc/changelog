@@ -2,7 +2,347 @@
 # Veränderungen von kivitendo #
 ###############################
 
-2017-XX-XX - Release 3.5.1-beta
+20??-??-?? - Release ?.?.?
+
+Mittelgroße neue Features:
+
+ - Der Import von Bankauszügen im MT940-Format wurde komplett neu
+   geschrieben. Das externe Programm AQBanking wird nun nicht mehr
+   benötigt.
+
+Kleinere neue Features und Detailverbesserungen:
+
+ - In der Mandantenkonfiguration ist einstellbar, ob UStID oder Steuernummer
+   für Kunden oder Lieferanten eindeutig sein sollen.
+ - Menü und Rechte für Produktivität: Zugriffskontrolle aufgeteilt und
+   Rechte unterhalb "Produktivität" als eigene Kategorie
+ - Inventur-Makse: Part-Picker sucht auch nach Lieferanten-Artikelnummer
+ - Einkaufs-/Verkaufsbelege und Buchungsmasken: Neues Feld Leistungsdatum,
+   welches die Steuerberechnung beeinflusst. I.d.R. gilt für die Steuer:
+   Leistungsdatum. Wenn leer, dann Lieferdatum; wenn leer, dann Belegdatum.
+ - Neuer Order-Controller: Unterstützung für Übersetzungen von
+   Artikeln wurde implementiert.
+ - Einkaufs-/Verkaufsbelege: die Belegsprache ist nun als Auswahl
+   direkt in der Hauptmaske vorhanden und nicht mehr in den
+   Druckeinstellungen versteckt.
+ - Einkaufsrechnungen: wenn das direkte Anlegen von Einkaufsrechnungen
+   in der Mandantenkonfiguration deaktiviert war, gab es eine
+   Fehlermeldung nach dem Verbuchen von Einkaufsrechnungen, weil auf
+   die Maske zum Erfassen einer weiteren neuen Einkaufsrechnung
+   weitergeleitet wurde.
+ - Wiederkehrende Rechnung: beim automatischen Versand erzeugter
+   Rechnungen per E-Mail können nun auch Rechnungsattribute als
+   Variablen im Betreff & Text der E-Mails genutzt werden
+   (z.B. <%invnumber%> für die Rechnungsnummer oder
+   <%transaction_description%> für die Vorgangsbezeichnung).
+ - Wiederkehrende Rechnungen: die optionale Zusammenfassungs-E-Mail
+   enthält nun auch eine Auflistung von Rechnungsnummern, für die das
+   automatische Drucken oder der automatische Versand per E-Mail
+   fehlgeschlagen ist zusammen mit der jeweils aufgetretenen
+   Fehlermeldung.
+ - Wiederkehrende Rechnungen: für die Empfangsadresse der optionalen
+   Zusammenfassungs-E-Mail kann in der Konfiguration nun anstelle
+   eines Loginnamens auch eine E-Mail-Adresse verwendet werden. Es ist
+   nicht nötig, dass diese Adresse einem der Anwenderkonten zugeordnet
+   ist.
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+97 Benutzer löschen unter System->Benutzer funktioniert nicht
+408 Neuer Auftragskontroller: Drucken von odt-Vorlagen geht nur mit Standardvorlage
+
+
+2020-10-02 - Release 3.5.6.1
+
+
+Mittelgroße neue Features:
+
+ - USTVA: Konjunkturpaket erwarte Pos. 35 und Pos. 36 für Voranmeldung
+ - Währung und Wechselkurs können in der (neuen/experimentellen)
+   Angebots-/Auftrags-Maske angegeben werden. Der Wechselkurs wird hier
+   pro Beleg (und nicht pro Tag) gespeichert.
+ - individuelle Lieferadresse in der (neuen/experimentellen) Angebots-/
+   Auftrags-Maske
+
+Kleinere neue Features und Detailverbesserungen:
+
+ - Beim automatischen Auslagern über die Verkaufsrechnung kann zusätzlich
+   ein Auslagern über das Attribut Seriennummer entspricht Chargennummer
+   gemacht werden. Falls die Beleg-Seriennummer nicht auslagerbar ist wird
+   eine entsprechende Fehlermeldung generiert (einstellbar in der Mandanten-
+   konfiguration).
+ - Zahlungsbedingungen auch in Ek-Rechnung angeben können
+
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+438 individuelle Lieferadresse gerät beim Speichern durcheinander
+358 segmentation fault in DBI.so beim versenden einer Rechnung per E-Mail
+365 Neuer Order Controller "Individuelle Lieferadresse fehlt"
+ 35 Zahlungsbedingungen bei Lieferanten nicht in EK-Rechnung
+
+2020-07-20 - Release 3.5.6
+
+
+Mittelgroße neue Features:
+
+ - komplette Überarbeitung der Standard-LaTeX-Druckvorlagen von PeiTeX
+   S.a.: templates/print/marei/Readme.md
+
+ - Erstellung von ZUGFeRD 2.0 fähigen PDFs
+ - Verarbeitung von ZUGFeRD 2.0 kompatiblen Eingangsrechnungen über
+   Kreditorenbuchungsvorlagen
+
+ - CSV-Import für Lieferscheine
+
+Kleinere neue Features und Detailverbesserungen:
+
+ - Suche nach Erzeugnissen über die dort verbauten Artikel
+ - neues Flag "natürliche Person" bei Kunden/Lieferanten welches z.B. in den
+   Druckvorlagen für eine Weiche für die Anrede verwendet werden kann.
+ - eigene Tabellen für Anrede von Kunden/Lieferanten und Titel und Abteilung
+   von Ansprechpersonen. Auswahl in Mandantenkonfiguration, ob in den Stammdaten
+   nur eine Auswahlliste angezeigt werden soll, oder wie bisher Freitext-Feld
+   und Auswahlliste. Anrede, Titel und Abteilung können im System-Menü bearbeitet
+   werden.
+ - Kompatibel mit Postgres Version 12 (keine Abhängigkeit von oids mehr)
+ - Leistungszeitraum (Periode) durchgängig in allen Buchungsmasken verfügbar und
+   im DATEV-Export als neues Feld vorhanden
+ - Automatische Kontenrahmen-Anpassungen für Konjunkturpaket des Bundes ab 1.7.2020
+ - die Einfüge-Position beim Hinzufügen von Artikeln in der neuen Angebots-/Auftragsmaske
+   (neuer Auftrags-Controller) kann angegeben werden
+
+Administrative Änderungen
+
+  - Die zwei Perl-Module "CAM::PDF" und "XML::LibXML" werden nun benötigt.
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+
+436 Kontoauszug verbuchen fehlerhafter Rechnungsbetrag 16%/19% Mehrwertsteuer
+430 Steuer erfassen wirft SQL-Bind Fehler
+428 alte/falsche Tabellen in LaTex-Vorlagen, die package filecontents u. lxtable verwenden
+266 Kontenabgleich mit Bank ist nicht Transaktionssicher
+415 Inkompatibilitäten mit postgres 12
+418 Angebote/Aufträge (alte Maske)/Lieferscheine E-Mail ohne vorher speichern kaputt
+416 Tests datev
+411 Massenerstellen Rechnungen aus Lieferscheinen: Pflege-Commit verloren gegangen
+
+
+2019-12-11 - Release 3.5.5
+
+Mittelgroße neue Features:
+
+- In den Benutzereinstellungen kann ausgewählt werden, ob der Part-Picker in
+  der neuen Angebots-/Auftragsmaske (neuer Auftrags-Controller) auch nach
+  Kunden-Artikelnummern (Verkauf) und Lieferanten-Artikelnummern (Einkauf)
+  suchen soll. Ist dieses Feature eingeschaltet, so werden auch die Kunden-
+  bzw. Lieferanten-Artikelnummern als Spalte in den Positionen angezeigt.
+
+- Part Controller - neuer Tab mit Lagerinformationen - was ist wo gelagert
+
+- Neuer Workflow Lieferantenauftrag->Kreditorenbuchung: Für jedes Aufwandskonto
+  der Positionen im Lieferantenauftrag wird eine Zeile in der Kreditorenbuchung
+  erstellt. Gebucht wird standardmäßig auf das entsprechende Aufwandskonto. In
+  der Mandantenkonfiguration kann unter Standardkonten ein Konto ausgewählt
+  werden, auf das dann alle Zeilen gebucht werden.
+  Die Steuern werden übernommen, sofern diese für das ausgewählte Aufwandskonto
+  gültig sind. Ansonsten wird die Default-Steuer für das Aufwandskonto gesetzt.
+  Der Quellauftrag wird geschlossen, wenn der Betrag aller Kreditorenbuchungen,
+  die aus Workflows aus dem Quellauftrag entstanden sind, gleich dem Betrag
+  des Quellauftrags ist.
+
+- Der Jahresabschluß wurde komplett überarbeitet, es wird nun zwischen
+  Bestands- und Erfolgskonten unterschieden und ein Gewinn- bzw. Verlustvortrag
+  übertragen.
+
+Kleinere neue Features und Detailverbesserungen:
+
+- Mahnungen nach Abteilung filtern
+
+- Anzeige einer Kundenpreisliste in den Kundenstammdaten als Reiter.
+  Hier werden die Preisgruppenpreise angezeigt, falls einem Kunden eine
+  Preisgruppe zugeordnet ist.
+
+- In der neuen Angebots-/Auftragsmaske (neuer Auftrags-Controller) kann
+  ein Update-Knopf angezeigt werden, der die Positionen aus den
+  Artikelstammdaten aktualisiert (alle oder pro Position). Aktualisiert werden
+  Preis, Beschreibung und Langtext. Das Feature kann in den
+  Benutzereinstellungen eingeschaltet werden.
+
+- In der neuen Angebots-/Auftragsmaske (neuer Auftrags-Controller) ist die
+  Artikelnummer ein Link, der die Artikelstammdaten in einem neuen Tab öffnet.
+
+- Neuer Hintergrund-Job, der die Jahreszahl in Nummernkreisen jährlich hochsetzt
+  (Einstellung und Konfiguration s.a. Kapitel 2.7.5 Exemplarische Konf. Hintergrund-Job)
+
+- Weiterleitung zur Zielseite, wenn man ausgeloggt war und sich einloggt.
+  Falls z.B. der Timeout greift, man in der noch geöffneten kivi aber etwas
+  anklickt, so wird man zur Login-Seite weitergeleitet. Vorher landete man nach
+  dem login in einem solchen Fall auf der Startseite (Logo/Version/Todo-Liste).
+  Nun gelangt man zu der Seite, die man ursprünglich angeklickt hat (nur
+  POST-Requests).
+  Das kann z.B. auch dazu verwendet werden, jmd. einen Link in der kivi (z.B. zu
+  einem Auftrag) zu schicken. Wenn derjenige nicht eingeloggt ist, gelangt er
+  nach dem Login dennoch auf die Zielseite.
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+
+407 Test ./t/db_helper/with_transaction.t läuft nicht durch; Rose-Fehlermeldung nur "generic exception"
+406 abzurechnender (Netto-)Betrag bei Aufträgen rechnet falsch wenn Rechnungs-Gutschriften vorhanden sind
+379 Einkauf Lieferanten-Artikelnummer in zweiter (erster) Spalte anzeigen
+377 PartPicker-Suche im Einkauf um Hersteller-Artikelnummer erweitern
+
+
+2019-08-07 - Release 3.5.4
+
+
+Mittelgroße neue Features:
+
+- Anzeigename (Picker-Ergenisse) konfigurierbar gemacht
+  Im Moment können Kunden-, Lieferanten und Waren-Anzeige konfiguriert werden.
+  Dies kann mandantenweit in der Mandantenkonfiguration passieren und vom
+  Benutzer in den Benutzereinstellungen überschrieben werden.
+  Konfiguriert wird intern "displayable_name". Es kann sein, dass dieser auch
+  an anderen Stellen außer Picker-Ergebnissen verwendet wird.
+
+Kleinere neue Features und Detailverbesserungen:
+
+- Memory-Limits für FCGI-Prozesse werden nun auch vom Task-Server berücksichtigt.
+  Zu beachten ist, dass für einen Neustart des Task-Servers gesorgt werden muss.
+  Ist der Task-Server als systemd-Service eingerichtet, geschieht dies automatisch.
+- Bearbeiter der Mahnungen konfigurierbar gemacht (#345)
+  Entsprechend wird beim Mahnungen erzeugen auch der E-Mail-Absender inkl. Signatur gesetzt
+- Kundenstammdaten um Feld Herkunft personenbezogener Daten erweitert
+  Entsprechend der DSGVO kann hier der Erstkontakt mit dem Kunden protokolliert werden (Messe, etc)
+  Das Feld wird beim Bericht mitexportiert
+- Kundenstammdaten um Feld E-Mail Rechnungsempfänger erweitert
+  Viele Kunden besitzen für den Rechnungseingang eine generische E-Mail-Adresse, die nicht
+  mit der allgemeinen E-Mail-Adresse identisch ist. Falls dieses Feld gesetzt ist, so hat dieser
+  Wert beim manuellen E-Mail Versand der Rechnung Priorität (mandantenweit konfigurierbar).
+  Für die wiederkehrende Rechnung wird diese E-Mail-Adresse zusätzlich gesetzt.
+  In den entsprechenden vorgelagerten Masken, wird dies auch visuell angezeigt (nicht bei alter Auftragsmaske!).
+- Kundenstammdaten um Feld "Herkunft der personenbezogenen Daten" erweitert
+  Um Details zum Erstkontakt des Kunden zu erfassen.
+- Kundenstammdaten um Feld Amtsgericht erweitert
+  Falls das Feld Steuernummer mit dem Wert der Hr-Nr gefüllt wurde, wird auch das zuständige
+  Registierungs-Gericht benötigt.
+- Ansprechpartner um Feld 'Hauptansprechpartner' erweitert und exportierbar im Kundenbericht gemacht
+
+- Verkauf-Rechnungsbericht -> Nicht per E-Mail verschickte Belege anzeigen lassen
+
+- Vorauswahl bei Dateianhängen für den E-Mail-Versand von Belegen konfigurierbar gemacht (Standardmäßig angehakt)
+
+- Verbuchte Kontoauszüge können wieder rückgängig gemacht werden (Neuverbuchen ist möglich)
+
+- Verbuchen von Kontoauszügen, es können jetzt teilweise Verbuchungen gemacht werden (Belege werden nicht mehr überbucht)
+
+- Dialogbuchungen aus Kontoauszugs-Import erstellen, der Verwendungszweck wird in die Beschreibung übernommen
+
+- ungenutzte Spalte "ranking" aus Tabelle "payment_terms" entfernt
+
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+
+378 Lieferantenauftrag Darstellung für Besteller optimieren
+376 Aktuelle unstable kann keine kivitendo_auth Datenbank anlegen
+371 Benutzerdefinierte Variablen nicht im Bericht Projekt enthalten, kann nicht danach gefiltert werden.
+367 Kontoauszugsimport: 2 Konten bei einer Bank. Bankgebührenbuchung wird als schon importiert makiert
+366 Zahlungsverkehr->Zahlungs-(ein/aus)gang. Bezahlen/Abgleichen mehrerer Rechnungen geht nicht mehr wie vorher.
+345 Bearbeiter bei Mahnungen
+215 Kunden als csv exportieren
+
+
+2019-01-03 - Release 3.5.3
+
+Mittelgroße neue Features:
+
+- Inventurerfassung
+
+  Portierung aus einem Kundenprojekt mit folgenden Anforderungen/Features:
+  - eigene Maske unter Lager->Inventur
+  - Anzeige des aktuellen Lagerbestands des zu erfassenden Artikels
+  - Angabe des Artikels auch über EAN
+  - Angabe eines Stichtages
+  - Vorbelegung Lager/Lagerplatz und Stichtag in Mandantenkonfiguration
+  - korrigieren des Lagerbestands entsprechend der Zählung (mit neuem
+    Transfertyp "Inventur")
+  - Speichern der gezählten Menge (auch wenn keine Korrektur des Bestands
+    stattfindet)
+  - Warnung, wenn gleicher Artikel für gleichen Lagerplatz und Stichtag schon
+    gezählt wurde und Möglichkeit die eigene gezählte Menge zu der vorhandenen
+    hinzuzuzählen oder die vorher gezählte Menge durch die eigene Menge zu
+    korrigieren
+  - Historie der Inventurerfassung des aktuellen Bearbeiters unterhalb
+    der Erfassungsmaske
+  - Bericht über Inventurerfassungen
+
+Kleinere neue Features und Detailverbesserungen:
+  - Verknüpfte Belege um die Verknüpfung von Beleg nach E-Mail-Journal erweitert.
+  - Filter nach Abteilungen für Lieferplan
+  - Eindeutigkeit bei Rechnungsnummern von Kreditoren. (Es erfolgt eine  Warnung bei Duplikaten (Überprüfung auf Lieferant mit Rechnungsnummer))
+  - Mit dem SEPA-Export verknüpfte Kreditorenbelege (Einkaufsrechnung oder Kreditorenbuchungen) können nicht mehr gelöscht oder storniert werden.
+  - Tab "Belege" beim Kunden und Lieferanten. Offene Rechnungen, Aufträge
+    werden angezeigt. Eine Umsatz und Mahnstatistik können in Tabs geöffnet
+    werden. Belegtypen Angebote, Aufträge (Kunden), bzw Preisanfragen,
+    Lieferantenaufträge (Lieferanten) sowie die Belege Rechnungen, Emails,
+    Briefe können in weiteren Tabs angezeigt werden.
+  - SEPA-Export. Überweisungsdatum vorbelegen, entweder die Fälligkeit oder falls vorhanden das Skonto-Datum.
+    Das Skonto-Datum hat Priorität vor der letzten Fälligkeit.
+    Zusätzlich kann ein Puffer in Tagen vom Zahlungsziel abgezogen werden (Standard 0). Das Verhalten muss für jeden
+    Mandanten unter Mandantenkonfiguration -> Features -> SEPA aktiv eingeschaltet werden.
+  - Schnellsuchen können auf Benutzerebene Programm->Benutzereinstellungen->Anzeigeoptionen konfiguriert werden.
+  - SelfTests erweitert: Warnungen bei sehr laxer Buchungskonfiguration und bei verwaisten abgeglichen Bank-Transaktionen
+  - DATEV-Export-Format konfigurierbar
+    In der Mandantenkonfiguration befindet sich jetzt eine Einstellung, welche die Kodierung des DATEV-Exports steuert.
+    DATEV erwartet CP1252. Kivitendo kann diese Kodierung so vom kivitendo Nutzer einfordern, alternativ nicht
+    vorhandenen Zeichen versuchen zu ersetzen oder die DATEV-Erwartung ignorieren und UTF-8 liefern.
+    Voreingestellt ist CP1252 mit Ersetzungen.
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+
+361 Ware erfassen nicht möglich im leeren Mandanten
+359 get_payment_select_options_for_bank_transaction vereinfachen
+358 segmentation fault in DBI.so beim versenden einer Rechnung per E-Mail
+357 Die Generierung einer periodische Rechnung mit der Periode einmalig sollte auch den Quell-Auftrag schliessen.
+356 Bei Zuweisung von zwei Kreditorengutschrift per Kontoauszug verbuchen, wird bei der zweiten Zuweisung das Vorzeichen gedreht
+355 Kontoauszug verbuchen -> Eine Bankbewegung mit zwei Skonto Rechnungen verknüpfen geht nicht
+354 Zahlungsbedingung falsch bei Verkausf-Lieferschein nach Rechnung
+353 Preisregeln Wenn Artikel gelöscht wird
+352 Beim Drucken mehrerer Rechnung aus dem Bericht heraus wird der Rabatt falsch berechnet
+351 Order-Controller: Angebot als neu speichern erzeugt kein neues Objekt
+350 Berichte->Projektbuchungen wirft Fehler bei ausgwählten Project
+349 Normalisierung Artikelbeschreibung und Artikellangtext (Bemerkung) funkioniert nicht mehr
+348 DatevExport kommt mit bestimmten Zeichen im Buchungstext nicht klar
+347 Dateimanagement -> Erzeugte Dokumente löschen -> Nein funktioniert nicht
+344 Internal Server Error (fallback Module fehlen)
+343 Kontoauszug verbuchen Skontoautomatik bei Verkaufsrechnungen defekt
+341 Auftrag: Warnung bei aktiven wiederkehrenden Rechnungen geht nicht mehr
+337 Standardlagerplatz bei Erzeugnissen ändern wirft Presenter-Fehler
+336 Beim Drucken mehrerer Rechnung aus dem Bericht heraus mit aktiviertem DMS bricht mit Fehlermeldung ab
+335 Fehler bei den Verknüpften Belegen wenn Verknüpfungsziel Pflichtenheft
+334 Sortierung Artikelstammdaten/Preisinformationen/Verkaufspreisinformation: Kundenauftrag
+333 Bericht Lagerentnahme: Lagerplatz lässt sich nicht auswählen
+332 Bug: Bericht Lagerbestand gibt Fehler beim einschliessen leerer Lagerplätze
+329 Konto mit identischem Folgekonto führt zu Endlosschlaufe
+323 Kontoauszug verbuchen. Kombination von Rechnungen und Gutschriften nicht möglich
+316 Verknüpfte Belege erlaubt keine manuelle Verknüpfung mit Kreditorenbuchungen
+315 EAN-Feld beim Einlagern ohne Funktion
+311 Task-Server-Start beim Booten
+306 unstable: Leerzeichen beim CKEditor im Pflichtenheft
+301 SelfTest Transactions - all_passed nicht gesetzt
+292 Verkaufsbericht filtert nicht mehr nach Warengruppe
+282 Artikelliste leer, wenn in der Schnellsuche mehrere Treffer vorgeschlagen und keiner ausgewählt ist.
+281 Falsche Lagerbewegungen beim Erstellen von Erzeugnissen, wenn Bestandteile vorhanden/nicht vorhanden
+279 Datenmodell der verknüpften Belege um E-Mail Verknüpfung erweitern
+265 Kontoauszug verbuchen bei negativer Kreditorenbuchung wird das Vorzeichen bei Zahlung umgedreht
+233 Memory-Bedarf des Taskservers steigt kontinuierlich an
+151 Berichte->Pflichtenheft Fehler ab commit #c44615e
+125 Neues Datevexportformat
+90 Benutzerdefinierte Variablen von Kunden werden bei Lieferanten mit gleicher id angezeigt
+86 Kunden bzw Lieferantenliste wird von anderem Mandanten angezeigt
+82 Berechnete Preiswerte von PTC weichen von oberflächen Werten aus den Masken ab
+28 Fehler beim Hinzufügen von Artikeln zu Erzeugnissen per Artikelauswahlseite
+22 Doppelte Minuse ( --) im Kundennamen erzeugen "leider" immer check_name problem bei freitext Auswahl
+
+2017-12-12 - Release 3.5.1
 
 Größere neue Features:
 

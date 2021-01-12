@@ -1,6 +1,7 @@
 [%- USE T8 %]
 [%- USE L %]
 [%- USE P %]
+[%- USE LxERP %]
 [%- USE HTML %][%- USE JavaScript %]
 <h1>[% 'Report about warehouse contents' | $T8 %]</h1>
 
@@ -70,7 +71,6 @@
 
   <input type="hidden" name="nextsub" value="generate_report">
 
-  <p>
    <table>
     <tr>
      <th class="listheading" align="left" valign="top" colspan="6" nowrap>[% 'Filter' | $T8 %]</th>
@@ -96,11 +96,11 @@
        </tr>
        <tr>
         <th align="right" nowrap>[% 'Part Number' | $T8 %]:</th>
-        <td><input name="partnumber" size=20></td>
+        <td><input name="partnumber" size=20 value="[% partnumber %]"></td>
        </tr>
        <tr>
         <th align="right" nowrap>[% 'Parts Classification' | $T8 %]:</th>
-        <td>[% P.select_classification('classification_id') %]</td>
+        <td>[% P.part.select_classification('classification_id') %]</td>
        </tr>
        <tr>
         <th align="right" nowrap>[% 'Part Description' | $T8 %]:</th>
@@ -133,10 +133,27 @@
          </select>
         </td>
        </tr>
+       <tr>
         <th align="right" nowrap>[% 'Stock Qty for Date' | $T8 %]:</th>
         <td>[% L.date_tag('date') %]</td>
-       <tr>
        </tr>
+        <tr>
+        <th align="right">
+          [% "basis for stock value" | $T8 %]:
+        </th>
+        <td align="left">
+         [% L.radio_button_tag("stock_value_basis", value='purchase_price', checked=1, label=LxERP.t8('Purchase price')) %]
+         [% L.radio_button_tag("stock_value_basis", value='list_price',     checked=0, label=LxERP.t8('List Price')) %]
+        </td>
+       </tr>
+        <th align="right">
+          [% "List all rows" | $T8 %]:
+        </th>
+        <td align="left">
+         [% L.yes_no_tag("allrows", 1) %]
+        </td>
+       </tr>
+
       </table>
      </td>
     </tr>
@@ -171,7 +188,7 @@
         [% END %]
        </tr>
 
-       <tr><td colspan="4"><hr noshade height="1"></td></tr>
+       <tr><td colspan="6"><hr noshade height="1"></td></tr>
 
        <tr>
         <td align="right"><input name="subtotal" id="subtotal" class="checkbox" type="checkbox" value="Y"></td>
@@ -187,11 +204,11 @@
         <td nowrap><label for="l_stock_value">[% 'Stock value' | $T8 %]</label></td>
         <td align="right"><input name="l_purchase_price" id="l_purchase_price" class="checkbox" type="checkbox" value="Y"></td>
         <td nowrap><label for="l_purchase_price">[% 'Purchase price' | $T8 %]</label></td>
+        <td align="right"><input name="l_list_price" id="l_list_price" class="checkbox" type="checkbox" value="Y"></td>
+        <td nowrap><label for="l_list_price">[% 'List Price' | $T8 %]</label></td>
        </tr>
-
       </table>
      </td>
     </tr>
    </table>
-  </p>
  </form>

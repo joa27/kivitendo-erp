@@ -165,7 +165,9 @@ sub set_options {
 
   while (my ($key, $value) = each %options) {
     if ($key eq 'pdf_export') {
-      map { $self->{options}->{pdf_export}->{$_} = $value->{$_} } keys %{ $value };
+      $self->{options}->{pdf_export}->{$_} = $value->{$_} for keys %{ $value };
+    } elsif ($key eq 'csv_export') {
+      $self->{options}->{csv_export}->{$_} = $value->{$_} for keys %{ $value };
     } else {
       $self->{options}->{$key} = $value;
     }

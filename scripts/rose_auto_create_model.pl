@@ -7,7 +7,6 @@ BEGIN {
 
   unshift(@INC, $FindBin::Bin . '/../modules/override'); # Use our own versions of various modules (e.g. YAML).
   push   (@INC, $FindBin::Bin . '/..');                  # '.' will be removed from @INC soon.
-  push   (@INC, $FindBin::Bin . '/../modules/fallback'); # Only use our own versions of modules if there's no system version.
 }
 
 use CGI qw( -no_xhtml);
@@ -83,6 +82,8 @@ our %foreign_key_name_map     = (
 
     assembly                  => { parts_id => 'part', id => 'assembly_part' },
     assortment_items          => { parts_id => 'part' },
+
+    dunning                   => { trans_id => 'invoice', fee_interest_ar_id => 'fee_interest_invoice' },
   },
 );
 

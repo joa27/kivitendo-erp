@@ -5,7 +5,7 @@ use DBI;
 use Digest::MD5 qw(md5_hex);
 use IO::File;
 use Time::HiRes qw(gettimeofday);
-use List::MoreUtils qw(uniq);
+use List::MoreUtils qw(any uniq);
 use YAML;
 use Regexp::IPv6 qw($IPv6_re);
 
@@ -20,7 +20,7 @@ use SL::SessionFile;
 use SL::User;
 use SL::DBConnect;
 use SL::DBUpgrade2;
-use SL::DBUtils qw(do_query do_statement prepare_execute_query prepare_query selectall_array_query selectrow_query);
+use SL::DBUtils qw(do_query do_statement prepare_execute_query prepare_query selectall_array_query selectrow_query selectall_ids);
 
 use strict;
 
@@ -72,7 +72,7 @@ sub reset {
     delete $self->{column_information};
   }
 
-  $self->{authenticator}->reset;
+  $_->reset for @{ $self->{authenticators} };
 
   $self->client(undef);
 }
@@ -94,6 +94,18 @@ sub set_client {
   return $self->client;
 }
 
+sub get_default_client_id {
+  my ($self) = @_;
+
+  my $dbh    = $self->dbconnect;
+
+  return unless $dbh;
+
+  my $row = $dbh->selectrow_hashref(qq|SELECT id FROM auth.clients WHERE is_default = TRUE LIMIT 1|);
+
+  return $row->{id} if $row;
+}
+
 sub DESTROY {
   my $self = shift;
 
@@ -106,7 +118,10 @@ sub mini_error {
 
   my ($self, @msg) = @_;
   if ($ENV{HTTP_USER_AGENT}) {
-    print Form->create_http_response(content_type => 'text/html');
+    # $::form might not be initialized yet at this point — therefore
+    # we cannot use "create_http_response" yet.
+    my $cgi = CGI->new('');
+    print $cgi->header('-type' => 'text/html', '-charset' => 'UTF-8');
     print "<pre>", join ('<br>', @msg), "</pre>";
   } else {
     print STDERR "Error: @msg\n";
@@ -128,19 +143,33 @@ sub _read_auth_config {
 
   } else {
     $self->{DB_config}   = $::lx_office_conf{'authentication/database'};
-    $self->{LDAP_config} = $::lx_office_conf{'authentication/ldap'};
   }
 
-  if ($self->{module} eq 'DB') {
-    $self->{authenticator} = SL::Auth::DB->new($self);
+  $self->{authenticators} =  [];
+  $self->{module}       ||=  'DB';
+  $self->{module}         =~ s{^ +| +$}{}g;
 
-  } elsif ($self->{module} eq 'LDAP') {
-    $self->{authenticator} = SL::Auth::LDAP->new($self);
-  }
+  foreach my $module (split m{ +}, $self->{module}) {
+    my $config_name;
+    ($module, $config_name) = split m{:}, $module, 2;
+    $config_name          ||= $module eq 'DB' ? 'database' : lc($module);
+    my $config              = $::lx_office_conf{'authentication/' . $config_name};
 
-  if (!$self->{authenticator}) {
-    my $locale = Locale->new('en');
-    $self->mini_error($locale->text('No or an unknown authenticantion module specified in "config/kivitendo.conf".'));
+    if (!$config) {
+      my $locale = Locale->new('en');
+      $self->mini_error($locale->text('Missing configuration section "authentication/#1" in "config/kivitendo.conf".', $config_name));
+    }
+
+    if ($module eq 'DB') {
+      push @{ $self->{authenticators} }, SL::Auth::DB->new($self);
+
+    } elsif ($module eq 'LDAP') {
+      push @{ $self->{authenticators} }, SL::Auth::LDAP->new($config);
+
+    } else {
+      my $locale = Locale->new('en');
+      $self->mini_error($locale->text('Unknown authenticantion module #1 specified in "config/kivitendo.conf".', $module));
+    }
   }
 
   my $cfg = $self->{DB_config};
@@ -155,7 +184,7 @@ sub _read_auth_config {
     $self->mini_error($locale->text('config/kivitendo.conf: Missing parameters in "authentication/database". Required parameters are "host", "db" and "user".'));
   }
 
-  $self->{authenticator}->verify_config();
+  $_->verify_config for @{ $self->{authenticators} };
 
   $self->{session_timeout} *= 1;
   $self->{session_timeout}  = 8 * 60 if (!$self->{session_timeout});
@@ -215,7 +244,14 @@ sub authenticate {
     return ERR_PASSWORD;
   }
 
-  my $result = $login ? $self->{authenticator}->authenticate($login, $password) : ERR_USER;
+  my $result = ERR_USER;
+  if ($login) {
+    foreach my $authenticator (@{ $self->{authenticators} }) {
+      $result = $authenticator->authenticate($login, $password);
+      last if $result == OK;
+    }
+  }
+
   $self->set_session_value(SESSION_KEY_USER_AUTH() => $result, login => $login, client_id => $self->client->{id});
   return $result;
 }
@@ -400,15 +436,22 @@ sub save_user {
 sub can_change_password {
   my $self = shift;
 
-  return $self->{authenticator}->can_change_password();
+  return any { $_->can_change_password } @{ $self->{authenticators} };
 }
 
 sub change_password {
   my ($self, $login, $new_password) = @_;
 
-  my $result = $self->{authenticator}->change_password($login, $new_password);
+  my $overall_result = OK;
 
-  return $result;
+  foreach my $authenticator (@{ $self->{authenticators} }) {
+    next unless $authenticator->can_change_password;
+
+    my $result = $authenticator->change_password($login, $new_password);
+    $overall_result = $result if $result != OK;
+  }
+
+  return $overall_result;
 }
 
 sub read_all_users {
@@ -565,12 +608,10 @@ sub restore_session {
   #  1. session ID exists in the database
   #  2. hasn't expired yet
   #  3. if cookie for the API token is given: the cookie's value equal database column 'auth.session.api_token' for the session ID
-  #  4. if cookie for the API token is NOT given then: the requestee's IP address must match the stored IP address
   $self->{api_token}   = $cookie->{api_token} if $cookie;
   my $api_token_cookie = $self->get_api_token_cookie;
   my $cookie_is_bad    = !$cookie || $cookie->{is_expired};
   $cookie_is_bad     ||= $api_token_cookie && ($api_token_cookie ne $cookie->{api_token}) if  $api_token_cookie;
-  $cookie_is_bad     ||= $cookie->{ip_address} ne $ENV{REMOTE_ADDR}                       if !$api_token_cookie && $ENV{REMOTE_ADDR} !~ /^$IPv6_re$/;
   if ($cookie_is_bad) {
     $self->destroy_session();
     return $self->session_restore_result($cookie ? SESSION_EXPIRED() : SESSION_NONE());
@@ -625,31 +666,31 @@ sub _load_with_auto_restore_column {
   my $query = <<SQL;
     SELECT sess_key, sess_value, auto_restore
     FROM auth.session_content
-    WHERE (session_id = ?)
+    WHERE (session_id = ?) AND (auto_restore OR sess_key IN (@{[ join ',', ("?") x keys %auto_restore_keys ]}))
 SQL
-  my $sth = prepare_execute_query($::form, $dbh, $query, $session_id);
+  my $sth = prepare_execute_query($::form, $dbh, $query, $session_id, keys %auto_restore_keys);
 
+  my $need_delete;
   while (my $ref = $sth->fetchrow_hashref) {
-    if ($ref->{auto_restore} || $auto_restore_keys{$ref->{sess_key}}) {
-      my $value = SL::Auth::SessionValue->new(auth         => $self,
-                                              key          => $ref->{sess_key},
-                                              value        => $ref->{sess_value},
-                                              auto_restore => $ref->{auto_restore},
-                                              raw          => 1);
-      $self->{SESSION}->{ $ref->{sess_key} } = $value;
+    $need_delete = 1 if $ref->{auto_restore};
+    my $value = SL::Auth::SessionValue->new(auth         => $self,
+                                            key          => $ref->{sess_key},
+                                            value        => $ref->{sess_value},
+                                            auto_restore => $ref->{auto_restore},
+                                            raw          => 1);
+    $self->{SESSION}->{ $ref->{sess_key} } = $value;
 
-      next if defined $::form->{$ref->{sess_key}};
+    next if defined $::form->{$ref->{sess_key}};
 
-      my $data                    = $value->get;
-      $::form->{$ref->{sess_key}} = $data if $value->{auto_restore} || !ref $data;
-    } else {
-      my $value = SL::Auth::SessionValue->new(auth => $self,
-                                              key  => $ref->{sess_key});
-      $self->{SESSION}->{ $ref->{sess_key} } = $value;
-    }
+    my $data                    = $value->get;
+    $::form->{$ref->{sess_key}} = $data if $value->{auto_restore} || !ref $data;
   }
 
   $sth->finish;
+
+  if ($need_delete) {
+    do_query($::form, $dbh, 'DELETE FROM auth.session_content WHERE auto_restore AND session_id = ?', $session_id);
+  }
 }
 
 sub destroy_session {
@@ -743,16 +784,6 @@ sub save_session {
     return;
   }
 
-  my @unfetched_keys = map     { $_->{key}        }
-                       grep    { ! $_->{fetched}  }
-                       values %{ $self->{SESSION} };
-  # $::lxdebug->dump(0, "unfetched_keys", [ sort @unfetched_keys ]);
-  # $::lxdebug->dump(0, "all keys", [ sort map { $_->{key} } values %{ $self->{SESSION} } ]);
-  my $query          = qq|DELETE FROM auth.session_content WHERE (session_id = ?)|;
-  $query            .= qq| AND (sess_key NOT IN (| . join(', ', ('?') x scalar @unfetched_keys) . qq|))| if @unfetched_keys;
-
-  do_query($::form, $dbh, $query, $session_id, @unfetched_keys);
-
   my ($id) = selectrow_query($::form, $dbh, qq|SELECT id FROM auth.session WHERE id = ?|, $session_id);
 
   if ($id) {
@@ -766,28 +797,40 @@ sub save_session {
     do_query($::form, $dbh, qq|UPDATE auth.session SET api_token = ? WHERE id = ?|, $self->_create_session_id, $session_id) unless $stored_api_token;
   }
 
-  my @values_to_save = grep    { $_->{fetched} }
+  my @values_to_save = grep    { $_->{modified} }
                        values %{ $self->{SESSION} };
   if (@values_to_save) {
-    my ($columns, $placeholders) = ('', '');
+    my %known_keys = map { $_ => 1 }
+      selectall_ids($::form, $dbh, qq|SELECT sess_key FROM auth.session_content WHERE session_id = ?|, 'sess_key', $session_id);
     my $auto_restore             = $self->{column_information}->has('auto_restore');
 
-    if ($auto_restore) {
-      $columns      .= ', auto_restore';
-      $placeholders .= ', ?';
-    }
+    my $insert_query  = $auto_restore
+      ? "INSERT INTO auth.session_content (session_id, sess_key, sess_value, auto_restore) VALUES (?, ?, ?, ?)"
+      : "INSERT INTO auth.session_content (session_id, sess_key, sess_value) VALUES (?, ?, ?)";
+    my $insert_sth = prepare_query($::form, $dbh, $insert_query);
 
-    $query  = qq|INSERT INTO auth.session_content (session_id, sess_key, sess_value ${columns}) VALUES (?, ?, ? ${placeholders})|;
-    my $sth = prepare_query($::form, $dbh, $query);
+    my $update_query  = $auto_restore
+      ? "UPDATE auth.session_content SET sess_value = ?, auto_restore = ? WHERE session_id = ? AND sess_key = ?"
+      : "UPDATE auth.session_content SET sess_value = ? WHERE session_id = ? AND sess_key = ?";
+    my $update_sth = prepare_query($::form, $dbh, $update_query);
 
     foreach my $value (@values_to_save) {
       my @values = ($value->{key}, $value->get_dumped);
       push @values, $value->{auto_restore} if $auto_restore;
 
-      do_statement($::form, $sth, $query, $session_id, @values);
+      if ($known_keys{$value->{key}}) {
+        do_statement($::form, $update_sth, $update_query,
+          $value->get_dumped, ( $value->{auto_restore} )x!!$auto_restore, $session_id, $value->{key}
+        );
+      } else {
+        do_statement($::form, $insert_sth, $insert_query,
+          $session_id, $value->{key}, $value->get_dumped, ( $value->{auto_restore} )x!!$auto_restore
+        );
+      }
     }
 
-    $sth->finish();
+    $insert_sth->finish;
+    $update_sth->finish;
   }
 
   $dbh->commit() unless $provided_dbh;
@@ -805,12 +848,14 @@ sub set_session_value {
     if (ref $key eq 'HASH') {
       $self->{SESSION}->{ $key->{key} } = SL::Auth::SessionValue->new(key          => $key->{key},
                                                                       value        => $key->{value},
+                                                                      modified     => 1,
                                                                       auto_restore => $key->{auto_restore});
 
     } else {
       my $value = shift @params;
       $self->{SESSION}->{ $key } = SL::Auth::SessionValue->new(key   => $key,
-                                                               value => $value);
+                                                               value => $value,
+                                                               modified => 1);
     }
   }
 
@@ -827,10 +872,11 @@ sub delete_session_value {
 }
 
 sub get_session_value {
-  my $self = shift;
-  my $data = $self->{SESSION} && $self->{SESSION}->{ $_[0] } ? $self->{SESSION}->{ $_[0] }->get : undef;
+  my ($self, $key) = @_;
 
-  return $data;
+  return if !$self->{SESSION};
+
+  ($self->{SESSION}{$key} //= SL::Auth::SessionValue->new(auth => $self, key => $key))->get
 }
 
 sub create_unique_sesion_value {
@@ -1077,23 +1123,38 @@ sub evaluate_rights_ary {
 
   my $value  = 0;
   my $action = '|';
+  my $negate = 0;
 
   foreach my $el (@{$ary}) {
+    next unless defined $el;
+
     if (ref $el eq "ARRAY") {
+      my $val = evaluate_rights_ary($el);
+      $val    = !$val if $negate;
+      $negate = 0;
       if ($action eq '|') {
-        $value |= evaluate_rights_ary($el);
+        $value |= $val;
       } else {
-        $value &= evaluate_rights_ary($el);
+        $value &= $val;
       }
 
     } elsif (($el eq '&') || ($el eq '|')) {
       $action = $el;
 
+    } elsif ($el eq '!') {
+      $negate = !$negate;
+
     } elsif ($action eq '|') {
-      $value |= $el;
+      my $val = $el;
+      $val    = !$val if $negate;
+      $negate = 0;
+      $value |= $val;
 
     } else {
-      $value &= $el;
+      my $val = $el;
+      $val    = !$val if $negate;
+      $negate = 0;
+      $value &= $val;
 
     }
   }
@@ -1168,6 +1229,15 @@ sub check_right {
   return $granted;
 }
 
+sub deny_access {
+  my ($self) = @_;
+
+  $::dispatcher->reply_with_json_error(error => 'access') if $::request->type eq 'json';
+
+  delete $::form->{title};
+  $::form->show_generic_error($::locale->text("You do not have the permissions to access this function."));
+}
+
 sub assert {
   my ($self, $right, $dont_abort) = @_;
 
@@ -1176,8 +1246,7 @@ sub assert {
   }
 
   if (!$dont_abort) {
-    delete $::form->{title};
-    $::form->show_generic_error($::locale->text("You do not have the permissions to access this function."));
+    $self->deny_access;
   }
 
   return 0;

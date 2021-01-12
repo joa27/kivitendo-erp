@@ -45,8 +45,8 @@ sub run {
 
   $self->controller->track_progress(progress => 10);
 
-  my $old_numberformat      = $::myconfig{numberformat};
-  $::myconfig{numberformat} = $self->controller->profile->get('numberformat');
+  local $::myconfig{numberformat} = $self->controller->profile->get('numberformat');
+  local $::myconfig{dateformat}   = $self->controller->profile->get('dateformat');
 
   $self->csv->parse;
 
@@ -83,8 +83,6 @@ sub run {
   $self->fix_field_lengths;
 
   $self->controller->track_progress(progress => 100);
-
-  $::myconfig{numberformat} = $old_numberformat;
 }
 
 sub add_columns {
@@ -551,6 +549,7 @@ sub save_objects {
           push @{ $entry->{errors} }, $::locale->text('Error when saving: #1', $object->db->error);
         } else {
           $self->_save_history($object);
+          $self->save_additions($object);
           $self->controller->num_imported($self->controller->num_imported + 1);
         }
       }
@@ -592,19 +591,35 @@ sub clean_fields {
   return @cleaned_fields;
 }
 
+sub save_additions {
+  my ($self, $object) = @_;
+
+  # Can be overridden by derived specialized importer classes to save
+  # additional tables (e.g. record links).
+  # This sub is called after the object is saved successfully in an transaction.
+
+  return;
+}
+
 sub _save_history {
   my ($self, $object) = @_;
 
-  if (any { $self->controller->{type} && $_ eq $self->controller->{type} } qw(parts customers_vendors orders ar_transactions)) {
+  if (any { $self->controller->{type} && $_ eq $self->controller->{type} } qw(parts customers_vendors orders delivery_orders ar_transactions)) {
     my $snumbers = $self->controller->{type} eq 'parts'             ? 'partnumber_' . $object->partnumber
                  : $self->controller->{type} eq 'customers_vendors' ?
                      ($self->table eq 'customer' ? 'customernumber_' . $object->customernumber : 'vendornumber_' . $object->vendornumber)
                  : $self->controller->{type} eq 'orders'            ? 'ordnumber_' . $object->ordnumber
+                 : $self->controller->{type} eq 'delivery_orders'   ? 'donumber_'  . $object->donumber
                  : $self->controller->{type} eq 'ar_transactions'   ? 'invnumber_' . $object->invnumber
                  : '';
 
-    my $what_done = $self->controller->{type} eq 'orders' ? 'sales_order'
-                  : '';
+    my $what_done = '';
+    if ($self->controller->{type} eq 'orders') {
+      $what_done = $object->customer_id ? 'sales_order' : 'purchase_order';
+    }
+    if ($self->controller->{type} eq 'delivery_orders') {
+      $what_done = $object->customer_id ? 'sales_delivery_order' : 'purchase_delivery_order';
+    }
 
     SL::DB::History->new(
       trans_id    => $object->id,

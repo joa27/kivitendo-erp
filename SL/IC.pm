@@ -37,7 +37,6 @@ package IC;
 
 use Data::Dumper;
 use List::MoreUtils qw(all any uniq);
-use YAML;
 
 use SL::CVar;
 use SL::DBUtils;
@@ -45,6 +44,7 @@ use SL::HTML::Restrict;
 use SL::TransNumber;
 use SL::Util qw(trim);
 use SL::DB;
+use SL::Presenter::Part qw(type_abbreviation classification_abbreviation separate_abbreviation);
 use Carp;
 
 use strict;
@@ -313,7 +313,11 @@ sub all_parts {
 
   # special case smart search
   if ($form->{all}) {
-    $form->{"l_$_"} = 1 for qw(partnumber description unit sellprice lastcost cvar_packaging linetotal);
+    $form->{"l_$_"}       = 1 for qw(partnumber description unit sellprice lastcost linetotal);
+    $form->{l_service}    = 1 if $form->{searchitems} eq 'service'    || $form->{searchitems} eq '';
+    $form->{l_assembly}   = 1 if $form->{searchitems} eq 'assembly'   || $form->{searchitems} eq '';
+    $form->{l_part}       = 1 if $form->{searchitems} eq 'part'       || $form->{searchitems} eq '';
+    $form->{l_assortment} = 1 if $form->{searchitems} eq 'assortment' || $form->{searchitems} eq '';
     push @where_tokens, "p.partnumber ILIKE ? OR p.description ILIKE ?";
     push @bind_vars,    (like($form->{all})) x 2;
   }
@@ -522,6 +526,22 @@ sub all_parts {
     push @bind_vars, @cvar_values;
   }
 
+  # simple search for assemblies by items used in assemblies
+  if ($form->{bom} eq '2' && $form->{l_assembly}) {
+    # nuke where clause and bind vars
+    $where_clause = ' 1=1 AND p.id in (SELECT id from assembly where parts_id IN ' .
+                    ' (select id from parts where 1=1 AND ';
+    @bind_vars    = ();
+    # use only like filter for items used in assemblies
+    foreach (@like_filters) {
+      next unless $form->{$_};
+      $form->{"l_$_"} = '1'; # show the column
+      $where_clause .= " $_ ILIKE ? ";
+      push @bind_vars,    like($form->{$_});
+    }
+    $where_clause .='))';
+  }
+
   my $query = <<"  SQL";
     SELECT DISTINCT $select_clause
     FROM parts p
@@ -640,8 +660,8 @@ sub get_parts {
     }
 
     $j++;
-    $form->{"type_and_classific_$j"} = $::request->presenter->type_abbreviation($ref->{part_type}).
-                                       $::request->presenter->classification_abbreviation($ref->{classification_id});
+    $form->{"type_and_classific_$j"} = type_abbreviation($ref->{part_type}).
+                                       classification_abbreviation($ref->{classification_id});
     $form->{"id_$j"}          = $ref->{id};
     $form->{"partnumber_$j"}  = $ref->{partnumber};
     $form->{"description_$j"} = $ref->{description};
@@ -719,37 +739,14 @@ sub retrieve_accounts {
 
   # transdate madness.
   my $transdate = "";
-  if ($form->{type} eq "invoice" or $form->{type} eq "credit_note") {
+  if (($form->{type} eq "invoice") or ($form->{type} eq "credit_note") or ($form->{script} eq 'ir.pl')) {
     # use deliverydate for sales and purchase invoice, if it exists
     # also use deliverydate for credit notes
-    if (!$form->{deliverydate}) {
-      $transdate = $form->{invdate};
-    } else {
-      $transdate = $form->{deliverydate};
-    }
-  } elsif ($form->{script} eq 'ir.pl') {
-    # when a purchase invoice is opened from the report of purchase invoices
-    # $form->{type} isn't set, but $form->{script} is, not sure why this is or
-    # whether this distinction matters in some other scenario. Otherwise one
-    # could probably take out this elsif and add a
-    # " or $form->{script} eq 'ir.pl' "
-    # to the above if-statement
-    if (!$form->{deliverydate}) {
-      $transdate = $form->{invdate};
-    } else {
-      $transdate = $form->{deliverydate};
-    }
-  } elsif (($form->{type} eq "credit_note") and $form->{deliverydate}) {
-    # if credit_note has a deliverydate, use this instead of invdate
-    # useful for credit_notes of invoices from an old period with different tax
-    # if there is no deliverydate then invdate is used, old default (see next elsif)
-    # Falls hier der Stichtag für Steuern anders bestimmt wird,
-    # entsprechend auch bei Taxkeys.pm anpassen
-    $transdate = $form->{deliverydate};
-  } elsif (($form->{type} eq "credit_note") || ($form->{script} eq 'ir.pl')) {
-    $transdate = $form->{invdate};
+    $transdate = $form->{tax_point} || $form->{deliverydate} || $form->{invdate};
   } else {
-    $transdate = $form->{transdate};
+    my $deliverydate;
+    $deliverydate = $form->{reqdate} if any { $_ eq $form->{type} } qw(sales_order request_quotation purchase_order);
+    $transdate = $form->{tax_point} || $deliverydate || $form->{transdate};
   }
 
   if ($transdate eq "") {
@@ -786,7 +783,8 @@ sub retrieve_accounts {
 SQL
 
   my $query_tax = <<SQL;
-    SELECT c.accno, t.taxdescription AS description, t.rate, t.taxnumber
+    SELECT c.accno, t.taxdescription AS description, t.id as tax_id, t.rate,
+           c.accno as taxnumber
     FROM tax t
     LEFT JOIN chart c ON c.id = t.chart_id
     WHERE t.id IN
@@ -817,7 +815,7 @@ SQL
     $form->{"taxaccounts_$index"} = $ref->{"accno"};
     $form->{"taxaccounts"} .= "$ref->{accno} "if $form->{"taxaccounts"} !~ /$ref->{accno}/;
 
-    $form->{"$ref->{accno}_${_}"} = $ref->{$_} for qw(rate description taxnumber);
+    $form->{"$ref->{accno}_${_}"} = $ref->{$_} for qw(rate description taxnumber tax_id);
   }
 
   $sth_tax->finish;
@@ -901,6 +899,25 @@ sub prepare_parts_for_printing {
 
   $sth->finish();
 
+  $query           = qq|SELECT
+                        cp.parts_id,
+                        cp.customer_partnumber AS customer_model,
+                        c.name                 AS customer_make
+                        FROM part_customer_prices cp
+                        LEFT JOIN customer c ON (cp.customer_id = c.id)
+                        WHERE cp.parts_id IN ($placeholders)|;
+
+  my %customermodel = ();
+
+  $sth              = prepare_execute_query($form, $dbh, $query, @part_ids);
+
+  while (my $ref = $sth->fetchrow_hashref()) {
+    $customermodel{$ref->{parts_id}} ||= [];
+    push @{ $customermodel{$ref->{parts_id}} }, $ref;
+  }
+
+  $sth->finish();
+
   my @columns = qw(ean image microfiche drawing);
 
   $query      = qq|SELECT id, | . join(', ', @columns) . qq|
@@ -910,7 +927,7 @@ sub prepare_parts_for_printing {
   my %data    = selectall_as_map($form, $dbh, $query, 'id', \@columns, @part_ids);
 
   my %template_arrays;
-  map { $template_arrays{$_} = [] } (qw(make model), @columns);
+  map { $template_arrays{$_} = [] } (qw(make model customer_make customer_model), @columns);
 
   foreach my $i (1 .. $rowcount) {
     my $id = $form->{"${prefix}${i}"};
@@ -924,11 +941,21 @@ sub prepare_parts_for_printing {
     push @{ $template_arrays{make} },  [];
     push @{ $template_arrays{model} }, [];
 
-    next if (!$makemodel{$id});
-
-    foreach my $ref (@{ $makemodel{$id} }) {
-      map { push @{ $template_arrays{$_}->[-1] }, $ref->{$_} } qw(make model);
+    if ($makemodel{$id}) {
+      foreach my $ref (@{ $makemodel{$id} }) {
+        map { push @{ $template_arrays{$_}->[-1] }, $ref->{$_} } qw(make model);
+      }
     }
+
+    push @{ $template_arrays{customer_make} },  [];
+    push @{ $template_arrays{customer_model} }, [];
+
+    if ($customermodel{$id}) {
+      foreach my $ref (@{ $customermodel{$id} }) {
+        push @{ $template_arrays{$_}->[-1] }, $ref->{$_} for qw(customer_make customer_model);
+      }
+    }
+
   }
 
   my $parts = SL::DB::Manager::Part->get_all(query => [ id => \@part_ids ]);
@@ -938,35 +965,15 @@ sub prepare_parts_for_printing {
     my $id = $form->{"${prefix}${i}"};
     next unless $id;
     my $prt = $parts_by_id{$id};
-    my $type_abbr = $::request->presenter->type_abbreviation($prt->part_type);
+    my $type_abbr = type_abbreviation($prt->part_type);
     push @{ $template_arrays{part_type}         }, $prt->part_type;
     push @{ $template_arrays{part_abbreviation} }, $type_abbr;
-    push @{ $template_arrays{type_and_classific}}, $type_abbr.$::request->presenter->classification_abbreviation($prt->classification_id);
-    push @{ $template_arrays{separate}  },  $::request->presenter->separate_abbreviation($prt->classification_id);
+    push @{ $template_arrays{type_and_classific}}, $type_abbr . classification_abbreviation($prt->classification_id);
+    push @{ $template_arrays{separate}  }, separate_abbreviation($prt->classification_id);
   }
 
   $main::lxdebug->leave_sub();
   return %template_arrays;
 }
-
-sub normalize_text_blocks {
-  $main::lxdebug->enter_sub();
-
-  my $self     = shift;
-  my %params   = @_;
-
-  my $form     = $params{form}     || $main::form;
-
-  # check if feature is enabled (select normalize_part_descriptions from defaults)
-  return unless ($::instance_conf->get_normalize_part_descriptions);
-
-  foreach (qw(description notes)) {
-    $form->{$_} =~ s/\s+$//s;
-    $form->{$_} =~ s/^\s+//s;
-    $form->{$_} =~ s/ {2,}/ /g;
-  }
-   $main::lxdebug->leave_sub();
-}
-
 
 1;

@@ -38,7 +38,7 @@
           <input name="l_assembly" id="l_assembly" class="checkbox" type="checkbox" value="Y" checked>
           <label for="l_assembly">[% 'Assembly' | $T8 %]</label>
         </td>
-        [%- IF INSTANCE_CONF.get_feature_experimental %]
+        [%- IF INSTANCE_CONF.get_feature_experimental_assortment %]
         <td>
           <input name="l_assortment" id="l_assortment" class="checkbox" type="checkbox" value="Y" checked>
           <label for="l_assortment">[% 'Assortment' | $T8 %]</label>
@@ -54,7 +54,7 @@
       </tr>
       <tr>
        <th align="right" nowrap>[% 'Part Classification' | $T8 %]:</th>
-       <td>[% P.select_classification('classification_id', style=style) %]</td>
+       <td>[% P.part.select_classification('classification_id', style=style) %]</td>
       </tr>
       <tr>
        <th align="right" nowrap>[% 'Part Description' | $T8 %]</th>
@@ -102,6 +102,7 @@
        <td colspan="3">
         [% L.radio_button_tag('bom', id='bom_0', value=0, checked=1, label=LxERP.t8('Top Level Designation only')) %]
         [% L.radio_button_tag('bom', id='bom_1', value=1,            label=LxERP.t8('Individual Items')) %]
+        [% L.radio_button_tag('bom', id='bom_2', value=2,            label=LxERP.t8('Search for Items used in Assemblies')) %]
        </td>
       </tr>
 
@@ -228,6 +229,8 @@
          <tr>
           <td>[%- L.checkbox_tag('l_warehouse', label=LxERP.t8('Default Warehouse'), value='Y') %]</td>
           <td>[%- L.checkbox_tag('l_bin', label=LxERP.t8('Default Bin'), value='Y') %]</td>
+          <td>[%- L.checkbox_tag('l_make', label=LxERP.t8('Make'), value='Y') %]</td>
+          <td>[%- L.checkbox_tag('l_model', label=LxERP.t8('Model'), value='Y') %]</td>
          </tr>
 
          [% CUSTOM_VARIABLES_INCLUSION_CODE %]

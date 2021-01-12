@@ -8,6 +8,11 @@ namespace("kivi", function(ns) {
     m:   1,
     d:   0
   };
+  ns._time_format = {
+    sep: ':',
+    h: 0,
+    m: 1,
+  };
   ns._number_format = {
     decimalSep:  ',',
     thousandSep: '.'
@@ -20,6 +25,13 @@ namespace("kivi", function(ns) {
       ns._date_format[res[1].substr(0, 1)] = 0;
       ns._date_format[res[3].substr(0, 1)] = 1;
       ns._date_format[res[4].substr(0, 1)] = 2;
+    }
+
+    res = (params.times || "").match(/^([hm]+)([^a-z])([hm]+)$/);
+    if (res) {
+      ns._time_format                      = { sep: res[2] };
+      ns._time_format[res[1].substr(0, 1)] = 0;
+      ns._time_format[res[3].substr(0, 1)] = 1;
     }
 
     res = (params.numbers || "").match(/^\d*([^\d]?)\d+([^\d])\d+$/);
@@ -99,6 +111,51 @@ namespace("kivi", function(ns) {
     parts[ ns._date_format.m ] = (date.getMonth() <  9 ? "0" : "") + (date.getMonth() + 1); // Months are 0-based, but days are 1-based.
     parts[ ns._date_format.d ] = (date.getDate()  < 10 ? "0" : "") + date.getDate();
     return parts.join(ns._date_format.sep);
+  };
+
+  ns.parse_time = function(time) {
+    var now = new Date();
+
+    if (time === undefined)
+      return undefined;
+
+    if (time === '')
+      return null;
+
+    if (time === '0')
+      return now;
+
+    // special case 1: military time in fixed "hhmm" format
+    if (time.length == 4) {
+      var res = time.match(/(\d\d)(\d\d)/);
+      if (res) {
+        now.setHours(res[1], res[2]);
+        return now;
+      } else {
+        return undefined;
+      }
+    }
+
+    var parts = time.replace(/\s+/g, "").split(ns._time_format.sep);
+    if (parts.length == 2) {
+      for (var idx in parts) {
+        if (Number.isNaN(Number.parseInt(parts[idx])))
+          return undefined;
+      }
+      now.setHours(parts[ns._time_format.h], parts[ns._time_format.m]);
+      return now;
+    } else
+      return undefined;
+  }
+
+  ns.format_time = function(date) {
+    if (isNaN(date.getTime()))
+      return undefined;
+
+    var parts = [ "", "" ]
+    parts[ ns._time_format.h ] = date.getHours().toString().padStart(2, '0');
+    parts[ ns._time_format.m ] = date.getMinutes().toString().padStart(2, '0');
+    return parts.join(ns._time_format.sep);
   };
 
   ns.parse_amount = function(amount) {
@@ -252,7 +309,10 @@ namespace("kivi", function(ns) {
 
     if (elementId) {
       var cookieName      = 'jquery_ui_tab_'+ elementId;
-      tabsParams.active   = $.cookie(cookieName);
+      if (!window.location.hash) {
+        // only activate if there's no hash to overwrite it
+        tabsParams.active   = $.cookie(cookieName);
+      }
       tabsParams.activate = function(event, ui) {
         var i = ui.newTab.parent().children().index(ui.newTab);
         $.cookie(cookieName, i);
@@ -290,6 +350,19 @@ namespace("kivi", function(ns) {
       editor.on('instanceReady', function() { ns.focus_ckeditor($e); });
   };
 
+  ns.filter_select = function() {
+    var $input  = $(this);
+    var $select = $('#' + $input.data('select-id'));
+    var filter  = $input.val().toLocaleLowerCase();
+
+    $select.find('option').each(function() {
+      if ($(this).text().toLocaleLowerCase().indexOf(filter) != -1)
+        $(this).show();
+      else
+        $(this).hide();
+    });
+  };
+
   ns.reinit_widgets = function() {
     ns.run_once_for('.datepicker', 'datepicker', function(elt) {
       $(elt).datepicker();
@@ -309,6 +382,9 @@ namespace("kivi", function(ns) {
         kivi.ChartPicker($(elt));
       });
 
+    ns.run_once_for('div.filtered_select input', 'filtered_select', function(elt) {
+      $(elt).bind('change keyup', ns.filter_select);
+    });
 
     var func = kivi.get_function_by_name('local_reinit_widgets');
     if (func)
@@ -498,6 +574,39 @@ namespace("kivi", function(ns) {
     return undefined;
   };
 
+  ns.save_file = function(base64_data, content_type, size, attachment_name) {
+    // atob returns a unicode string with one codepoint per octet. revert this
+    const b64toBlob = (b64Data, contentType='', sliceSize=512) => {
+      const byteCharacters = atob(b64Data);
+      const byteArrays = [];
+
+      for (let offset = 0; offset < byteCharacters.length; offset += sliceSize) {
+        const slice = byteCharacters.slice(offset, offset + sliceSize);
+
+        const byteNumbers = new Array(slice.length);
+        for (let i = 0; i < slice.length; i++) {
+          byteNumbers[i] = slice.charCodeAt(i);
+        }
+
+        const byteArray = new Uint8Array(byteNumbers);
+        byteArrays.push(byteArray);
+      }
+
+      const blob = new Blob(byteArrays, {type: contentType});
+      return blob;
+    }
+
+    var blob = b64toBlob(base64_data, content_type);
+    var a = $("<a style='display: none;'/>");
+    var url = window.URL.createObjectURL(blob);
+    a.attr("href", url);
+    a.attr("download", attachment_name);
+    $("body").append(a);
+    a[0].click();
+    window.URL.revokeObjectURL(url);
+    a.remove();
+  }
+
   ns.detect_duplicate_ids_in_dom = function() {
     var ids   = {},
         found = false;
@@ -552,6 +661,15 @@ namespace("kivi", function(ns) {
 
     $input.parent().replaceWith($area);
     $area.focus();
+  };
+
+  ns.set_cursor_position = function(selector, position) {
+    var $input = $(selector);
+    if (position === 'end')
+      position = $input.val().length;
+
+    $input.prop('selectionStart', position);
+    $input.prop('selectionEnd',   position);
   };
 });
 

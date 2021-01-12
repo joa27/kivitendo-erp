@@ -17,7 +17,6 @@ use Carp;
 use Data::Dumper;
 
 use Rose::Object::MakeMethods::Generic (
-  scalar => [ qw(db_args flat_filter) ],
   'scalar --get_set_init' => [ qw(models vc all_employees all_businesses) ],
 );
 
@@ -231,7 +230,11 @@ sub link_to {
     my $vc     = $object->is_sales ? 'customer' : 'vendor';
     my $id     = $object->id;
 
-    return "oe.pl?action=$action&type=$type&vc=$vc&id=$id";
+    if ($::instance_conf->get_feature_experimental_order) {
+      return "controller.pl?action=Order/$action&type=$type&id=$id";
+    } else {
+      return "oe.pl?action=$action&type=$type&vc=$vc&id=$id";
+    }
   }
   if ($object->isa('SL::DB::Part')) {
     my $id     = $object->id;

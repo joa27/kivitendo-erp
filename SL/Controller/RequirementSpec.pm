@@ -23,6 +23,7 @@ use SL::DB::RequirementSpec;
 use SL::Helper::CreatePDF qw();
 use SL::Helper::Flash;
 use SL::Locale::String;
+use SL::System::Process;
 use SL::Template::LaTeX;
 
 use Rose::Object::MakeMethods::Generic
@@ -217,9 +218,16 @@ sub action_revert_to {
 sub action_create_pdf {
   my ($self, %params) = @_;
 
+  my $keep_temp_files = $::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files};
+  my $temp_dir        = File::Temp->newdir(
+    "kivitendo-print-XXXXXX",
+    DIR     => SL::System::Process::exe_dir() . "/" . $::lx_office_conf{paths}->{userspath},
+    CLEANUP => !$keep_temp_files,
+  );
+
   my $base_name       = $self->requirement_spec->type->template_file_name || 'requirement_spec';
-  my @pictures        = $self->prepare_pictures_for_printing;
-  my %result          = SL::Template::LaTeX->parse_and_create_pdf("${base_name}.tex", SELF => $self, rspec => $self->requirement_spec);
+  my @pictures        = $self->prepare_pictures_for_printing($temp_dir->dirname);
+  my %result          = SL::Template::LaTeX->parse_and_create_pdf("${base_name}.tex", SELF => $self, rspec => $self->requirement_spec, userspath => $temp_dir->dirname);
 
   unlink @pictures unless ($::lx_office_conf{debug} || {})->{keep_temp_files};
 
@@ -374,7 +382,7 @@ sub init_includeable_cvar_configs {
 
 sub init_include_cvars {
   my ($self) = @_;
-  return $::form->{include_cvars} if $::form->{include_cvars} && (ref($::form->{include_cvars}) eq 'HASH');
+  return { map { ($_->name => $::form->{"include_cvars_" . $_->name}) }       @{ $self->cvar_configs } } if $::form->{_include_cvars_from_form};
   return { map { ($_->name => ($_->includeable && $_->included_by_default)) } @{ $self->cvar_configs } };
 }
 
@@ -490,9 +498,9 @@ sub prepare_report {
   if (!$is_template) {
     %column_defs = (
       %column_defs,
-      customer      => { raw_data => sub { $self->presenter->customer($_[0]->customer, display => 'table-cell', callback => $callback) },
+      customer      => { raw_data => sub { $_[0]->customer->presenter->customer(display => 'table-cell', callback => $callback) },
                          sub      => sub { $_[0]->customer->name } },
-      projectnumber => { raw_data => sub { $self->presenter->project($_[0]->project, display => 'table-cell', callback => $callback) },
+      projectnumber => { raw_data => sub { $_[0]->project ? $_[0]->project->presenter->project(display => 'table-cell', callback => $callback) : '' },
                          sub      => sub { $_[0]->project_id ? $_[0]->project->projectnumber : '' } },
       status        => { sub      => sub { $_[0]->status->description } },
       type          => { sub      => sub { $_[0]->type->description } },
@@ -516,6 +524,8 @@ sub prepare_report {
     %column_defs = (%column_defs, %cvar_column_defs);
   }
 
+  my @cvar_column_form_names = ('_include_cvars_from_form', map { "include_cvars_" . $_->name } @{ $self->includeable_cvar_configs });
+
   $report->set_options(
     std_column_visibility => 1,
     controller_class      => 'RequirementSpec',
@@ -528,7 +538,7 @@ sub prepare_report {
   );
   $report->set_columns(%column_defs);
   $report->set_column_order(@columns);
-  $report->set_export_options(qw(list filter));
+  $report->set_export_options(qw(list filter), @cvar_column_form_names);
   $report->set_options_from_form;
   $self->models->set_report_generator_sort_options(report => $report, sortable_columns => \@sortable);
 }
@@ -555,7 +565,7 @@ sub render_pasted_text_block {
       ->hide('#text-block-list-empty');
   }
 
-  my $node       = $self->presenter->requirement_spec_text_block_jstree_data($text_block);
+  my $node       = $text_block->presenter->jstree_data;
   my $front_back = $text_block->output_position == 0 ? 'front' : 'back';
   $self->js
     ->jstree->create_node('#tree', "#tb-${front_back}", 'last', $node)
@@ -577,7 +587,7 @@ sub set_default_filter_args {
 sub render_pasted_section {
   my ($self, $item, $parent_id) = @_;
 
-  my $node = $self->presenter->requirement_spec_item_jstree_data($item);
+  my $node = $item->presenter->jstree_data;
   $self->js
     ->jstree->create_node('#tree', $parent_id ? "#fb-${parent_id}" : '#sections', 'last', $node)
     ->jstree->open_node(  '#tree', $parent_id ? "#fb-${parent_id}" : '#sections');
@@ -597,11 +607,11 @@ sub render_first_pasted_section_as_list {
 }
 
 sub prepare_pictures_for_printing {
-  my ($self) = @_;
+  my ($self, $userspath) = @_;
 
   my @files;
-  my $userspath = File::Spec->rel2abs($::lx_office_conf{paths}->{userspath});
-  my $target    =  "${userspath}/kivitendo-print-requirement-spec-picture-" . Common::unique_id() . '-';
+  $userspath ||= SL::System::Process::exe_dir() . "/" . $::lx_office_conf{paths}->{userspath};
+  my $target   = "${userspath}/kivitendo-print-requirement-spec-picture-" . Common::unique_id() . '-';
 
   foreach my $picture (map { @{ $_->pictures } } @{ $self->requirement_spec->text_blocks }) {
     my $output_file_name        = $target . $picture->id . '.' . $picture->get_default_file_name_extension;

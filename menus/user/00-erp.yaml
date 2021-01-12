@@ -11,7 +11,9 @@
 #          ( ) & | are supported.  if binary operator is missing the last
 #          operator in same scope is repeated, or "|" if none used in scope
 #          yet. client config entries can be used as rights by prefixing them
-#          with "client/". If missing, access will be granted.
+#          with "client/".
+#          ! is supported to negate the subsequent expression.
+#          If missing, access will be granted.
 #
 #          Example:
 #            client/feature_default_enabled | ( feature & system )
@@ -32,7 +34,7 @@
   name: Add Customer
   icon: customer_add
   order: 100
-  access: customer_vendor_edit
+  access: customer_vendor_edit|customer_vendor_all_edit
   params:
     action: CustomerVendor/add
     db: customer
@@ -41,7 +43,7 @@
   name: Add Vendor
   icon: vendor_add
   order: 200
-  access: customer_vendor_edit
+  access: customer_vendor_edit|customer_vendor_all_edit
   params:
     action: CustomerVendor/add
     db: vendor
@@ -74,7 +76,7 @@
   name: Add Assortment
   icon: assortment_add
   order: 550
-  access: part_service_assembly_edit & client/feature_experimental
+  access: part_service_assembly_edit & client/feature_experimental_assortment
   params:
     action: Part/add_assortment
 - parent: master_data
@@ -119,7 +121,6 @@
   name: Customers
   icon: customer_report
   order: 100
-  access: customer_vendor_edit
   params:
     action: CustomerVendor/search
     db: customer
@@ -128,7 +129,6 @@
   name: Vendors
   icon: vendor_report
   order: 200
-  access: customer_vendor_edit
   params:
     action: CustomerVendor/search
     db: vendor
@@ -136,7 +136,6 @@
   id: master_data_reports_contacts
   name: Contacts
   order: 300
-  access: customer_vendor_edit
   params:
     action: CustomerVendor/search_contact
     db: customer
@@ -306,7 +305,6 @@
   name: Invoices, Credit Notes & AR Transactions
   icon: invoices_report
   order: 500
-  access: invoice_edit
   module: ar.pl
   params:
     action: search
@@ -476,7 +474,6 @@
   id: ap_reports_vendor_invoices_ap_transactions
   name: Vendor Invoices & AP Transactions
   order: 400
-  access: vendor_invoice_edit
   module: ap.pl
   params:
     action: search
@@ -544,6 +541,13 @@
     action: transfer_warehouse_selection
     trans_type: removal
 - parent: warehouse
+  id: warehouse_stocktaking
+  name: Stocktaking
+  order: 450
+  access: warehouse_management
+  params:
+    action: Inventory/stocktaking
+- parent: warehouse
   id: warehouse_reports
   name: Reports
   order: 500
@@ -571,6 +575,13 @@
   access: warehouse_contents | warehouse_management
   params:
     action: Inventory/stock_usage
+- parent: warehouse_reports
+  id: warehouse_stocktaking_journal
+  name: Stocktaking Journal
+  order: 400
+  access: warehouse_contents | warehouse_management
+  params:
+    action: Inventory/stocktaking_journal
 - id: general_ledger
   name: General Ledger
   icon: gl
@@ -620,13 +631,21 @@
   params:
     action: GoBD/filter
 - parent: general_ledger
-  id: general_ledger_cbob_transactions
-  name: CB/OB Transactions
+  id: year_end_closing
+  name: Year-end closing
   icon: cbob
   order: 470
   access: general_ledger
   params:
-    action: YearEndTransactions/filter
+    action: YearEndTransactions/form
+- parent: general_ledger
+  id: zugferd_import
+  name: Factur-X/ZUGFeRD import
+  icon: cbob
+  order: 485
+  access: ap_transactions
+  params:
+    action: ZUGFeRD/upload_zugferd
 - parent: general_ledger
   id: general_ledger_reports
   name: Reports
@@ -985,11 +1004,11 @@
   name: Productivity
   icon: productivity
   order: 900
-  access: productivity
 - parent: productivity
   id: productivity_show_todo_list
   name: Show TODO list
   order: 100
+  access: productivity
   module: todo.pl
   params:
     action: show_todo_list
@@ -997,6 +1016,7 @@
   id: productivity_add_follow_up
   name: Add Follow-Up
   order: 200
+  access: productivity
   module: fu.pl
   params:
     action: add
@@ -1004,6 +1024,7 @@
   id: productivity_edit_access_rights
   name: Edit Access Rights
   order: 300
+  access: productivity
   module: fu.pl
   params:
     action: edit_access_rights
@@ -1015,6 +1036,7 @@
   id: productivity_reports_follow_ups
   name: Follow-Ups
   order: 100
+  access: productivity
   module: fu.pl
   params:
     action: search
@@ -1022,6 +1044,7 @@
   id: productivity_reports_email_journal
   name: Email journal
   order: 200
+  access: email_journal
   module: controller.pl
   icon: mail_journal
   params:
@@ -1140,6 +1163,13 @@
     action: SimpleSystemSetting/list
     type: price_factor
 - parent: system
+  id: system_greetings
+  name: Greetings
+  order: 1250
+  params:
+    action: SimpleSystemSetting/list
+    type: greeting
+- parent: system
   id: system_departments
   name: Departments
   order: 1300
@@ -1153,6 +1183,20 @@
   params:
     action: SimpleSystemSetting/list
     type: business
+- parent: system
+  id: system_contact_titles
+  name: Contact Titles
+  order: 1420
+  params:
+    action: SimpleSystemSetting/list
+    type: contact_title
+- parent: system
+  id: system_contact_departments
+  name: Contact Departments
+  order: 1430
+  params:
+    action: SimpleSystemSetting/list
+    type: contact_department
 - parent: system
   id: system_project_types
   name: Project Types
@@ -1238,6 +1282,13 @@
   module: generictranslations.pl
   params:
     action: edit_sepa_strings
+- parent: system_languages_and_translations
+  id: system_languages_and_translations_zugferd_notes
+  name: Factur-X/ZUGFeRD notes for each invoice
+  order: 450
+  module: generictranslations.pl
+  params:
+    action: edit_zugferd_notes
 - parent: system_languages_and_translations
   id: system_languages_and_translations_email_strings
   name: Preset email strings
@@ -1330,6 +1381,13 @@
   params:
     action: CsvImport/new
     profile.type: orders
+- parent: system_import_csv
+  id: system_import_csv_delivery_orders
+  name: Delivery Orders
+  order: 720
+  params:
+    action: CsvImport/new
+    profile.type: delivery_orders
 - parent: system_import_csv
   id: system_import_csv_ar_transactions
   name: AR Transactions

@@ -99,8 +99,8 @@ sub link {
   my ($self) = @_;
 
   my $html;
-  $html   = SL::Presenter->get->purchase_invoice($self, display => 'inline') if $self->invoice;
-  $html   = SL::Presenter->get->ap_transaction($self, display => 'inline') if !$self->invoice;
+  $html   = $self->presenter->purchase_invoice(display => 'inline') if $self->invoice;
+  $html   = $self->presenter->ap_transaction(display => 'inline') if !$self->invoice;
 
   return $html;
 }
@@ -182,6 +182,7 @@ sub add_ap_amount_row {
     chart_id   => $params{chart}->id,
     chart_link => $params{chart}->link,
     transdate  => $self->transdate,
+    gldate     => $self->gldate,
     taxkey     => $tax->taxkey,
     tax_id     => $tax->id,
     project_id => $params{project_id},
@@ -196,6 +197,7 @@ sub add_ap_amount_row {
        chart_id   => $tax->chart_id,
        chart_link => $tax->chart->link,
        transdate  => $self->transdate,
+       gldate     => $self->gldate,
        taxkey     => $tax->taxkey,
        tax_id     => $tax->id,
        project_id => $params{project_id},
@@ -210,6 +212,12 @@ sub mark_as_paid {
   my ($self) = @_;
 
   $self->update_attributes(paid => $self->amount);
+}
+
+sub effective_tax_point {
+  my ($self) = @_;
+
+  return $self->tax_point || $self->deliverydate || $self->transdate;
 }
 
 1;

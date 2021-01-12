@@ -37,7 +37,7 @@
   <tr>
     <td align="right">[% LxERP.t8('Storage Type for generated/imported PDF Documents') %]</td>
     <td>[% L.select_tag('defaults.doc_storage_for_documents',
-         [ [ 'None', LxERP.t8('None') ],[ 'Filesystem', LxERP.t8('Files') ],[ 'Webdav', LxERP.t8('WebDAV') ],[ 'ExtDMS', LxERP.t8('ext.DMS') ],[ 'DB', LxERP.t8('Database') ]  ],
+         [ [ 'None', LxERP.t8('None') ],[ 'Filesystem', LxERP.t8('Files') ],[ 'Webdav', LxERP.t8('WebDAV') ] ],
                                default = SELF.defaults.doc_storage_for_documents,
                                onchange="return checkavailable_filebackend(this);") %]</td>
     <td>[% LxERP.t8('Use this storage backend for all generated PDF-Files') %]</td>
@@ -45,7 +45,7 @@
   <tr>
     <td align="right">[% LxERP.t8('Storage Type for Attachments') %]</td>
     <td>[% L.select_tag('defaults.doc_storage_for_attachments',
-         [ [ 'None', LxERP.t8('None') ], [ 'Filesystem', LxERP.t8('Files') ],[ 'Webdav', LxERP.t8('WebDAV') ],[ 'ExtDMS', LxERP.t8('ext.DMS') ],[ 'DB', LxERP.t8('Database') ]  ],
+         [ [ 'None', LxERP.t8('None') ], [ 'Filesystem', LxERP.t8('Files') ],[ 'Webdav', LxERP.t8('WebDAV') ] ],
                                default = SELF.defaults.doc_storage_for_attachments,
                                onchange="return checkavailable_filebackend(this);") %]</td>
     <td>[% LxERP.t8('Use this storage backend for all uploaded attachments') %]</td>
@@ -53,7 +53,7 @@
   <tr>
     <td align="right">[% LxERP.t8('Storage Type for images') %]</td>
     <td>[% L.select_tag('defaults.doc_storage_for_images',
-         [ [ 'None', LxERP.t8('None') ], [ 'Filesystem', LxERP.t8('Files') ],[ 'Webdav', LxERP.t8('WebDAV') ],[ 'ExtDMS', LxERP.t8('ext.DMS') ],[ 'DB', LxERP.t8('Database') ]  ],
+         [ [ 'None', LxERP.t8('None') ], [ 'Filesystem', LxERP.t8('Files') ],[ 'Webdav', LxERP.t8('WebDAV') ] ],
                                default = SELF.defaults.doc_storage_for_images,
                                onchange="return checkavailable_filebackend(this);") %]</td>
     <td>[% LxERP.t8('Use this storage backend for uploaded images') %]</td>
@@ -61,7 +61,7 @@
   <tr>
     <td align="right">[% LxERP.t8('Storage Type for shopimages') %]</td>
     <td>[% L.select_tag('defaults.doc_storage_for_shopimages',
-         [ [ 'None', LxERP.t8('None') ], [ 'Filesystem', LxERP.t8('Files') ],[ 'Webdav', LxERP.t8('WebDAV') ],[ 'ExtDMS', LxERP.t8('ext.DMS') ],[ 'DB', LxERP.t8('Database') ]  ],
+         [ [ 'None', LxERP.t8('None') ], [ 'Filesystem', LxERP.t8('Files') ],[ 'Webdav', LxERP.t8('WebDAV') ] ],
                                default = SELF.defaults.doc_storage_for_shopimages,
                                onchange="return checkavailable_filebackend(this);") %]</td>
     <td>[% LxERP.t8('Use this storage backend for uploaded images') %]</td>
@@ -77,6 +77,21 @@
        [% L.hidden_tag('defaults.doc_max_filesize',SELF.defaults.doc_max_filesize) %] MB</td>
    <td>[% LxERP.t8('The maximum of uploadable filesize in Megabyte') %]</td>
   </tr>
+  <tr>
+   <td align="right">[% LxERP.t8('Preselect Customer/Vendor documents as email attachments') %]</td>
+   <td>[% L.yes_no_tag('defaults.email_attachment_vc_files_checked', SELF.defaults.email_attachment_vc_files_checked) %]</td>
+   <td>[% LxERP.t8('Preselect all documents saved for the current customer/vendor as a mail attachment.') %]</td>
+  </tr>
+  <tr>
+   <td align="right">[% LxERP.t8('Preselect part documents as email attachments') %]</td>
+   <td>[% L.yes_no_tag('defaults.email_attachment_part_files_checked', SELF.defaults.email_attachment_part_files_checked) %]</td>
+   <td>[% LxERP.t8('Preselect all documents for the current selected parts in a record as a mail attachment.') %]</td>
+  </tr>
+  <tr>
+   <td align="right">[% LxERP.t8('Preselect record documents as email attachments') %]</td>
+   <td>[% L.yes_no_tag('defaults.email_attachment_record_files_checked', SELF.defaults.email_attachment_record_files_checked) %]</td>
+   <td>[% LxERP.t8('Preselect all documents saved for the current record as a mail attachment.') %]</td>
+  </tr>
   <tr><td class="listheading" colspan="4">[% LxERP.t8("Storage Backends") %]</td></tr>
   <tr>
    <td align="right">[% LxERP.t8('Files') %]</td>
@@ -87,11 +102,6 @@
    <td align="right">[% LxERP.t8('WebDAV') %]</td>
    <td>[% L.yes_no_tag('defaults.doc_webdav', SELF.defaults.doc_webdav) %]</td>
    <td>[% LxERP.t8('Use WebDAV Storage backend') %]</td>
-  </tr>
-  <tr>
-   <td align="right">[% LxERP.t8('Database') %]</td>
-   <td>[% L.yes_no_tag('defaults.doc_database', SELF.defaults.doc_database, disabled=1) %]</td>
-   <td>[% LxERP.t8('Use Database Storage backend (not implemented yet!)') %]</td>
   </tr>
 
   <tr><td class="listheading" colspan="4">[% LxERP.t8("Reports") %]</td></tr>
@@ -119,16 +129,42 @@
    <td>[% L.yes_no_tag('defaults.vertreter', SELF.defaults.vertreter) %]</td>
    <td>[% LxERP.t8('Representative for Customer') %]</td>
   </tr>
- <tr>
+  <tr>
    <td align="right">[% LxERP.t8('Normalize Customer / Vendor names') %]</td>
    <td>   [% L.yes_no_tag('defaults.normalize_vc_names', SELF.defaults.normalize_vc_names) %]</td>
    <td>[% LxERP.t8('Automatic deletion of leading, trailing and excessive (repetitive) spaces in customer or vendor names') %]</td>
+  </tr>
+  <tr>
+   <td align="right">[% LxERP.t8('Use text field for greetings') %]</td>
+   <td>   [% L.yes_no_tag('defaults.vc_greetings_use_textfield', SELF.defaults.vc_greetings_use_textfield) %]</td>
+   <td>[% LxERP.t8('Use a text field to enter (new) greetings if enabled. Otherwise, only a drop down box is offered.') %]</td>
+  </tr>
+  <tr>
+   <td align="right">[% LxERP.t8('Use text field for title of contacts') %]</td>
+   <td>   [% L.yes_no_tag('defaults.contact_titles_use_textfield', SELF.defaults.contact_titles_use_textfield) %]</td>
+   <td>[% LxERP.t8('Use a text field to enter (new) contact titles if enabled. Otherwise, only a drop down box is offered.') %]</td>
+  </tr>
+  <tr>
+   <td align="right">[% LxERP.t8('Use text field for department of contacts') %]</td>
+   <td>   [% L.yes_no_tag('defaults.contact_departments_use_textfield', SELF.defaults.contact_departments_use_textfield) %]</td>
+   <td>[% LxERP.t8('Use a text field to enter (new) contact departments if enabled. Otherwise, only a drop down box is offered.') %]</td>
   </tr>
 
   <tr>
    <td align="right">[% LxERP.t8('Hourly Rate') %]</td>
    <td>[% L.input_tag('defaults.customer_hourly_rate', LxERP.format_amount(SELF.defaults.customer_hourly_rate, 2), style=style) %]</td>
    <td>[% LxERP.t8('Default hourly rate for new customers') %]</td>
+  </tr>
+
+  <tr>
+   <td align="right">[% LxERP.t8('Customers: VAT ID / taxnumber unique') %]</td>
+   <td>[% L.yes_no_tag('defaults.customer_ustid_taxnummer_unique', SELF.defaults.customer_ustid_taxnummer_unique) %]</td>
+   <td>[% LxERP.t8('Should VAT ID or taxnumber be unique for customers? This is checked when saving a customer\'s master data. One of the fields is sufficient and required.') %]</td>
+  </tr>
+  <tr>
+   <td align="right">[% LxERP.t8('Vendors: VAT ID / taxnumber unique') %]</td>
+   <td>[% L.yes_no_tag('defaults.vendor_ustid_taxnummer_unique', SELF.defaults.vendor_ustid_taxnummer_unique) %]</td>
+   <td>[% LxERP.t8('Should VAT ID or taxnumber be unique for all vendors? This is checked when saving a vendor\'s master data. One of the fields is sufficient and required.') %]</td>
   </tr>
 
   <tr><td class="listheading" colspan="4">[% LxERP.t8("Parts Master Data") %]</td></tr>
@@ -208,6 +244,31 @@
    <td>[% L.yes_no_tag("defaults.order_warn_duplicate_parts", SELF.defaults.order_warn_duplicate_parts) %]</td>
    <td>[% LxERP.t8("If enabled a warning will be shown in sales and purchase orders if there are two or more positions of the same part (new controller only).") %]</td>
   </tr>
+  <tr>
+   <td align="right">[% LxERP.t8("Warn before saving orders without a delivery date") %]</td>
+   <td>[% L.yes_no_tag("defaults.order_warn_no_deliverydate", SELF.defaults.order_warn_no_deliverydate) %]</td>
+   <td>[% LxERP.t8("If enabled a warning will be shown in sales and purchase orders if there the delivery date is empty.") %]</td>
+  </tr>
+  <tr>
+   <td align="right">[% LxERP.t8("For sales delivery orders, warn on workflow to invoice if not stocked out") %]</td>
+   <td>[% L.yes_no_tag("defaults.sales_delivery_order_check_stocked", SELF.defaults.sales_delivery_order_check_stocked) %]</td>
+   <td>[% LxERP.t8("If enabled a warning will be shown in sales delivery orders on workflow to invoices if positions are not stocked out.") %]</td>
+  </tr>
+  <tr>
+  <tr>
+   <td align="right">[% LxERP.t8("For purchase delivery orders, warn on workflow to invoice if not stocked in") %]</td>
+   <td>[% L.yes_no_tag("defaults.purchase_delivery_order_check_stocked", SELF.defaults.purchase_delivery_order_check_stocked) %]</td>
+   <td>[% LxERP.t8("If enabled a warning will be shown in purchase delivery orders on workflow to invoices if positions are not stocked in.") %]</td>
+  </tr>
+  <tr>
+  <tr>
+   <td align="right">[% LxERP.t8("Create sales invoices with Factur-X/ZUGFeRD data") %]</td>
+   <td>[% L.select_tag("defaults.create_zugferd_invoices", SELF.zugferd_settings, default=SELF.defaults.create_zugferd_invoices) %]</td>
+   <td>
+     [% LxERP.t8("If enabled Factur-X/ZUGFeRD conformant sales invoice PDFs will be created.") %]
+     [% LxERP.t8("If the test mode is enabled, the Factur-X/ZUGFeRD invoices will be flagged so that they're only fit to be used for testing purposes.") %]
+   </td>
+  </tr>
 
   <tr><td class="listheading" colspan="4">[% LxERP.t8("E-mail") %]</td></tr>
 
@@ -236,14 +297,20 @@
    </td>
    <td>[% 'Sent emails can be optionally stored in the database with or without their attachments.' | $T8 %]</td>
   </tr>
+  <tr>
+   <td align="right">[% LxERP.t8('Invoice email settings') %]</td>
+   <td>
+     [% L.select_tag('defaults.invoice_mail_settings', [ [ 'cp', LxERP.t8('Contact Person') ],[ 'invoice_mail', LxERP.t8('Invoice email') ],[ 'invoice_mail_cc_cp', LxERP.t8('Invoice email and Contact Person') ]  ], default=SELF.defaults.invoice_mail_settings) %]
+   </td>
+   <td>[% 'The invoice recipient can either be a selected contact person (default) or the email adress set in the master data of the customer. Additionally a contact persons mail and the company\'s invoicing mail can be combined.' | $T8 %]</td>
+  </tr>
 
   <tr><td class="listheading" colspan="4">[% LxERP.t8("Requirement Specs") %]</td></tr>
-
   <tr>
    <td align="right">[% LxERP.t8('Default article for converting into quotations and orders') %]</td>
    <td>
     [% IF SELF.h_unit_name %]
-     [% P.part_picker('defaults.requirement_spec_section_order_part_id', SELF.defaults.requirement_spec_section_order_part_id, convertible_unit=SELF.h_unit_name, style=style) %]
+     [% P.part.picker('defaults.requirement_spec_section_order_part_id', SELF.defaults.requirement_spec_section_order_part_id, convertible_unit=SELF.h_unit_name, style=style) %]
     [% ELSE %]
      [% LxERP.t8("Error: this feature requires that articles with a time-based unit (e.g. 'h' or 'min') exist.") %]
     [% END %]
@@ -253,7 +320,7 @@
   <tr><td class="listheading" colspan="4">[% LxERP.t8('Transport and service costs reminder') %]</td></tr>
  <tr>
   <td align="right">[% LxERP.t8('Default transport article number') %]</td>
-  <td>[% L.part_picker('defaults.transport_cost_reminder_article_number_id', SELF.defaults.transport_cost_reminder_article_number_id, style=style) %]</td>
+  <td>[% P.part.picker('defaults.transport_cost_reminder_article_number_id', SELF.defaults.transport_cost_reminder_article_number_id, style=style) %]</td>
    <td>[% LxERP.t8('Before saving a sales order, this article will be checked and a warning is generated.') %]</td>
  </tr>
 
@@ -302,12 +369,26 @@
    <td align="right">[% LxERP.t8('Add Customer/Vendor Number as a reference add-on for SEPA export.') %]</td>
    <td>[% L.yes_no_tag('defaults.sepa_reference_add_vc_vc_id', SELF.defaults.sepa_reference_add_vc_vc_id) %]</td>
   </tr>
-
+  <tr>
+   <td align="right">[% LxERP.t8('Set the invoice duedate as the default execution date for SEPA export.') %]</td>
+   <td>[% L.yes_no_tag('defaults.sepa_set_duedate_as_default_exec_date', SELF.defaults.sepa_set_duedate_as_default_exec_date) %]</td>
+  </tr>
+  <tr>
+   <td align="right">[% LxERP.t8('Set the invoice skonto date (if exists) as the default execution date for SEPA export.') %]</td>
+   <td>[% L.yes_no_tag('defaults.sepa_set_skonto_date_as_default_exec_date', SELF.defaults.sepa_set_skonto_date_as_default_exec_date) %]</td>
+  </tr>
+  <tr>
+   <td align="right">[% LxERP.t8('In addition to the above date functions, subtract the following amount of days from the calculated date as a buffer.') %]</td>
+   <td>[% L.input_tag('defaults.sepa_set_skonto_date_buffer_in_days', LxERP.format_amount(SELF.defaults.sepa_set_skonto_date_buffer_in_days, 0), style=style) %]</td>
+  </tr>
   <tr><td class="listheading" colspan="4">[% LxERP.t8("Experimental Features") %]</td></tr>
   <tr>
-   <td align="right">[% LxERP.t8('Enable experimental features') %]</td>
-   <td>[% L.yes_no_tag('defaults.feature_experimental', SELF.defaults.feature_experimental) %]</td>
-   <td>[% LxERP.t8('Experimental features are:') %] [% LxERP.t8('new order controller') %], [% LxERP.t8('Assortment') %]</td>
+   <td align="right">[% LxERP.t8('new order controller') %]</td>
+   <td>[% L.yes_no_tag('defaults.feature_experimental_order', SELF.defaults.feature_experimental_order) %]</td>
+  </tr>
+  <tr>
+   <td align="right">[% LxERP.t8('Assortment') %]</td>
+   <td>[% L.yes_no_tag('defaults.feature_experimental_assortment', SELF.defaults.feature_experimental_assortment) %]</td>
   </tr>
 
  <tr><td class="listheading" colspan="4">[% LxERP.t8("Shipped Quantity Algorithm") %]</td></tr>
@@ -328,6 +409,40 @@
     [% L.multiselect2side("defaults_shipped_qty_item_identity_fields", labelsx=LxERP.t8("Available identity fields"), labeldx=LxERP.t8("Selected identity fields")) %]</td>
   <td>[% LxERP.t8('Only applies if the previous is set to true. When filling up unlinked positions, consider them matches if ALL of these fields match. For example, in a business with variants that are defined by a special description, description needs to be part of the identity. If delivering several similar order positions by delivery date is common, reqdate should be included in the identity. Serialnumber is useful when the serialnumber in the order and delivery order has to match.') %]</td>
  </tr>
+
+ <tr><td class="listheading" colspan="4">[% 'Displayable Name Preferences' | $T8 %]</td></tr>
+ [% FOREACH module=SELF.displayable_name_specs_by_module.keys.sort %]
+ [%- SET spec=SELF.displayable_name_specs_by_module.$module -%]
+  <tr>
+    <td align="right">[% spec.specs.title %]</td>
+    <td>
+      <table>
+        <tr>
+          <th align="left" class="listheading">[% 'Option' | $T8 %]</th>
+          <th align="left" class="listheading">[% 'Name'   | $T8 %]</th>
+        </tr>
+        [% FOREACH option=spec.specs.options %]
+        <tr>
+          <td>[% option.title %]</td>
+          <td>[% option.name  %]</td>
+        </tr>
+        [% END %]
+        <tr>
+          <th align="left">[% 'Display' | $T8 %]:</th>
+          <td>
+            [% L.hidden_tag("displayable_name_specs[+].module", module) %]
+            [% L.input_tag("displayable_name_specs[].default", spec.prefs.get_default, size=50) %]
+          </td>
+        </tr>
+      </table>
+    </td>
+    [% IF loop.first %]
+    <td>[% 'The display of (mainly) picker results can be configured. To insert the value of one option use <%Name%>.' | $T8 %]<br>
+        [% 'E.g. "<%customernumber%> <%name%>"' | $T8 %]
+    </td>
+    [% END %]
+  </tr>
+  [% END %]
 
 
 </table>

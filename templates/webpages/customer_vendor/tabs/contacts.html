@@ -23,7 +23,10 @@
         %]
       </td>
     </tr>
-
+    <tr>
+      <th align="right" nowrap>[% 'Main Contact Person' | $T8 %]</th>
+      <td>[% L.yes_no_tag('contact.cp_main', SELF.contact.cp_main) %]</td>
+    </tr>
     <tr>
       <th align="right" nowrap>[% 'Gender' | $T8 %]</th>
 
@@ -42,8 +45,12 @@
       <th align="right" nowrap>[% 'Title' | $T8 %]</th>
 
       <td>
-        [% L.input_tag('contact.cp_title', SELF.contact.cp_title, size = 40) %]
-        [% L.select_tag('contact_cp_title_select', SELF.all_titles, with_empty = 1, onchange = '$("#contact_cp_title").val(this.value);') %]
+        [%- IF INSTANCE_CONF.get_contact_titles_use_textfield -%]
+          [% L.input_tag('contact.cp_title', SELF.contact.cp_title, size = 40) %]
+          [% L.select_tag('contact_cp_title_select', SELF.all_contact_titles, default = SELF.contact.cp_title, value_key = 'description', title_key = 'description', with_empty = 1, onchange = '$("#contact_cp_title").val(this.value);') %]
+        [%- ELSE -%]
+          [% L.select_tag('contact.cp_title', SELF.all_contact_titles, default = SELF.contact.cp_title, value_key = 'description', title_key = 'description', with_empty = 1) %]
+        [%- END -%]
       </td>
     </tr>
 
@@ -51,8 +58,12 @@
       <th align="right" nowrap>[% 'Department' | $T8 %]</th>
 
       <td>
-        [% L.input_tag('contact.cp_abteilung', SELF.contact.cp_abteilung, size = 40) %]
-        [% L.select_tag('contact_cp_abteilung_select', SELF.all_departments, default = SELF.contact.cp_abteilung,  with_empty = 1, onchange = '$("#contact_cp_abteilung").val(this.value);') %]
+        [%- IF INSTANCE_CONF.get_contact_departments_use_textfield -%]
+          [% L.input_tag('contact.cp_abteilung', SELF.contact.cp_abteilung, size = 40) %]
+          [% L.select_tag('contact_cp_abteilung_select', SELF.all_contact_departments, default = SELF.contact.cp_abteilung, value_key = 'description', title_key = 'description', with_empty = 1, onchange = '$("#contact_cp_abteilung").val(this.value);') %]
+        [%- ELSE -%]
+          [% L.select_tag('contact.cp_abteilung', SELF.all_contact_departments, default = SELF.contact.cp_abteilung, value_key = 'description', title_key = 'description', with_empty = 1) %]
+        [%- END -%]
       </td>
     </tr>
 
@@ -224,7 +235,7 @@
 
   </table>
 
-  [% L.button_tag('submitInputButton(this);', LxERP.t8('Delete Contact'), name = 'action_delete_contact', class = 'submit') %]
+  [% L.button_tag('submitInputButton("delete_contact");', LxERP.t8('Delete Contact'), id = 'action_delete_contact', class = 'submit') %]
   [% IF ( !SELF.contact.cp_id ) %]
     <script type="text/javascript">
       $('#action_delete_contact').hide();

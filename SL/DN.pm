@@ -37,7 +37,9 @@ package DN;
 
 use SL::Common;
 use SL::DBUtils;
+use SL::DB::AuthUser;
 use SL::DB::Default;
+use SL::DB::Employee;
 use SL::GenericTranslations;
 use SL::IS;
 use SL::Mailer;
@@ -48,6 +50,8 @@ use SL::DB::Language;
 use SL::TransNumber;
 use SL::Util qw(trim);
 use SL::DB;
+
+use File::Copy;
 
 use strict;
 
@@ -71,9 +75,10 @@ sub get_config {
   }
 
   $query =
-    qq|SELECT dunning_ar_amount_fee, dunning_ar_amount_interest, dunning_ar
+    qq|SELECT dunning_ar_amount_fee, dunning_ar_amount_interest, dunning_ar, dunning_creator
        FROM defaults|;
-  ($form->{AR_amount_fee}, $form->{AR_amount_interest}, $form->{AR}) = selectrow_query($form, $dbh, $query);
+  ($form->{AR_amount_fee}, $form->{AR_amount_interest}, $form->{AR}, $form->{dunning_creator})
+    = selectrow_query($form, $dbh, $query);
 
   $main::lxdebug->leave_sub();
 }
@@ -106,7 +111,8 @@ sub _save_config {
                  $form->{"template_$i"}, $form->{"fee_$i"}, $form->{"interest_rate_$i"},
                  $form->{"active_$i"} ? 't' : 'f', $form->{"auto_$i"} ? 't' : 'f', $form->{"email_$i"} ? 't' : 'f',
                  $form->{"email_attachment_$i"} ? 't' : 'f', conv_i($form->{"payment_terms_$i"}), conv_i($form->{"terms_$i"}),
-                 $form->{"create_invoices_for_fees_$i"} ? 't' : 'f');
+                 $form->{"create_invoices_for_fees_$i"} ? 't' : 'f',
+                 $form->{"print_original_invoice_$i"} ? 't' : 'f');
       if ($form->{"id_$i"}) {
         $query =
           qq|UPDATE dunning_config SET
@@ -115,7 +121,8 @@ sub _save_config {
                template = ?, fee = ?, interest_rate = ?,
                active = ?, auto = ?, email = ?,
                email_attachment = ?, payment_terms = ?, terms = ?,
-               create_invoices_for_fees = ?
+               create_invoices_for_fees = ?,
+               print_original_invoice = ?
              WHERE id = ?|;
         push(@values, conv_i($form->{"id_$i"}));
       } else {
@@ -123,8 +130,9 @@ sub _save_config {
           qq|INSERT INTO dunning_config
                (dunning_level, dunning_description, email_subject, email_body,
                 template, fee, interest_rate, active, auto, email,
-                email_attachment, payment_terms, terms, create_invoices_for_fees)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)|;
+                email_attachment, payment_terms, terms, create_invoices_for_fees,
+                print_original_invoice)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)|;
       }
       do_query($form, $dbh, $query, @values);
     }
@@ -135,8 +143,10 @@ sub _save_config {
     }
   }
 
-  $query  = qq|UPDATE defaults SET dunning_ar_amount_fee = ?, dunning_ar_amount_interest = ?, dunning_ar = ?|;
-  @values = (conv_i($form->{AR_amount_fee}), conv_i($form->{AR_amount_interest}), conv_i($form->{AR}));
+  $query  = qq|UPDATE defaults SET dunning_ar_amount_fee = ?, dunning_ar_amount_interest = ?, dunning_ar = ?,
+               dunning_creator = ?|;
+  @values = (conv_i($form->{AR_amount_fee}), conv_i($form->{AR_amount_interest}), conv_i($form->{AR}),
+             $form->{dunning_creator});
   do_query($form, $dbh, $query, @values);
 
   return 1;
@@ -333,9 +343,19 @@ sub _save_dunning {
 
   my @invoice_ids;
   my ($next_dunning_config_id, $customer_id);
-  my $send_email = 0;
+  my ($send_email, $print_invoice) = (0, 0);
 
   foreach my $row (@{ $rows }) {
+    if ($row->{credit_note}) {
+      my $i = $row->{row};
+      %{ $form->{LIST_CREDIT_NOTES}{$row->{customer_id}}{$row->{invoice_id}} } = (
+        open_amount => $form->{"open_amount_$i"},
+        amount      => $form->{"amount_$i"},
+        invnumber   => $form->{"invnumber_$i"},
+        invdate     => $form->{"invdate_$i"},
+      );
+      next;
+    }
     push @invoice_ids, $row->{invoice_id};
     $next_dunning_config_id = $row->{next_dunning_config_id};
     $customer_id            = $row->{customer_id};
@@ -343,7 +363,8 @@ sub _save_dunning {
     @values = ($row->{next_dunning_config_id}, $row->{invoice_id});
     do_statement($form, $h_update_ar, $q_update_ar, @values);
 
-    $send_email |= $row->{email};
+    $send_email       |= $row->{email};
+    $print_invoice    |= $row->{print_invoice};
 
     my $next_config_id = conv_i($row->{next_dunning_config_id});
     my $invoice_id     = conv_i($row->{invoice_id});
@@ -353,6 +374,9 @@ sub _save_dunning {
                $next_config_id, $next_config_id);
     do_statement($form, $h_insert_dunning, $q_insert_dunning, @values);
   }
+  # die this transaction, because for this customer only credit notes are
+  # selected ...
+  return unless $customer_id;
 
   $h_update_ar->finish();
   $h_insert_dunning->finish();
@@ -366,6 +390,9 @@ sub _save_dunning {
   $self->print_invoice_for_fees($myconfig, $form, $dunning_id, $dbh);
   $self->print_dunning($myconfig, $form, $dunning_id, $dbh);
 
+  if ($print_invoice) {
+    $self->print_original_invoices($myconfig, $form, $_, $dbh) for @invoice_ids;
+  }
 
   if ($send_email) {
     $self->send_email($myconfig, $form, $dunning_id, $dbh);
@@ -382,8 +409,8 @@ sub send_email {
   my $query =
     qq|SELECT
          dcfg.email_body,     dcfg.email_subject, dcfg.email_attachment,
-         c.email AS recipient
-
+         COALESCE (NULLIF(c.invoice_mail, ''), c.email) AS recipient, c.name,
+         (SELECT login from employee where id = ar.employee_id) as invoice_employee_login
        FROM dunning d
        LEFT JOIN dunning_config dcfg ON (d.dunning_config_id = dcfg.id)
        LEFT JOIN ar                  ON (d.trans_id          = ar.id)
@@ -392,20 +419,38 @@ sub send_email {
        LIMIT 1|;
   my $ref = selectfirst_hashref_query($form, $dbh, $query, $dunning_id);
 
-  if (!$ref || !$ref->{recipient} || !$myconfig->{email}) {
+  # without a recipient, we cannot send a mail
+  if (!$ref || !$ref->{recipient}) {
     $main::lxdebug->leave_sub();
-    return;
+    die $main::locale->text("No email recipient for customer #1 defined.", $ref->{name});
+  }
+
+  # without a sender we cannot send a mail
+  # two cases: check mail from 1. current user OR  2. employee who created the invoice
+  my ($from, $sign);
+  if ($::instance_conf->get_dunning_creator eq 'current_employee') {
+    $from = $myconfig->{email};
+    die $main::locale->text('No email for current user #1 defined.', $myconfig->{name}) unless $from;
+  } else {
+    eval {
+      $from = SL::DB::Manager::AuthUser->find_by(login =>  $ref->{invoice_employee_login})->get_config_value("email");
+      $sign = SL::DB::Manager::AuthUser->find_by(login =>  $ref->{invoice_employee_login})->get_config_value("signature");
+      die unless ($from);
+      1;
+    } or die $main::locale->text('No email for user with login #1 defined.', $ref->{invoice_employee_login});
   }
 
   my $template     = SL::Template::create(type => 'PlainText', form => $form, myconfig => $myconfig);
   my $mail         = Mailer->new();
   $mail->{bcc}     = $form->get_bcc_defaults($myconfig, $form->{bcc});
-  $mail->{from}    = $myconfig->{email};
+  $mail->{from}    = $from;
   $mail->{to}      = $ref->{recipient};
   $mail->{subject} = $template->parse_block($ref->{email_subject});
   $mail->{message} = $template->parse_block($ref->{email_body});
-
+  my $sign_backup  = $::myconfig{signature};
+  $::myconfig{signature} = $sign if $sign;
   $mail->{message} .= $form->create_email_signature();
+  $::myconfig{signature} = $sign_backup if $sign;
 
   $mail->{message} =~ s/\r\n/\n/g;
 
@@ -511,6 +556,11 @@ sub get_invoices {
     push(@values, like($form->{customer}));
   }
 
+  if ($form->{department_id}) {
+    $where .= qq| AND (a.department_id = ?)|;
+    push(@values, $form->{department_id});
+  }
+
   my %columns = (
     "ordnumber" => "a.ordnumber",
     "invnumber" => "a.invnumber",
@@ -543,6 +593,7 @@ sub get_invoices {
   if (!$form->{l_include_direct_debit}) {
     $where .= qq| AND NOT COALESCE(a.direct_debit, FALSE) |;
   }
+  my $paid = ($form->{l_include_credit_notes}) ? "WHERE (a.paid <> a.amount)" : "WHERE (a.paid < a.amount)";
 
   $query =
     qq|SELECT
@@ -550,6 +601,7 @@ sub get_invoices {
          ct.name AS customername, a.customer_id, a.duedate,
          a.amount - a.paid AS open_amount,
          a.direct_debit,
+         dep.description as departmentname,
 
          cfg.dunning_description, cfg.dunning_level,
 
@@ -562,11 +614,12 @@ sub get_invoices {
 
          nextcfg.dunning_description AS next_dunning_description,
          nextcfg.id AS next_dunning_config_id,
-         nextcfg.terms, nextcfg.active, nextcfg.email
+         nextcfg.terms, nextcfg.active, nextcfg.email, nextcfg.print_original_invoice
 
        FROM ar a
 
        LEFT JOIN customer ct ON (a.customer_id = ct.id)
+       LEFT JOIN department dep ON (a.department_id = dep.id)
        LEFT JOIN dunning_config cfg ON (a.dunning_config_id = cfg.id)
        LEFT JOIN dunning_config nextcfg ON
          (nextcfg.id =
@@ -589,9 +642,8 @@ sub get_invoices {
          WHERE (d2.trans_id      = a.id)
            AND (d2.dunning_level = cfg.dunning_level)
        ))
-
-       WHERE (a.paid < a.amount)
-         AND (a.duedate < current_date)
+        $paid
+        AND (a.duedate < current_date)
 
        $where
 
@@ -602,7 +654,7 @@ sub get_invoices {
 
   while (my $ref = $sth->fetchrow_hashref("NAME_lc")) {
     next if ($ref->{pastdue} < $ref->{terms});
-
+    $ref->{credit_note} = 1 if ($ref->{amount} < 0 && $form->{l_include_credit_notes});
     $ref->{interest} = $form->round_amount($ref->{interest}, 2);
     push(@{ $form->{DUNNINGS} }, $ref);
   }
@@ -830,6 +882,14 @@ sub print_dunning {
   }
   $sth->finish();
 
+  # if we have some credit notes to add, do a safety check on the first customer id
+  # and add one entry for each credit note
+  if ($form->{LIST_CREDIT_NOTES} && $form->{LIST_CREDIT_NOTES}->{$form->{TEMPLATE_ARRAYS}->{"dn_customer_id"}[0]}) {
+    my $first_customer_id = $form->{TEMPLATE_ARRAYS}->{"dn_customer_id"}[0];
+    while ( my ($cred_id, $value) = each(%{ $form->{LIST_CREDIT_NOTES}->{$first_customer_id} } ) ) {
+      map { push @{ $form->{TEMPLATE_ARRAYS}->{"dn_$_"} }, $value->{$_} } keys %{ $value };
+    }
+  }
   $query =
     qq|SELECT
          c.id AS customer_id, c.name,         c.street,       c.zipcode,   c.city,
@@ -879,8 +939,16 @@ sub print_dunning {
   $form->{interest_rate}     = $form->format_amount($myconfig, $ref->{interest_rate} * 100);
   $form->{fee}               = $form->format_amount($myconfig, $ref->{fee}, 2);
   $form->{total_interest}    = $form->format_amount($myconfig, $form->round_amount($ref->{total_interest}, 2), 2);
-  $form->{total_open_amount} = $form->format_amount($myconfig, $form->round_amount($ref->{total_open_amount}, 2), 2);
-  $form->{total_amount}      = $form->format_amount($myconfig, $form->round_amount($ref->{fee} + $ref->{total_interest} + $ref->{total_open_amount}, 2), 2);
+  my $total_open_amount      = $ref->{total_open_amount};
+  if ($form->{l_include_credit_notes}) {
+    # a bit stupid, but redo calc because of credit notes
+    $total_open_amount      = 0;
+    foreach my $amount (@{ $form->{TEMPLATE_ARRAYS}->{dn_open_amount} }) {
+      $total_open_amount += $form->parse_amount($myconfig, $amount, 2);
+    }
+  }
+  $form->{total_open_amount} = $form->format_amount($myconfig, $form->round_amount($total_open_amount, 2), 2);
+  $form->{total_amount}      = $form->format_amount($myconfig, $form->round_amount($ref->{fee} + $ref->{total_interest} + $total_open_amount, 2), 2);
 
   $::form->format_dates($output_dateformat, $output_longdates,
     qw(dn_dunning_date dn_dunning_duedate dn_transdate dn_duedate
@@ -907,7 +975,11 @@ sub print_dunning {
   push @{ $form->{DUNNING_PDFS_EMAIL} }, { 'path' => "${spool}/$filename",
                                            'name'     => $form->get_formname_translation('dunning') . "_${dunning_id}.pdf" };
 
-  $form->get_employee_data('prefix' => 'employee', 'id' => $form->{employee_id});
+  my $employee_id = ($::instance_conf->get_dunning_creator eq 'invoice_employee') ?
+                      $form->{employee_id}                                        :
+                      SL::DB::Manager::Employee->current->id;
+
+  $form->get_employee_data('prefix' => 'employee', 'id' => $employee_id);
   $form->get_employee_data('prefix' => 'salesman', 'id' => $form->{salesman_id});
 
   $form->{attachment_type}    = "dunning";
@@ -1040,6 +1112,53 @@ sub set_customer_cvars {
     $form->{"cp_cvar_$_->{name}"} = $_->{value} for @{ $custom_variables };
   }
 
+}
+
+sub print_original_invoices {
+  my ($self, $myconfig, $form, $invoice_id) = @_;
+  # get one invoice as object and print to pdf
+  my $invoice = SL::DB::Invoice->new(id => $invoice_id)->load;
+
+  die "Invalid invoice object" unless ref($invoice) eq 'SL::DB::Invoice';
+
+  my $print_form          = Form->new('');
+  $print_form->{type}     = 'invoice';
+  $print_form->{formname} = 'invoice',
+  $print_form->{format}   = 'pdf',
+  $print_form->{media}    = 'file';
+  # no language override, should always be the object's language
+  $invoice->flatten_to_form($print_form, format_amounts => 1);
+  for my $i (1 .. $print_form->{rowcount}) {
+    $print_form->{"sellprice_$i"} = $print_form->{"fxsellprice_$i"};
+  }
+  $print_form->prepare_for_printing;
+
+  my $filename = SL::Helper::CreatePDF->create_pdf(
+                   template               => 'invoice.tex',
+                   variables              => $print_form,
+                   return                 => 'file_name',
+                   variable_content_types => {
+                     longdescription => 'html',
+                     partnotes       => 'html',
+                     notes           => 'html',
+                   },
+  );
+
+  my $spool       = $::lx_office_conf{paths}->{spool};
+  my ($volume, $directory, $file_name) = File::Spec->splitpath($filename);
+  my $full_file_name                   = File::Spec->catfile($spool, $file_name);
+
+  move($filename, $full_file_name) or die "The move operation failed: $!";
+
+  # form get_formname_translation should use language_id_$i
+  my $saved_reicpient_locale = $form->{recipient_locale};
+  $form->{recipient_locale}  = $invoice->language;
+
+  push @{ $form->{DUNNING_PDFS} }, $file_name;
+  push @{ $form->{DUNNING_PDFS_EMAIL} }, { 'path' => "${spool}/$file_name",
+                                           'name' => $form->get_formname_translation('invoice') . "_" . $invoice->invnumber . ".pdf" };
+
+  $form->{recipient_locale}  = $saved_reicpient_locale;
 }
 
 1;

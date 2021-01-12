@@ -170,8 +170,9 @@ namespace('kivi.SalesPurchase', function(ns) {
     $('#shiptoname').focus();
   };
 
-  this.submit_custom_shipto = function() {
-    $('#shipto_id').val('');
+  this.submit_custom_shipto = function(id_selector) {
+    id_selector = id_selector || '#shipto_id';
+    $(id_selector).val('');
     $('#shipto_dialog').data('confirmed', true);
     $('#shipto_dialog').dialog('close');
   };
@@ -268,21 +269,23 @@ namespace('kivi.SalesPurchase', function(ns) {
 
     var vc   = $('#vc').val();
     var data = {
-      action:      'show_sales_purchase_email_dialog',
-      cp_id:       $('#cp_id').val(),
-      donumber:    $('#donumber').val(),
-      format:      $('#format').val(),
-      formname:    $('#formname').val(),
-      id:          $('#id').val(),
-      invnumber:   $('#invnumber').val(),
-      language_id: $('#language_id').val(),
-      media:       'email',
-      ordnumber:   $('#ordnumber').val(),
-      rowcount:    $('#rowcount').val(),
-      quonumber:   $('#quonumber').val(),
-      type:        $('#type').val(),
-      vc:          vc,
-      vc_id:       $('#' + vc + '_id').val(),
+      action:       'show_sales_purchase_email_dialog',
+      cp_id:        $('#cp_id').val(),
+      direct_debit: $('#direct_debit').prop('checked') ? 1 : 0,
+      donumber:     $('#donumber').val(),
+      format:       $('#format').val(),
+      formname:     $('#formname').val(),
+      id:           $('#id').val(),
+      invnumber:    $('#invnumber').val(),
+      language_id:  $('#language_id').val(),
+      media:        'email',
+      ordnumber:    $('#ordnumber').val(),
+      cusordnumber: $('#cusordnumber').val(),
+      rowcount:     $('#rowcount').val(),
+      quonumber:    $('#quonumber').val(),
+      type:         $('#type').val(),
+      vc:           vc,
+      vc_id:        $('#' + vc + '_id').val(),
     };
 
     $('[name^=id_],[name^=partnumber_]').each(function(idx, elt) {

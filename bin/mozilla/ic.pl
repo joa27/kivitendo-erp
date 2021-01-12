@@ -41,6 +41,7 @@ use SL::CVar;
 use SL::IC;
 use SL::Helper::Flash qw(flash);
 use SL::HTML::Util;
+use SL::Presenter::Part;
 use SL::ReportGenerator;
 
 #use SL::PE;
@@ -202,6 +203,8 @@ sub generate_report {
     'projectdescription' => { 'text' => $locale->text('Project Description'), },
     'warehouse'          => { 'text' => $locale->text('Default Warehouse'), },
     'bin'                => { 'text' => $locale->text('Default Bin'), },
+    'make'               => { 'text' => $locale->text('Make'), },
+    'model'              => { 'text' => $locale->text('Model'), },
   );
 
   $revers     = $form->{revers};
@@ -280,6 +283,8 @@ sub generate_report {
     description   => $locale->text('Part Description') . ": '$form->{description}'",
     make          => $locale->text('Make')             . ": '$form->{make}'",
     model         => $locale->text('Model')            . ": '$form->{model}'",
+    customername  => $locale->text('Customer')         . ": '$form->{customername}'",
+    customernumber=> $locale->text('Customer Part Number').": '$form->{customernumber}'",
     drawing       => $locale->text('Drawing')          . ": '$form->{drawing}'",
     microfiche    => $locale->text('Microfiche')       . ": '$form->{microfiche}'",
     l_soldtotal   => $locale->text('Qty in Selected Records'),
@@ -378,7 +383,7 @@ sub generate_report {
 
   my @columns = qw(
     partnumber type_and_classific description notes partsgroup warehouse bin
-    onhand rop soldtotal unit listprice
+    make model onhand rop soldtotal unit listprice
     linetotallistprice sellprice linetotalsellprice lastcost linetotallastcost
     priceupdate weight image drawing microfiche invnumber ordnumber quonumber
     transdate name serialnumber deliverydate ean projectnumber projectdescription
@@ -415,6 +420,8 @@ sub generate_report {
     @itemstatus_keys,
     @callback_keys,
     map({ "cvar_$_->{name}" } @searchable_custom_variables),
+    map({'cvar_'. $_->{name} .'_from'} grep({$_->{type} eq 'date'} @searchable_custom_variables)),
+    map({'cvar_'. $_->{name} .'_to'}   grep({$_->{type} eq 'date'} @searchable_custom_variables)),
     map({'cvar_'. $_->{name} .'_qtyop'} grep({$_->{type} eq 'number'} @searchable_custom_variables)),
     map({ "l_$_" } @columns),
   );
@@ -538,8 +545,17 @@ sub generate_report {
       # | ist bestellt  | Von Kunden bestellt |  -> edit_oe_ord_link
       # | Anfrage       | Angebot             |  -> edit_oe_quo_link
 
-      my $edit_oe_ord_link = build_std_url("script=oe.pl", 'action=edit', 'type=' . E($ref->{cv} eq 'vendor' ? 'purchase_order' : 'sales_order'), 'id=' . E($ref->{trans_id}), 'callback');
-      my $edit_oe_quo_link = build_std_url("script=oe.pl", 'action=edit', 'type=' . E($ref->{cv} eq 'vendor' ? 'request_quotation' : 'sales_quotation'), 'id=' . E($ref->{trans_id}), 'callback');
+      my $edit_oe_ord_link = ($::instance_conf->get_feature_experimental_order)
+                           ? build_std_url("script=controller.pl", 'action=Order/edit',
+                                           'type=' . E($ref->{cv} eq 'vendor' ? 'purchase_order' : 'sales_order'),        'id=' . E($ref->{trans_id}), 'callback')
+                           : build_std_url("script=oe.pl",         'action=edit',
+                                           'type=' . E($ref->{cv} eq 'vendor' ? 'purchase_order' : 'sales_order'),        'id=' . E($ref->{trans_id}), 'callback');
+
+      my $edit_oe_quo_link = ($::instance_conf->get_feature_experimental_order)
+                           ? build_std_url("script=controller.pl", 'action=Order/edit',
+                                           'type=' . E($ref->{cv} eq 'vendor' ? 'request_quotation' : 'sales_quotation'), 'id=' . E($ref->{trans_id}), 'callback')
+                           : build_std_url("script=oe.pl",         'action=edit',
+                                           'type=' . E($ref->{cv} eq 'vendor' ? 'request_quotation' : 'sales_quotation'), 'id=' . E($ref->{trans_id}), 'callback');
 
       $row->{ordnumber}{link} = $edit_oe_ord_link;
       $row->{quonumber}{link} = $edit_oe_quo_link if (!$ref->{ordnumber});
@@ -556,8 +572,8 @@ sub generate_report {
     map { $row->{$_}{link} = $ref->{$_} } qw(drawing microfiche);
 
     $row->{notes}{data} = SL::HTML::Util->strip($ref->{notes});
-    $row->{type_and_classific}{data} = $::request->presenter->type_abbreviation($ref->{part_type}).
-                                       $::request->presenter->classification_abbreviation($ref->{classification_id});
+    $row->{type_and_classific}{data} = SL::Presenter::Part::type_abbreviation($ref->{part_type}).
+                                       SL::Presenter::Part::classification_abbreviation($ref->{classification_id});
 
     $report->add_data($row);
 

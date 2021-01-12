@@ -15,14 +15,14 @@ use SL::DB::Order;
 use SL::DB::Printer;
 use SL::Helper::MassPrintCreatePDF qw(:all);
 use SL::Helper::CreatePDF qw(:all);
-use SL::Helper::File qw(store_pdf append_general_pdf_attachments);
+use SL::Helper::File qw(store_pdf append_general_pdf_attachments doc_storage_enabled);
 use SL::Helper::Flash;
 use SL::Locale::String;
 use SL::SessionFile;
 use SL::System::TaskServer;
 use Rose::Object::MakeMethods::Generic
 (
-  'scalar --get_set_init' => [ qw(invoice_models invoice_ids sales_delivery_order_models printers default_printer_id today) ],
+  'scalar --get_set_init' => [ qw(invoice_models invoice_ids sales_delivery_order_models printers default_printer_id today all_businesses) ],
 );
 
 __PACKAGE__->run_before('setup');
@@ -58,13 +58,23 @@ sub action_create_invoices {
 
   my $db = SL::DB::Invoice->new->db;
   my @invoices;
+  my @already_closed_delivery_orders;
 
   if (!$db->with_transaction(sub {
     foreach my $id (@sales_delivery_order_ids) {
       my $delivery_order    = SL::DB::DeliveryOrder->new(id => $id)->load;
 
-      my $invoice = $delivery_order->convert_to_invoice() || die $db->error;
-      push @invoices, $invoice;
+      # Only process open delivery orders. In this list should only be open
+      # delivery orders, but if the user clicked browser back, a new creation
+      # of invoices for delivery orders which are closed now can be triggered.
+      # Prevent this.
+      if ($delivery_order->closed) {
+        push @already_closed_delivery_orders, $delivery_order;
+
+      } else {
+        my $invoice = $delivery_order->convert_to_invoice() || die $db->error;
+        push @invoices, $invoice;
+      }
     }
 
     1;
@@ -76,7 +86,13 @@ sub action_create_invoices {
   my $key = sprintf('%d-%d', Time::HiRes::gettimeofday());
   $::auth->set_session_value("MassInvoiceCreatePrint::ids-${key}" => [ map { $_->id } @invoices ]);
 
-  flash_later('info', t8('The invoices have been created. They\'re pre-selected below.'));
+  if (@already_closed_delivery_orders) {
+    my $dos_list = join ' ', map { $_->donumber } @already_closed_delivery_orders;
+    flash_later('error', t8('The following delivery orders could not be processed because they are already closed: #1', $dos_list));
+  }
+
+  flash_later('info', t8('The invoices have been created. They\'re pre-selected below.')) if @invoices;
+
   $self->redirect_to(action => 'list_invoices', ids => $key);
 }
 
@@ -89,6 +105,11 @@ sub action_list_invoices {
   if ($::form->{ids}) {
     my $key = 'MassInvoiceCreatePrint::ids-' . $::form->{ids};
     $self->invoice_ids($::auth->get_session_value($key) || []);
+
+    # Prevent models->get to retrieve any invoices if session key is there
+    # but no ids are given.
+    $self->invoice_ids([0]) if !@{$self->invoice_ids};
+
     $self->invoice_models->add_additional_url_params(ids => $::form->{ids});
   }
 
@@ -113,7 +134,7 @@ sub action_print {
     return $self->redirect_to(action => 'list_invoices');
   }
 
-  $self->download_or_print_documents(printer_id => $::form->{printer_id}, invoices => \@invoices);
+  $self->download_or_print_documents(printer_id => $::form->{printer_id}, invoices => \@invoices, bothsided => $::form->{bothsided});
 }
 
 sub action_create_print_all_start {
@@ -262,6 +283,10 @@ sub init_default_printer_id {
   return $pr ? $pr->id : undef;
 }
 
+sub init_all_businesses {
+  return SL::DB::Manager::Business->get_all_sorted;
+}
+
 sub setup {
   my ($self) = @_;
   $::auth->assert('invoice_edit');
@@ -291,7 +316,7 @@ sub download_or_print_documents {
       });
 
     @pdf_file_names = $self->create_pdfs(%pdf_params);
-    my $merged_pdf  = $self->merge_pdfs(file_names => \@pdf_file_names);
+    my $merged_pdf  = $self->merge_pdfs(file_names => \@pdf_file_names, bothsided => $params{bothsided});
     unlink @pdf_file_names;
 
     if (!$params{printer_id}) {
@@ -373,9 +398,11 @@ sub setup_list_sales_delivery_orders_action_bar {
         ],
         action => [
           t8("Create and print invoices for all selected delivery orders"),
-          call     => [ 'kivi.MassInvoiceCreatePrint.submitMassCreationForm' ],
-          disabled => !$params{num_rows} ? $::locale->text('The report doesn\'t contain entries.') : undef,
-          only_if  => $params{show_creation_buttons},
+          submit    => [ 'form', { action => 'MassInvoiceCreatePrint/create_invoices' } ],
+          disabled  => !$params{num_rows} ? $::locale->text('The report doesn\'t contain entries.') : undef,
+          only_if   => $params{show_creation_buttons},
+          checks    => [ 'kivi.MassInvoiceCreatePrint.checkDeliveryOrderSelection' ],
+          only_once => 1,
         ],
 
         action => [

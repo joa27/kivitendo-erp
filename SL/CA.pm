@@ -101,11 +101,11 @@ sub all_accounts {
       c.pos_eur,
       c.valid_from,
       c.datevautomatik,
-      comma(tk.startdate::text) AS startdate,
-      comma(tk.taxkey_id::text) AS taxkey,
-      comma(tx.taxdescription || to_char (tx.rate, '99V99' ) || '%') AS taxdescription,
-      comma(tx.taxnumber::text) AS taxaccount,
-      comma(tk.pos_ustva::text) AS tk_ustva,
+      array_agg(tk.startdate) AS startdates,
+      array_agg(tk.taxkey_id) AS taxkeys,
+      array_agg(tx.taxdescription || to_char (tx.rate, '99V99' ) || '%') AS taxdescriptions,
+      array_agg(taxchart.accno) AS taxaccounts,
+      array_agg(tk.pos_ustva) AS pos_ustvas,
       ( SELECT accno
       FROM chart c2
       WHERE c2.id = c.id
@@ -113,6 +113,7 @@ sub all_accounts {
     FROM chart c
     LEFT JOIN taxkeys tk ON (c.id = tk.chart_id)
     LEFT JOIN tax tx ON (tk.tax_id = tx.id)
+    LEFT JOIN chart taxchart ON (taxchart.id = tx.chart_id)
     WHERE 1=1
     $where
     GROUP BY c.accno, c.id, c.description, c.charttype,
@@ -264,7 +265,7 @@ sub all_transactions {
 
     # get all transactions
     $query =
-      qq|SELECT a.id, a.reference, a.description, ac.transdate, ac.chart_id, | .
+      qq|SELECT ac.itime, a.id, a.reference, a.description, ac.transdate, ac.chart_id, | .
       qq|  FALSE AS invoice, ac.amount, 'gl' as module, | .
       qq§(SELECT accno||'--'||rate FROM tax LEFT JOIN chart ON (tax.chart_id=chart.id) WHERE tax.id = (SELECT tax_id FROM taxkeys WHERE taxkey_id = ac.taxkey AND taxkeys.startdate <= ac.transdate ORDER BY taxkeys.startdate DESC LIMIT 1)) AS taxinfo, ac.source || ' ' || ac.memo AS memo § .
       qq|FROM acc_trans ac, gl a | .
@@ -276,7 +277,7 @@ sub all_transactions {
 
       qq|UNION ALL | .
 
-      qq|SELECT a.id, a.invnumber, c.name, ac.transdate, ac.chart_id, | .
+      qq|SELECT ac.itime, a.id, a.invnumber, c.name, ac.transdate, ac.chart_id, | .
       qq|  a.invoice, ac.amount, 'ar' as module, | .
       qq§(SELECT accno||'--'||rate FROM tax LEFT JOIN chart ON (tax.chart_id=chart.id) WHERE tax.id = (SELECT tax_id FROM taxkeys WHERE taxkey_id = ac.taxkey AND taxkeys.startdate <= ac.transdate ORDER BY taxkeys.startdate DESC LIMIT 1)) AS taxinfo, ac.source || ' ' || ac.memo AS memo  § .
       qq|FROM acc_trans ac, customer c, ar a | .
@@ -289,7 +290,7 @@ sub all_transactions {
 
       qq|UNION ALL | .
 
-      qq|SELECT a.id, a.invnumber, v.name, ac.transdate, ac.chart_id, | .
+      qq|SELECT ac.itime, a.id, a.invnumber, v.name, ac.transdate, ac.chart_id, | .
       qq|  a.invoice, ac.amount, 'ap' as module, | .
       qq§(SELECT accno||'--'||rate FROM tax LEFT JOIN chart ON (tax.chart_id=chart.id) WHERE tax.id = (SELECT tax_id FROM taxkeys WHERE taxkey_id = ac.taxkey AND taxkeys.startdate <= ac.transdate ORDER BY taxkeys.startdate DESC LIMIT 1)) AS taxinfo, ac.source || ' ' || ac.memo AS memo  § .
       qq|FROM acc_trans ac, vendor v, ap a | .
@@ -325,7 +326,7 @@ sub all_transactions {
       $query .=
         qq|UNION ALL | .
 
-        qq|SELECT a.id, a.invnumber, c.name, a.transdate, | .
+        qq|SELECT ac.itime, a.id, a.invnumber, c.name, a.transdate, | .
         qq|  a.invoice, ac.qty * ac.sellprice AS sellprice, 'ar' as module, | .
         qq§(SELECT accno||'--'||rate FROM tax LEFT JOIN chart ON (tax.chart_id=chart.id) WHERE tax.id = (SELECT tax_id FROM taxkeys WHERE taxkey_id = ac.taxkey AND taxkeys.startdate <= ac.transdate ORDER BY taxkeys.startdate DESC LIMIT 1)) AS taxinfo § .
         qq|FROM ar a | .
@@ -340,7 +341,7 @@ sub all_transactions {
         $project .
         qq|UNION ALL | .
 
-        qq|SELECT a.id, a.invnumber, v.name, a.transdate, | .
+        qq|SELECT ac.itime, a.id, a.invnumber, v.name, a.transdate, | .
         qq|  a.invoice, ac.qty * ac.sellprice AS sellprice, 'ap' as module, | .
         qq§(SELECT accno||'--'||rate FROM tax LEFT JOIN chart ON (tax.chart_id=chart.id) WHERE tax.id = (SELECT tax_id FROM taxkeys WHERE taxkey_id = ac.taxkey AND taxkeys.startdate <= ac.transdate ORDER BY taxkeys.startdate DESC LIMIT 1)) AS taxinfo § .
         qq|FROM ap a | .
@@ -366,7 +367,8 @@ sub all_transactions {
   }
 
   my $sort = grep({ $form->{sort} eq $_ } qw(transdate reference description)) ? $form->{sort} : 'transdate';
-  my $sort2 = ($sort eq 'reference')?'transdate':'reference';
+  $sort = ($sort eq 'transdate') ? 'transdate, itime' : $sort;
+  my $sort2 = ($sort eq 'reference') ? 'transdate, itime' : 'reference';
   $query .= qq|ORDER BY $sort , $sort2 |;
   my $sth = prepare_execute_query($form, $dbh, $query, @values);
 

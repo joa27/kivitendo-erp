@@ -55,7 +55,7 @@
 
       $(function() {
         warehouse_selected(0, 0);
-        document.Form.partnumber.focus();
+        document.Form.part_id_name.focus();
       });
      -->
  </script>
@@ -96,7 +96,7 @@
     <tr>
      <th align="right" nowrap>[% 'Part' | $T8 %]</th>
      <td>
-      [% P.part_picker("part_id", '', size="30", part_type="part,assembly") %]
+      [% P.part.picker("part_id", parts_id, size="30", part_type="part,assembly") %]
      </td>
     </tr>
 

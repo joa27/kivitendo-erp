@@ -19,11 +19,12 @@ use constant FILE_TARGET   => 0;
 use constant STDERR_TARGET => 1;
 
 use Data::Dumper;
+use List::MoreUtils qw(all);
 use POSIX qw(strftime getpid);
-use Scalar::Util qw(blessed refaddr weaken);
+use Scalar::Util qw(blessed refaddr weaken looks_like_number);
 use Time::HiRes qw(gettimeofday tv_interval);
-use YAML;
 use SL::Request ();
+use SL::YAML;
 
 use strict;
 use utf8;
@@ -161,6 +162,7 @@ sub clone_for_dump {
   my ($src, $dumped) = @_;
 
   return undef if !defined($src);
+  return $src  if !ref($src);
 
   $dumped ||= {};
   my $addr  = refaddr($src);
@@ -213,7 +215,7 @@ sub dump {
 sub dump_yaml {
   my ($self, $level, $name, $variable) = @_;
 
-  $self->message($level, "dumping ${name}:\n" . YAML::Dump($variable));
+  $self->message($level, "dumping ${name}:\n" . SL::YAML::Dump($variable));
 }
 
 sub dump_sql_result {
@@ -230,8 +232,14 @@ sub dump_sql_result {
     map { $column_lengths{$_} = length $row->{$_} if (length $row->{$_} > $column_lengths{$_}) } keys %{ $row };
   }
 
+  my %alignment;
+  foreach my $column (keys %column_lengths) {
+    my $all_look_like_number = all { (($_->{$column} // '') eq '') || looks_like_number($_->{$column}) } @{ $results };
+    $alignment{$column}      = $all_look_like_number ? '' : '-';
+  }
+
   my @sorted_names = sort keys %column_lengths;
-  my $format       = join '|', map { '%' . $column_lengths{$_} . 's' } @sorted_names;
+  my $format       = join '|', map { '%'  . $alignment{$_} . $column_lengths{$_} . 's' } @sorted_names;
 
   $prefix .= ' ' if $prefix;
 
@@ -252,7 +260,7 @@ sub show_diff {
     return;
   }
 
-  my @texts = map { ref $_ ? YAML::Dump($_) : $_ } ($item1, $item2);
+  my @texts = map { ref $_ ? SL::YAML::Dump($_) : $_ } ($item1, $item2);
 
   $self->message($level, Text::Diff::diff(\$texts[0], \$texts[1], \%params));
 }
@@ -325,7 +333,7 @@ sub _write_raw {
 sub level2string {
   no warnings;
   # use $_[0] as a bit mask and return levelstrings separated by /
-  join '/', qw(info debug1 debug2 query trace error_call_trace request_timer WARNING)[ grep { (reverse split //, sprintf "%08b", $_[0])[$_] } 0..7 ]
+  join '/', qw(info debug1 debug2 query trace error_call_trace request_timer request WARNING trace2 show_caller)[ grep { (reverse split //, sprintf "%011b", $_[0])[$_] } 0..11 ]
 }
 
 sub begin_request {

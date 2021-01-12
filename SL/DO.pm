@@ -36,7 +36,7 @@ package DO;
 
 use Carp;
 use List::Util qw(max);
-use YAML;
+use Text::ParseWords;
 
 use SL::AM;
 use SL::Common;
@@ -51,6 +51,7 @@ use SL::IC;
 use SL::TransNumber;
 use SL::DB;
 use SL::Util qw(trim);
+use SL::YAML;
 
 use strict;
 
@@ -128,7 +129,7 @@ sub transactions {
     push @where, "dord.$item = ?";
     push @values, conv_i($form->{$item});
   }
-  if (!$main::auth->assert('sales_all_edit', 1)) {
+  if ( !(($vc eq 'customer' && $main::auth->assert('sales_all_edit', 1)) || ($vc eq 'vendor' && $main::auth->assert('purchase_all_edit', 1))) ) {
     push @where, qq|dord.employee_id = (select id from employee where login= ?)|;
     push @values, $::myconfig{login};
   }
@@ -209,6 +210,17 @@ SQL
       )
 SQL
     push @values, like($form->{parts_description});
+  }
+
+  if ($form->{all}) {
+    my @tokens = parse_line('\s+', 0, $form->{all});
+    # ordnumber quonumber customer.name vendor.name transaction_description
+    push @where, <<SQL for @tokens;
+      (   (dord.donumber                ILIKE ?)
+       OR (ct.name                      ILIKE ?)
+       OR (dord.transaction_description ILIKE ?))
+SQL
+    push @values, (like($_))x3 for @tokens;
   }
 
   if (@where) {
@@ -438,7 +450,7 @@ SQL
                   conv_i($sinfo->{bin_id}));
         $h_item_stock_id->finish();
         # write back the id to the form (important if only transfer was clicked (id fk for invoice)
-        $form->{"stock_${in_out}_$i"} = YAML::Dump($stock_info);
+        $form->{"stock_${in_out}_$i"} = SL::YAML::Dump($stock_info);
       }
       @values = ($form->{"delivery_order_items_id_$i"}, $sinfo->{qty}, $sinfo->{unit}, conv_i($sinfo->{warehouse_id}),
                  conv_i($sinfo->{bin_id}), $sinfo->{chargenumber}, conv_date($sinfo->{bestbefore}),
@@ -499,7 +511,7 @@ SQL
   $query =
     qq|UPDATE delivery_orders SET
          donumber = ?, ordnumber = ?, cusordnumber = ?, transdate = ?, vendor_id = ?,
-         customer_id = ?, reqdate = ?,
+         customer_id = ?, reqdate = ?, tax_point = ?,
          shippingpoint = ?, shipvia = ?, notes = ?, intnotes = ?, closed = ?,
          delivered = ?, department_id = ?, language_id = ?, shipto_id = ?,
          globalproject_id = ?, employee_id = ?, salesman_id = ?, cp_id = ?, transaction_description = ?,
@@ -510,7 +522,7 @@ SQL
   @values = ($form->{donumber}, $form->{ordnumber},
              $form->{cusordnumber}, conv_date($form->{transdate}),
              conv_i($form->{vendor_id}), conv_i($form->{customer_id}),
-             conv_date($form->{reqdate}), $form->{shippingpoint}, $form->{shipvia},
+             conv_date($form->{reqdate}), conv_date($form->{tax_point}), $form->{shippingpoint}, $form->{shipvia},
              $restricter->process($form->{notes}), $form->{intnotes},
              $form->{closed} ? 't' : 'f', $form->{delivered} ? "t" : "f",
              conv_i($form->{department_id}), conv_i($form->{language_id}), conv_i($form->{shipto_id}),
@@ -681,7 +693,7 @@ sub retrieve {
   # so if any of these infos is important (or even different) for any item,
   # it will be killed out and then has to be fetched from the item scope query further down
   $query =
-    qq|SELECT dord.cp_id, dord.donumber, dord.ordnumber, dord.transdate, dord.reqdate,
+    qq|SELECT dord.cp_id, dord.donumber, dord.ordnumber, dord.transdate, dord.reqdate, dord.tax_point,
          dord.shippingpoint, dord.shipvia, dord.notes, dord.intnotes,
          e.name AS employee, dord.employee_id, dord.salesman_id,
          dord.${vc}_id, cv.name AS ${vc},
@@ -821,7 +833,7 @@ sub retrieve {
         push @{ $requests }, $ref;
       }
 
-      $doi->{"stock_${in_out}"} = YAML::Dump($requests);
+      $doi->{"stock_${in_out}"} = SL::YAML::Dump($requests);
     }
 
     $sth->finish();
@@ -1018,9 +1030,9 @@ sub order_details {
       my $sortorder = "";
       if ($form->{groupitems}) {
         $sortorder =
-          qq|ORDER BY pg.partsgroup, a.oid|;
+          qq|ORDER BY pg.partsgroup, a.position|;
       } else {
-        $sortorder = qq|ORDER BY a.oid|;
+        $sortorder = qq|ORDER BY a.position|;
       }
 
       do_statement($form, $h_pg, $q_pg, conv_i($form->{"id_$i"}));
@@ -1073,21 +1085,6 @@ sub order_details {
   $main::lxdebug->leave_sub();
 }
 
-sub project_description {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $dbh, $id) = @_;
-
-  my $form     =  $main::form;
-
-  my $query = qq|SELECT description FROM project WHERE id = ?|;
-  my ($value) = selectrow_query($form, $dbh, $query, $id);
-
-  $main::lxdebug->leave_sub();
-
-  return $value;
-}
-
 sub unpack_stock_information {
   $main::lxdebug->enter_sub();
 
@@ -1098,7 +1095,7 @@ sub unpack_stock_information {
 
   my $unpacked;
 
-  eval { $unpacked = $params{packed} ? YAML::Load($params{packed}) : []; };
+  eval { $unpacked = $params{packed} ? SL::YAML::Load($params{packed}) : []; };
 
   $unpacked = [] if (!$unpacked || ('ARRAY' ne ref $unpacked));
 

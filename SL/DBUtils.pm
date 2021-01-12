@@ -8,7 +8,7 @@ our @ISA = qw(Exporter);
 our @EXPORT = qw(conv_i conv_date conv_dateq do_query selectrow_query do_statement
              dump_query quote_db_date like
              selectfirst_hashref_query selectfirst_array_query
-             selectall_hashref_query selectall_array_query
+             selectall_hashref_query selectall_array_query selectcol_array_query
              selectall_as_map
              selectall_ids
              prepare_execute_query prepare_query
@@ -92,7 +92,7 @@ sub dump_query {
   my $self_filename = 'SL/DBUtils.pm';
   my $filename      = $self_filename;
   my ($caller_level, $line, $subroutine);
-  while ($filename eq $self_filename) {
+  while ($filename =~ m{$self_filename$}) {
     (undef, $filename, $line, $subroutine) = caller $caller_level++;
   }
 
@@ -171,16 +171,15 @@ sub selectall_hashref_query {
   return wantarray ? @{ $result } : $result;
 }
 
-sub selectall_array_query {
+sub selectall_array_query { goto &selectcol_array_query; }
+
+sub selectcol_array_query {
   $main::lxdebug->enter_sub(2);
 
   my ($form, $dbh, $query) = splice(@_, 0, 3);
 
   my $sth = prepare_execute_query($form, $dbh, $query, @_);
-  my @result;
-  while (my ($value) = $sth->fetchrow_array()) {
-    push(@result, $value);
-  }
+  my @result = @{ $dbh->selectcol_arrayref($sth) };
   $sth->finish();
 
   $main::lxdebug->leave_sub(2);
@@ -408,7 +407,7 @@ __END__
 
 =head1 NAME
 
-SL::DBUTils.pm: All about database connections in kivitendo
+SL::DBUtils.pm: All about database connections in kivitendo
 
 =head1 SYNOPSIS
 
@@ -419,6 +418,8 @@ SL::DBUTils.pm: All about database connections in kivitendo
   conv_dateq($str)
   quote_db_date($date)
 
+  my $dbh = SL::DB->client->dbh;
+
   do_query($form, $dbh, $query)
   do_statement($form, $sth, $query)
 
@@ -428,8 +429,10 @@ SL::DBUTils.pm: All about database connections in kivitendo
   my $all_results_ref       = selectall_hashref_query($form, $dbh, $query)
   my $first_result_hash_ref = selectfirst_hashref_query($form, $dbh, $query);
 
-  my @first_result =  selectfirst_array_query($form, $dbh, $query);  # ==
+  my @first_result =  selectfirst_array_query($form, $dbh, $query);
   my @first_result =  selectrow_query($form, $dbh, $query);
+
+  my @values = selectcol_array_query($form, $dbh, $query);
 
   my %sort_spec = create_sort_spec(%params);
 
@@ -439,7 +442,7 @@ DBUtils provides wrapper functions for low level database retrieval. It saves
 you the trouble of mucking around with statement handles for small database
 queries and does exception handling in the common cases for you.
 
-Query and retrieval function share the parameter scheme:
+Query and retrieval functions share the parameter scheme:
 
   query_or_retrieval(C<FORM, DBH, QUERY[, BINDVALUES]>)
 
@@ -454,10 +457,8 @@ not. In most cases you will call it with C<$::form>.
 
 C<DBH> is a handle to the database, as returned by the C<DBI::connect> routine.
 If you don't have an active connection, you can use
-C<<$::form->get_standard_dbh>> to get a generic no_auto connection or get a
-C<Rose::DB::Object> handle from any RDBO class with
-C<<SL::DB::Part->new->db->dbh>>. The former will be without autocommit, the
-latter with autocommit.
+C<SL::DB->client->dbh> or get a C<Rose::DB::Object> handle from any RDBO class with
+C<<SL::DB::Part->new->db->dbh>>. In both cases the handle will have AutoCommit set.
 
 See C<PITFALLS AND CAVEATS> for common errors.
 
@@ -514,7 +515,7 @@ or export only what you need:
   selectall_hashref_query(...)
 
 
-=head2 Peformance
+=head2 Performance
 
 Since it is really easy to write something like
 
@@ -522,7 +523,7 @@ Since it is really easy to write something like
 
 people do so from time to time. When writing code, consider this a ticking
 timebomb. Someone out there has a database with 1mio parts in it, and this
-statement just shovelled ate 2GB of memory and timeouted the request.
+statement just gobbled up 2GB of memory and timeouted the request.
 
 Parts may be the obvious example, but the same applies to customer, vendors,
 records, projects or custom variables.
@@ -600,24 +601,34 @@ is passed as binding values to execute.
 
 =item selectrow_query FORM,DBH,QUERY,ARRAY
 
-Prepares and executes a query using DBUtils functions, retireves the first row
+Prepares and executes a query using DBUtils functions, retrieves the first row
 from the database, and returns it as an arrayref of the first row.
 
 =item selectfirst_hashref_query FORM,DBH,QUERY,ARRAY
 
-Prepares and executes a query using DBUtils functions, retireves the first row
+Prepares and executes a query using DBUtils functions, retrieves the first row
 from the database, and returns it as a hashref of the first row.
 
 =item selectall_hashref_query FORM,DBH,QUERY,ARRAY
 
-Prepares and executes a query using DBUtils functions, retireves all data from
+Prepares and executes a query using DBUtils functions, retrieves all data from
 the database, and returns it in hashref mode. This is slightly confusing, as
 the data structure will actually be a reference to an array, containing
 hashrefs for each row.
 
+
+=item selectall_array_query FORM,DBH,QUERY,ARRAY
+
+Deprecated, see C<selectcol_array_query>
+
+=item selectcol_array_query FORM,DBH,QUERY,ARRAY
+
+Prepares and executes a query using DBUtils functions, retrieves the values of
+the first result column and returns the values as an array.
+
 =item selectall_as_map FORM,DBH,QUERY,KEY_COL,VALUE_COL,ARRAY
 
-Prepares and executes a query using DBUtils functions, retireves all data from
+Prepares and executes a query using DBUtils functions, retrieves all data from
 the database, and creates a hash from the results using KEY_COL as the column
 for the hash keys and VALUE_COL for its values.
 
@@ -703,6 +714,11 @@ general little need to invoke it manually.
 
   $query = qq|SELECT nextval('glid')|;
   ($new_id) = selectrow_query($form, $dbh, $query);
+
+=item Retrieving all values from a column:
+
+  $query = qq|SELECT id FROM units|;
+  @units = selectcol_array_query($form, $dbh, $query);
 
 =item Using binding values:
 

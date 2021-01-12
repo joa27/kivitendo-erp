@@ -561,7 +561,7 @@ sub check_partsgroup {
 
   # Check whether or not part group ID is valid.
   if ($object->partsgroup_id && !$self->partsgroups_by->{id}->{ $object->partsgroup_id }) {
-    push @{ $entry->{errors} }, $::locale->text('Error: Invalid parts group');
+    push @{ $entry->{errors} }, $::locale->text('Error: Invalid parts group id #1', $object->partsgroup_id);
     return 0;
   }
 
@@ -570,7 +570,7 @@ sub check_partsgroup {
     my $pg = $self->partsgroups_by->{partsgroup}->{ $entry->{raw_data}->{partsgroup} };
 
     if (!$pg) {
-      push @{ $entry->{errors} }, $::locale->text('Error: Invalid parts group');
+      push @{ $entry->{errors} }, $::locale->text('Error: Invalid parts group name #1',  $entry->{raw_data}->{partsgroup});
       return 0;
     }
 
@@ -667,7 +667,7 @@ sub handle_makemodel {
   my %old_makemodels_by_mm = map { $_->make . $; . $_->model => $_ } $entry->{part}->makemodels;
   my @new_makemodels;
 
-  foreach my $makemodel ($object->makemodels()) {
+  foreach my $makemodel (@{ $object->makemodels_sorted }) {
     my $makemodel_orig = $old_makemodels_by_mm{$makemodel->make,$makemodel->model};
     $found_any = 1;
 
@@ -680,11 +680,11 @@ sub handle_makemodel {
     }
   }
 
-  $entry->{part}->makemodels([ $entry->{part}->makemodels, @new_makemodels ]) if @new_makemodels;
+  $entry->{part}->makemodels([ @{$entry->{part}->makemodels_sorted}, @new_makemodels ]) if @new_makemodels;
 
   # reindex makemodels
   my $i = 0;
-  $_->sortorder(++$i) for @{ $entry->{part}->makemodels };
+  $_->sortorder(++$i) for @{ $entry->{part}->makemodels_sorted };
 
   $self->save_with_cascade(1) if $found_any;
 }
@@ -692,7 +692,9 @@ sub handle_makemodel {
 sub set_various_fields {
   my ($self, $entry) = @_;
 
-  $entry->{object}->priceupdate(DateTime->now_local);
+  my $object = $entry->{object_to_save} || $entry->{object};
+
+  $object->priceupdate(DateTime->now_local);
 }
 
 sub init_profile {
@@ -713,7 +715,6 @@ sub save_objects {
   my $without_number = [ grep { $_->{object}->partnumber eq '####' } @{ $self->controller->data } ];
 
   map { $_->{object}->partnumber('') } @{ $without_number };
-
   $self->SUPER::save_objects(data => $with_number);
   $self->SUPER::save_objects(data => $without_number);
 }

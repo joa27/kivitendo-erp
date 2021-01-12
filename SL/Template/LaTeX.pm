@@ -11,9 +11,11 @@ use File::Basename;
 use File::Temp;
 use HTML::Entities ();
 use List::MoreUtils qw(any);
+use Scalar::Util qw(blessed);
 use Unicode::Normalize qw();
 
 use SL::DB::Default;
+use SL::System::Process;
 
 my %text_markup_replace = (
   b => 'textbf',
@@ -98,6 +100,8 @@ sub _format_html {
   $content =~ s{ ^ ( \\newline \  )+ }{ _lb_to_space($1) }gxe;                              # convert line breaks at the start of the text to vertical space
   $content =~ s{ ( \n\n+ ) ( \\newline \  )+ }{ $1 . _lb_to_space($2) }gxe;                 # convert line breaks at the start of a paragraph to vertical space
   $content =~ s{ ( \\end\{ [^\}]+ \} \h* ) ( \\newline \  )+ }{ $1 . _lb_to_space($2) }gxe; # convert line breaks after LaTeX environments like lists to vertical space
+  $content =~ s{ ^ \h+ \\newline }{\\newline}gmx;
+  $content =~ s{ \n\n \h* \\newline \h* }{\n\n}gmx;
 
   return $content;
 }
@@ -122,6 +126,9 @@ sub format_string {
        $formatters{ $self->{variable_content_types}->{$variable} }
     // $formatters{ $self->{default_content_type} }
     // $formatters{ text };
+
+  $content  =~ s{[^\p{Print}\n]|\p{Cf}}{}g;
+  $variable =~ s{[^\p{Print}\n]|\p{Cf}}{}g;
 
   return $formatter->($self, $content, variable => $variable);
 }
@@ -383,33 +390,76 @@ sub _parse_config_lines {
   }
 }
 
+sub _embed_file_directive {
+  my ($self, $file) = @_;
+
+  # { source      => $xmlfile,
+  #   name        => 'factur-x.xml',
+  #   description => $::locale->text('Factur-X/ZUGFeRD invoice'), }
+
+  my $file_name  =  blessed($file->{source}) && $file->{source}->can('filename') ? $file->{source}->filename : "" . $file->{source}->filename;
+  my $embed_name =  $file->{name} // $file_name;
+  $embed_name    =~ s{.*/}{};
+
+  my $embed_name_ascii = $::locale->quote_special_chars('filenames', $embed_name);
+  $embed_name_ascii    =~ s{[^a-z0-9!@#$%^&*(){}[\],.+'"=_-]+}{}gi;
+
+  my @options;
+
+  my $add_opt = sub {
+    my ($name, $value) = @_;
+    return if ($value // '') eq '';
+    push @options, sprintf('%s={%s}', $name, $value); # TODO: escaping
+  };
+
+  $add_opt->('filespec',       $embed_name_ascii);
+  $add_opt->('ucfilespec',     $embed_name);
+  $add_opt->('desc',           $file->{description});
+  $add_opt->('afrelationship', $file->{relationship});
+  $add_opt->('mimetype',       $file->{mime_type});
+
+  return sprintf('\embedfile[%s]{%s}', join(',', @options), $file_name);
+}
+
 sub _force_mandatory_packages {
-  my $self  = shift;
-  my $lines = shift;
+  my ($self, @lines) = @_;
+  my @new_lines;
 
-  my (%used_packages, $document_start_line, $last_usepackage_line);
+  my %used_packages;
+  my @required_packages = qw(textcomp ulem);
+  push @required_packages, 'embedfile' if $self->{pdf_a};
 
-  foreach my $i (0 .. scalar @{ $lines } - 1) {
-    if ($lines->[$i] =~ m/\\usepackage[^\{]*{(.*?)}/) {
+  foreach my $line (@lines) {
+    if ($line =~ m/\\usepackage[^\{]*{(.*?)}/) {
       $used_packages{$1} = 1;
-      $last_usepackage_line = $i;
 
-    } elsif ($lines->[$i] =~ m/\\begin\{document\}/) {
-      $document_start_line = $i;
-      last;
+    } elsif ($line =~ m/\\begin\{document\}/) {
+      if ($self->{pdf_a} && $self->{pdf_a}->{xmp}) {
+        my $version       = $self->{pdf_a}->{version}   // '3a';
+        my $xmp_file_name = $self->{userspath} . "/pdfa.xmp";
+        my $out           = IO::File->new($xmp_file_name, ">:encoding(utf-8)") || croak "Error creating ${xmp_file_name}: $!";
+        $out->print(Encode::encode('utf-8', $self->{pdf_a}->{xmp}));
+        $out->close;
 
+        push @new_lines, (
+          "\\usepackage[a-${version},mathxmp]{pdfx}[2018/12/22]\n",
+          "\\usepackage[genericmode]{tagpdf}\n",
+          "\\tagpdfsetup{activate-all}\n",
+          "\\hypersetup{pdfstartview=}\n",
+        );
+      }
+
+      push @new_lines, map { "\\usepackage{$_}\n" } grep { !$used_packages{$_} } @required_packages;
+      push @new_lines, $line;
+      push @new_lines, map { $self->_embed_file_directive($_) } @{ $self->{pdf_attachments} // [] };
+
+      next;
     }
+
+    push @new_lines, $line;
   }
 
-  my $insertion_point = defined($document_start_line)  ? $document_start_line
-                      : defined($last_usepackage_line) ? $last_usepackage_line
-                      :                                  scalar @{ $lines } - 1;
-
-  foreach my $package (qw(textcomp ulem)) {
-    next if $used_packages{$package};
-    splice @{ $lines }, $insertion_point, 0, "\\usepackage{${package}}\n";
-    $insertion_point++;
-  }
+  return @new_lines;
 }
 
 sub parse {
@@ -426,7 +476,7 @@ sub parse {
   close(IN);
 
   $self->_parse_config_lines(\@lines);
-  $self->_force_mandatory_packages(\@lines) if (ref $self eq 'SL::Template::LaTeX');
+  @lines = $self->_force_mandatory_packages(@lines) if (ref $self eq 'SL::Template::LaTeX');
 
   my $contents = join("", @lines);
 
@@ -471,12 +521,21 @@ sub parse {
   }
 }
 
+sub _texinputs_path {
+  my ($self, $templates_path) = @_;
+
+  my $exe_dir     = SL::System::Process::exe_dir();
+  $templates_path = $exe_dir . '/' . $templates_path unless $templates_path =~ m{^/};
+
+  return join(':', grep({ $_ } ('.', $exe_dir . '/texmf', $exe_dir . '/users', $templates_path, $ENV{TEXINPUTS})), '');
+}
+
 sub convert_to_postscript {
   my ($self) = @_;
   my ($form, $userspath) = ($self->{"form"}, $self->{"userspath"});
 
   # Convert the tex file to postscript
-  local $ENV{TEXINPUTS} = ".:" . $form->{cwd} . "/" . $form->{templates} . ":" . $ENV{TEXINPUTS};
+  local $ENV{TEXINPUTS} = $self->_texinputs_path($form->{templates});
 
   if (!chdir("$userspath")) {
     $self->{"error"} = "chdir : $!";
@@ -490,7 +549,7 @@ sub convert_to_postscript {
   my $old_home = $ENV{HOME};
   my $old_openin_any = $ENV{openin_any};
   $ENV{HOME}   = $userspath =~ m|^/| ? $userspath : getcwd();
-  $ENV{openin_any} = "p";
+  $ENV{openin_any} = "r";
 
   for (my $run = 1; $run <= 2; $run++) {
     if (system("${latex} --interaction=nonstopmode $form->{tmpfile} " .
@@ -530,7 +589,7 @@ sub convert_to_pdf {
   my ($form, $userspath) = ($self->{"form"}, $self->{"userspath"});
 
   # Convert the tex file to PDF
-  local $ENV{TEXINPUTS} = ".:" . $form->{cwd} . "/" . $form->{templates} . ":" . $ENV{TEXINPUTS};
+  local $ENV{TEXINPUTS} = $self->_texinputs_path($form->{templates});
 
   if (!chdir("$userspath")) {
     $self->{"error"} = "chdir : $!";
@@ -544,7 +603,7 @@ sub convert_to_pdf {
   my $old_home = $ENV{HOME};
   my $old_openin_any = $ENV{openin_any};
   $ENV{HOME}   = $userspath =~ m|^/| ? $userspath : getcwd();
-  $ENV{openin_any} = "p";
+  $ENV{openin_any} = "r";
 
   for (my $run = 1; $run <= 2; $run++) {
     if (system("${latex} --interaction=nonstopmode $form->{tmpfile} " .
@@ -590,11 +649,12 @@ sub uses_temp_file {
 sub parse_and_create_pdf {
   my ($class, $template_file_name, %params) = @_;
 
+  my $userspath                = delete($params{userspath}) || $::lx_office_conf{paths}->{userspath};
   my $keep_temp                = $::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files};
   my ($tex_fh, $tex_file_name) = File::Temp::tempfile(
     'kivitendo-printXXXXXX',
     SUFFIX => '.tex',
-    DIR    => $::lx_office_conf{paths}->{userspath},
+    DIR    => $userspath,
     UNLINK => $keep_temp ? 0 : 1,,
   );
 
@@ -603,7 +663,7 @@ sub parse_and_create_pdf {
   my $local_form           = Form->new('');
   $local_form->{cwd}       = $old_wd;
   $local_form->{IN}        = $template_file_name;
-  $local_form->{tmpdir}    = $::lx_office_conf{paths}->{userspath};
+  $local_form->{tmpdir}    = $userspath;
   $local_form->{tmpfile}   = $tex_file_name;
   $local_form->{templates} = SL::DB::Default->get->templates;
 
@@ -614,7 +674,7 @@ sub parse_and_create_pdf {
 
   my $error;
   eval {
-    my $template = SL::Template::LaTeX->new(file_name => $template_file_name, form => $local_form);
+    my $template = SL::Template::LaTeX->new(file_name => $template_file_name, form => $local_form, userspath => $userspath);
     my $result   = $template->parse($tex_fh) && $template->convert_to_pdf;
 
     die $template->{error} unless $result;

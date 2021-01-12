@@ -45,6 +45,7 @@ use SL::WH;
 use SL::OE;
 use SL::Locale::String qw(t8);
 use SL::ReportGenerator;
+use SL::Presenter::Part;
 
 use SL::DB::Part;
 
@@ -70,6 +71,7 @@ use strict;
 #  $locale->text('return_material')
 #  $locale->text('release_material')
 #  $locale->text('assembled')
+#  $locale->text('stocktaking')
 
 # --------------------------------------------------------------------
 # Transfer
@@ -700,8 +702,8 @@ sub generate_journal {
   my $idx       = 0;
 
   foreach my $entry (@contents) {
-    $entry->{type_and_classific} = $::request->presenter->type_abbreviation($entry->{part_type}).
-                                   $::request->presenter->classification_abbreviation($entry->{classification_id});
+    $entry->{type_and_classific} = SL::Presenter::Part::type_abbreviation($entry->{part_type}) .
+                                   SL::Presenter::Part::classification_abbreviation($entry->{classification_id});
     $entry->{qty}        = $form->format_amount(\%myconfig, $entry->{qty});
     $entry->{trans_type} = $locale->text($entry->{trans_type});
 
@@ -789,7 +791,7 @@ sub generate_report {
   my $sort_col     = $form->{sort};
 
   my %filter;
-  my @columns = qw(warehousedescription bindescription partnumber type_and_classific partdescription chargenumber bestbefore comment qty partunit  purchase_price stock_value);
+  my @columns = qw(warehousedescription bindescription partnumber type_and_classific partdescription chargenumber bestbefore comment qty partunit list_price purchase_price stock_value);
 
   # filter stuff
   map { $filter{$_} = $form->{$_} if ($form->{$_}) } qw(warehouse_id bin_id classification_id partnumber description chargenumber bestbefore date include_invalid_warehouses);
@@ -833,7 +835,7 @@ sub generate_report {
   $form->{report_generator_output_format} = 'HTML' if !$form->{report_generator_output_format};
 
   # manual paginating
-  my $allrows        = !!($form->{report_generator_output_format} ne 'HTML') ;
+  my $allrows        = $form->{report_generator_output_format} eq 'HTML' ? $form->{allrows} : 1;
   my $page           = $::form->{page} || 1;
   my $pages          = {};
   $pages->{per_page} = $::form->{per_page} || 20;
@@ -862,7 +864,7 @@ sub generate_report {
   my @hidden_variables = map { "l_${_}" } @columns;
   push @hidden_variables, qw(warehouse_id bin_id partnumber partstypes_id description chargenumber bestbefore qty_op qty qty_unit partunit l_warehousedescription l_bindescription);
   push @hidden_variables, qw(include_empty_bins subtotal include_invalid_warehouses date);
-  push @hidden_variables, qw(classification_id);
+  push @hidden_variables, qw(classification_id stock_value_basis);
 
   my %column_defs = (
     'warehousedescription' => { 'text' => $locale->text('Warehouse'), },
@@ -876,6 +878,7 @@ sub generate_report {
     'partunit'             => { 'text' => $locale->text('Unit'), },
     'stock_value'          => { 'text' => $locale->text('Stock value'), },
     'purchase_price'       => { 'text' => $locale->text('Purchase price'), },
+    'list_price'           => { 'text' => $locale->text('List Price'), },
   );
 
   my $href = build_std_url('action=generate_report', grep { $form->{$_} } @hidden_variables);
@@ -883,7 +886,7 @@ sub generate_report {
 
   map { $column_defs{$_}->{link} = $href . "&page=".$page."&sort=${_}&order=" . Q($_ eq $sort_col ? 1 - $form->{order} : $form->{order}) } @columns;
 
-  my %column_alignment = map { $_ => 'right' } qw(qty purchase_price stock_value);
+  my %column_alignment = map { $_ => 'right' } qw(qty list_price purchase_price stock_value);
 
   map { $column_defs{$_}->{visible} = $form->{"l_${_}"} ? 1 : 0 } @columns;
 
@@ -915,8 +918,8 @@ sub generate_report {
 
   foreach my $entry (@contents) {
 
-    $entry->{type_and_classific} = $::request->presenter->type_abbreviation($entry->{part_type}).
-                                   $::request->presenter->classification_abbreviation($entry->{classification_id});
+    $entry->{type_and_classific} = SL::Presenter::Part::type_abbreviation($entry->{part_type}).
+                                   SL::Presenter::Part::classification_abbreviation($entry->{classification_id});
     map { $subtotals{$_} += $entry->{$_} } @subtotals_columns;
     $total_stock_value   += $entry->{stock_value} * 1;
     $entry->{qty}         = $form->format_amount(\%myconfig, $entry->{qty});
@@ -925,6 +928,7 @@ sub generate_report {
 #                                                       'conv_units' => 'convertible');
     $entry->{stock_value} = $form->format_amount(\%myconfig, $entry->{stock_value} * 1, 2);
     $entry->{purchase_price} = $form->format_amount(\%myconfig, $entry->{purchase_price} * 1, 2);
+    $entry->{list_price}     = $form->format_amount(\%myconfig, $entry->{list_price}     * 1, 2);
 
     my $row_set = [ { map { $_ => { 'data' => $entry->{$_}, 'align' => $column_alignment{$_} } } @columns } ];
 
@@ -939,6 +943,7 @@ sub generate_report {
 #                                                               'conv_units' => 'convertible');
       $row->{stock_value}->{data} = $form->format_amount(\%myconfig, $subtotals{stock_value} * 1, 2);
       $row->{purchase_price}->{data} = $form->format_amount(\%myconfig, $subtotals{purchase_price} * 1, 2);
+      $row->{list_price}->{data}     = $form->format_amount(\%myconfig, $subtotals{list_price}     * 1, 2);
 
       %subtotals                  = map { $_ => 0 } @subtotals_columns;
 

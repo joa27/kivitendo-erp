@@ -6,6 +6,7 @@ use parent qw(SL::Controller::Base);
 use SL::ClientJS;
 use SL::JSON;
 use SL::Locale::String qw(t8);
+use SL::Helper::UserPreferences;
 
 use Rose::Object::MakeMethods::Generic (
  'scalar --get_set_init' => [ qw(module js) ],
@@ -20,8 +21,10 @@ my @available_modules = (
   'SL::Controller::TopQuickSearch::Contact',
   'SL::Controller::TopQuickSearch::SalesQuotation',
   'SL::Controller::TopQuickSearch::SalesOrder',
+  'SL::Controller::TopQuickSearch::SalesDeliveryOrder',
   'SL::Controller::TopQuickSearch::RequestForQuotation',
   'SL::Controller::TopQuickSearch::PurchaseOrder',
+  'SL::Controller::TopQuickSearch::PurchaseDeliveryOrder',
   'SL::Controller::TopQuickSearch::GLTransaction',
   'SL::Controller::TopQuickSearch::Customer',
   'SL::Controller::TopQuickSearch::Vendor',
@@ -65,9 +68,18 @@ sub available_modules {
 }
 
 sub enabled_modules {
-  my %enabled_names = map {
-    $_ => 1
-  } @{ $::instance_conf->get_quick_search_modules };
+  my $user_prefs = SL::Helper::UserPreferences->new(
+    namespace         => 'TopQuickSearch',
+  );
+
+  my @quick_search_modules;
+  if (my $prefs_val = $user_prefs->get('quick_search_modules')) {
+    @quick_search_modules = split ',', $prefs_val;
+  } else {
+    @quick_search_modules = @{ $::instance_conf->get_quick_search_modules };
+  }
+
+  my %enabled_names = map { $_ => 1 } @quick_search_modules;
 
   grep {
     $enabled_names{$_->name}
@@ -76,7 +88,7 @@ sub enabled_modules {
 
 sub active_modules {
   grep {
-    $::auth->assert($_->auth, 1)
+    !$_->auth || $::auth->assert($_->auth, 1)
   } $_[0]->enabled_modules
 }
 
@@ -89,7 +101,7 @@ sub init_module {
 
   die 'Unknown module ' . $::form->{module} unless my $class = $modules_by_name{$::form->{module}};
 
-  $::auth->assert($class->auth);
+  $::auth->assert($class->auth) if $class->auth;
 
   return $class->new;
 }

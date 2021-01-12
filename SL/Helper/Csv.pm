@@ -239,6 +239,10 @@ sub _check_multiplex_datatype_position {
   }
 }
 
+sub _is_empty_row {
+  return !!all { !$_ } @{$_[0]};
+}
+
 sub _parse_data {
   my ($self, %params) = @_;
   my (@data, @errors);
@@ -246,6 +250,7 @@ sub _parse_data {
   while (1) {
     my $row = $self->_csv->getline($self->_io);
     if ($row) {
+      next if _is_empty_row($row);
       my $header = $self->_header_by_row($row);
       if (!$header) {
         push @errors, [
@@ -497,7 +502,7 @@ See section L</PROFILE> for information on this topic.
 
 =item C<ignore_unknown_columns>
 
-If set, the import will ignore unkown header columns. Useful for lazy imports,
+If set, the import will ignore unknown header columns. Useful for lazy imports,
 but deactivated by default.
 
 =item C<case_insensitive_header>

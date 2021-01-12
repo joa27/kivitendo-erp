@@ -17,45 +17,53 @@ BEGIN {
 #   dist_name: name of the package in cpan if it differs from name (ex.: LWP != libwww-perl)
 @required_modules = (
   { name => "parent",                              url => "http://search.cpan.org/~corion/",    debian => 'libparent-perl' },
-  { name => "Algorithm::CheckDigits",              url => "http://search.cpan.org/dist/Algorithm-CheckDigits/", debian => 'libalgorithm-checkdigits-perl' },
-  { name => "Archive::Zip",    version => '1.16',  url => "http://search.cpan.org/~phred/",     debian => 'libarchive-zip-perl' },
+  { name => "Algorithm::CheckDigits",              url => "http://search.cpan.org/~mamawe/",    debian => 'libalgorithm-checkdigits-perl' },
+  { name => "Archive::Zip",    version => '1.40',  url => "http://search.cpan.org/~phred/",     debian => 'libarchive-zip-perl' },
+  { name => "CAM::PDF",                            url => "https://metacpan.org/pod/CAM::PDF",  debian => 'libcam-pdf-perl' },
   { name => "CGI",             version => '3.43',  url => "http://search.cpan.org/~leejo/",     debian => 'libcgi-pm-perl' }, # 4.09 is not core anymore (perl 5.20)
   { name => "Clone",                               url => "http://search.cpan.org/~rdf/",       debian => 'libclone-perl' },
   { name => "Config::Std",                         url => "http://search.cpan.org/~dconway/",   debian => 'libconfig-std-perl' },
+  { name => "Daemon::Generic", version => '0.71',  url => "http://search.cpan.org/~muir/",      debian => 'libdaemon-generic-perl'},
   { name => "DateTime",                            url => "http://search.cpan.org/~drolsky/",   debian => 'libdatetime-perl' },
+  { name => "DateTime::Event::Cron", version => '0.08', url => "http://search.cpan.org/~msisk/", debian => 'libdatetime-event-cron-perl' },
   { name => "DateTime::Format::Strptime",          url => "http://search.cpan.org/~drolsky/",   debian => 'libdatetime-format-strptime-perl' },
+  { name => "DateTime::Set",   version => '0.12',  url => "http://search.cpan.org/~fglock/",    debian => 'libdatetime-set-perl' },
   { name => "DBI",             version => '1.50',  url => "http://search.cpan.org/~timb/",      debian => 'libdbi-perl' },
   { name => "DBD::Pg",         version => '1.49',  url => "http://search.cpan.org/~dbdpg/",     debian => 'libdbd-pg-perl' },
   { name => "Digest::SHA",                         url => "http://search.cpan.org/~mshelor/",   debian => 'libdigest-sha-perl' },
-  { name => "Email::Address",                      url => "http://search.cpan.org/~rjbs/",      debian => 'libemail-address-perl' },
+  { name => "Exception::Class", version => '1.44', url => "https://metacpan.org/pod/Exception::Class", debian => 'libexception-class-perl' },
+  { name => "Email::Address",  version => '1.888', url => "http://search.cpan.org/~rjbs/",      debian => 'libemail-address-perl' },
   { name => "Email::MIME",                         url => "http://search.cpan.org/~rjbs/",      debian => 'libemail-mime-perl' },
   { name => "FCGI",            version => '0.72',  url => "http://search.cpan.org/~mstrout/",   debian => 'libfcgi-perl' },
   { name => "File::Copy::Recursive",               url => "http://search.cpan.org/~dmuey/",     debian => 'libfile-copy-recursive-perl' },
+  { name => "File::Flock",   version => '2008.01', url => "http://search.cpan.org/~muir/",      debian => 'libfile-flock-perl' },
   { name => "File::MimeInfo",                      url => "http://search.cpan.org/~michielb/",  debian => 'libfile-mimeinfo-perl' },
+  { name => "File::Slurp",                         url => "https://metacpan.org/author/CAPOEIRAB", debian => 'libfile-slurp-perl' },
   { name => "GD",                                  url => "http://search.cpan.org/~lds/",       debian => 'libgd-gd2-perl', },
   { name => 'HTML::Parser',                        url => 'http://search.cpan.org/~gaas/',      debian => 'libhtml-parser-perl', },
-  { name => 'HTML::Restrict',                      url => 'http://search.cpan.org/~oalders/', },
+  { name => 'HTML::Restrict',                      url => 'http://search.cpan.org/~oalders/',   debian => 'libhtml-restrict-perl'},
   { name => "Image::Info",                         url => "http://search.cpan.org/~srezic/",    debian => 'libimage-info-perl' },
   { name => "JSON",                                url => "http://search.cpan.org/~makamaka",   debian => 'libjson-perl' },
-  { name => "List::MoreUtils", version => '0.21',  url => "http://search.cpan.org/~vparseval/", debian => 'liblist-moreutils-perl' },
-  { name => "List::UtilsBy",                       url => "http://search.cpan.org/~pevans/",    debian => 'liblist-utilsby-perl' },
+  { name => "List::MoreUtils", version => '0.30',  url => "http://search.cpan.org/~vparseval/", debian => 'liblist-moreutils-perl' },
+  { name => "List::UtilsBy",   version => '0.09',  url => "http://search.cpan.org/~pevans/",    debian => 'liblist-utilsby-perl' },
   { name => "LWP::Authen::Digest",                 url => "http://search.cpan.org/~gaas/",      debian => 'libwww-perl', dist_name => 'libwww-perl' },
   { name => "LWP::UserAgent",                      url => "http://search.cpan.org/~gaas/",      debian => 'libwww-perl', dist_name => 'libwww-perl' },
   { name => "Params::Validate",                    url => "http://search.cpan.org/~drolsky/",   debian => 'libparams-validate-perl' },
-  { name => "PBKDF2::Tiny",    version => '0.005', url => "http://search.cpan.org/~arodland/", },
+  { name => "PBKDF2::Tiny",    version => '0.005', url => "http://search.cpan.org/~dagolden/",  debian => 'libpbkdf2-tiny-perl' },
   { name => "PDF::API2",       version => '2.000', url => "http://search.cpan.org/~areibens/",  debian => 'libpdf-api2-perl' },
+  { name => "Regexp::IPv6",    version => '0.03',  url => "http://search.cpan.org/~salva/",     debian => 'libregexp-ipv6-perl' },
   { name => "Rose::Object",                        url => "http://search.cpan.org/~jsiracusa/", debian => 'librose-object-perl' },
   { name => "Rose::DB",                            url => "http://search.cpan.org/~jsiracusa/", debian => 'librose-db-perl' },
   { name => "Rose::DB::Object", version => 0.788,  url => "http://search.cpan.org/~jsiracusa/", debian => 'librose-db-object-perl' },
+  { name => "Set::Infinite",    version => '0.63', url => "http://search.cpan.org/~fglock/",    debian => 'libset-infinite-perl' },
   { name => "String::ShellQuote", version => 1.01, url => "http://search.cpan.org/~rosch/",     debian => 'libstring-shellquote-perl' },
   { name => "Sort::Naturally",                     url => "http://search.cpan.org/~sburke/",    debian => 'libsort-naturally-perl' },
-  # Test::Harness is core, so no Debian packages. Test::Harness 3.00 was first packaged in 5.10.1
-  { name => "Test::Harness",   version => '3.00',  url => "http://search.cpan.org/~petdance/",  },
   { name => "Template",        version => '2.18',  url => "http://search.cpan.org/~abw/",       debian => 'libtemplate-perl' },
   { name => "Text::CSV_XS",    version => '0.23',  url => "http://search.cpan.org/~hmbrand/",   debian => 'libtext-csv-xs-perl' },
   { name => "Text::Iconv",     version => '1.2',   url => "http://search.cpan.org/~mpiotr/",    debian => 'libtext-iconv-perl' },
   { name => "Text::Unidecode",                     url => "http://search.cpan.org/~sburke/",    debian => 'libtext-unidecode-perl' },
   { name => "URI",             version => '1.35',  url => "http://search.cpan.org/~gaas/",      debian => 'liburi-perl' },
+  { name => "XML::LibXML",                         url => "https://metacpan.org/pod/XML::LibXML", debian => 'libxml-libxml-perl' },
   { name => "XML::Writer",     version => '0.602', url => "http://search.cpan.org/~josephw/",   debian => 'libxml-writer-perl' },
   { name => "YAML",            version => '0.62',  url => "http://search.cpan.org/~ingy/",      debian => 'libyaml-perl' },
 );
@@ -66,6 +74,7 @@ BEGIN {
   # Net::SMTP is core since 5.7.3
   { name => "Net::SMTP::SSL",                      url => "http://search.cpan.org/~cwest/",     debian => 'libnet-smtp-ssl-perl' },
   { name => "Net::SSLGlue",                        url => "http://search.cpan.org/~sullr/",     debian => 'libnet-sslglue-perl' },
+  { name => "YAML::XS",                            url => "https://metacpan.org/pod/distribution/YAML-LibYAML/lib/YAML/LibYAML.pod", debian => 'libyaml-libyaml-perl' },
 );
 
 @developer_modules = (
@@ -119,9 +128,9 @@ sub template_dirs {
 
 sub classes_from_latex {
   my ($path, $class) = @_;
-  eval { use String::ShellQuote; 1 } or warn "can't load String::ShellQuote" && return;
-  $path  = shell_quote $path;
-  $class = shell_quote $class;
+  eval { require String::ShellQuote; 1 } or warn "can't load String::ShellQuote" && return;
+  $path  = String::ShellQuote::shell_quote $path;
+  $class = String::ShellQuote::shell_quote $class;
 
   open my $pipe, q#egrep -rs '^[\ \t]*# . "$class' $path". q# | sed 's/ //g' | awk -F '{' '{print $2}' | awk -F '}' '{print $1}' |#;
   my @cls = <$pipe>;

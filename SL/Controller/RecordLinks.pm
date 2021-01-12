@@ -18,6 +18,7 @@ use SL::DBUtils qw(like);
 use SL::DB::ShopOrder;
 use SL::JSON;
 use SL::Locale::String;
+use SL::Presenter::Record qw(grouped_record_list);
 
 use Rose::Object::MakeMethods::Generic
 (
@@ -48,6 +49,9 @@ my @link_type_specifics = (
   { title => t8('Purchase delivery order'), type => 'purchase_delivery_order', model => 'DeliveryOrder',   number => 'donumber',  },
   { title => t8('Purchase Invoice'),        type => 'purchase_invoice',        model => 'PurchaseInvoice', number => 'invnumber', },
   { title => t8('Letter'),                  type => 'letter',                  model => 'Letter',          number => 'letternumber', description => 'subject', description_title => t8('Subject'), date => 'date', project => undef },
+  { title => t8('Email'),                   type => 'email_journal',           model => 'EmailJournal',    number => 'id', description => 'subject', description_title => t8('Subject'), },
+  { title => t8('AR Transaction'),          type => 'ar_transaction',          model => 'Invoice',         number => 'invnumber', },
+  { title => t8('AP Transaction'),          type => 'ap_transaction',          model => 'PurchaseInvoice', number => 'invnumber', },
 );
 
 my @link_types = map { +{ %link_type_defaults, %{ $_ } } } @link_type_specifics;
@@ -63,7 +67,7 @@ sub action_ajax_list {
     my $linked_records = $self->object->linked_records(direction => 'both', recursive => 1, save_path => 1);
     push @{ $linked_records }, $self->object->sepa_export_items if $self->object->can('sepa_export_items');
 
-    my $output         = SL::Presenter->get->grouped_record_list(
+    my $output         = grouped_record_list(
       $linked_records,
       with_columns      => [ qw(record_link_direction) ],
       edit_record_links => 1,
@@ -105,7 +109,7 @@ sub action_ajax_add_filter {
   my $presenter = $self->presenter;
 
   my @link_type_select = map { [ $_->{type}, $_->{title} ] } @link_types;
-  my @projects         = map { [ $_->id, $presenter->project($_, display => 'inline', style => 'both', no_link => 1) ] } @{ SL::DB::Manager::Project->get_all_sorted };
+  my @projects         = map { [ $_->id, $_->presenter->project(display => 'inline', style => 'both', no_link => 1) ] } @{ SL::DB::Manager::Project->get_all_sorted };
   my $is_sales         = $self->object->can('customer_id') && $self->object->customer_id;
 
   $self->render(
@@ -122,7 +126,7 @@ sub action_ajax_add_list {
   my ($self) = @_;
 
   my $manager     = 'SL::DB::Manager::' . $self->link_type_desc->{model};
-  my $vc          = $self->link_type =~ m/shop|sales_|^invoice|requirement_spec|letter/ ? 'customer' : 'vendor';
+  my $vc          = $self->link_type =~ m/shop|sales_|^invoice|requirement_spec|letter|^ar_/ ? 'customer' : 'vendor';
   my $project     = $self->link_type_desc->{project};
   my $project_id  = "${project}_id";
   my $description = $self->link_type_desc->{description};

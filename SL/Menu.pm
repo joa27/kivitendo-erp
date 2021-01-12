@@ -3,14 +3,9 @@ package SL::Menu;
 use strict;
 
 use SL::Auth;
-use YAML ();
 use File::Spec;
 use SL::MoreCommon qw(uri_encode);
-
-our $yaml_xs;
-BEGIN {
-   $yaml_xs =  eval { require YAML::XS };
-}
+use SL::YAML;
 
 our %menu_cache;
 
@@ -29,11 +24,7 @@ sub new {
     for my $file (@files) {
       my $data;
       eval {
-        if ($yaml_xs) {
-          $data = YAML::XS::LoadFile(File::Spec->catfile($path, $file));
-        } else {
-          $data = YAML::LoadFile(File::Spec->catfile($path, $file));
-        }
+        $data = SL::YAML::LoadFile(File::Spec->catfile($path, $file));
         1;
       } or do {
         die "Error while parsing $file: $@";
@@ -180,7 +171,7 @@ sub parse_access_string {
 
   my $access = $node->{access};
 
-  while ($access =~ m/^([a-z_\/]+|\||\&|\(|\)|\s+)/) {
+  while ($access =~ m/^([a-z_\/]+|\!|\||\&|\(|\)|\s+)/) {
     my $token = $1;
     substr($access, 0, length($1)) = "";
 
@@ -199,7 +190,7 @@ sub parse_access_string {
       }
       $cur_ary = $stack[-1];
 
-    } elsif (($token eq "|") || ($token eq "&")) {
+    } elsif (($token eq "|") || ($token eq "&") || ($token eq "!")) {
       push @{$cur_ary}, $token;
 
     } else {
@@ -273,4 +264,3 @@ sub set_access {
 }
 
 1;
-

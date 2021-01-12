@@ -4,14 +4,26 @@ use strict;
 
 use Rose::DB::Object::Helpers qw(as_tree);
 
+use SL::Locale::String qw(t8);
 use SL::DBUtils ();
 use SL::DB::MetaSetup::Customer;
 use SL::DB::Manager::Customer;
 use SL::DB::Helper::IBANValidation;
 use SL::DB::Helper::TransNumberGenerator;
+use SL::DB::Helper::VATIDNrValidation;
 use SL::DB::Helper::CustomVariables (
   module      => 'CT',
   cvars_alias => 1,
+);
+use SL::DB::Helper::DisplayableNamePreferences (
+  title   => t8('Customer'),
+  options => [ {name => 'customernumber', title => t8('Customer Number') },
+               {name => 'name',           title => t8('Name')   },
+               {name => 'street',         title => t8('Street') },
+               {name => 'city',           title => t8('City') },
+               {name => 'zipcode',        title => t8('Zipcode')},
+               {name => 'email',          title => t8('E-Mail') },
+               {name => 'phone',          title => t8('Phone')  }, ]
 );
 
 use SL::DB::VC;
@@ -36,6 +48,7 @@ __PACKAGE__->meta->initialize;
 
 __PACKAGE__->before_save('_before_save_set_customernumber');
 
+
 sub _before_save_set_customernumber {
   my ($self) = @_;
 
@@ -49,6 +62,7 @@ sub validate {
   my @errors;
   push @errors, $::locale->text('The customer name is missing.') if !$self->name;
   push @errors, $self->validate_ibans;
+  push @errors, $self->validate_vat_id_numbers;
 
   return @errors;
 }
@@ -57,12 +71,6 @@ sub short_address {
   my ($self) = @_;
 
   return join ', ', grep { $_ } $self->street, $self->zipcode, $self->city;
-}
-
-sub displayable_name {
-  my $self = shift;
-
-  return join ' ', grep $_, $self->customernumber, $self->name;
 }
 
 sub last_used_ar_chart {
@@ -91,5 +99,13 @@ sub is_customer { 1 };
 sub is_vendor   { 0 };
 sub payment_terms { goto &payment }
 sub number { goto &customernumber }
+
+sub create_zugferd_invoices_for_this_customer {
+  my ($self) = @_;
+
+  no warnings 'once';
+  return $::instance_conf->get_create_zugferd_invoices if $self->create_zugferd_invoices == -1;
+  return $self->create_zugferd_invoices;
+}
 
 1;

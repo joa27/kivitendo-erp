@@ -57,6 +57,7 @@ use SL::DB::Tax;
 use SL::DB::TaxZone;
 use SL::TransNumber;
 use SL::DB;
+use SL::Presenter::Part qw(type_abbreviation classification_abbreviation);
 use Data::Dumper;
 
 use strict;
@@ -170,7 +171,7 @@ sub invoice_details {
   push @arrays, map { "ic_cvar_$_->{name}" } @{ $ic_cvar_configs };
   push @arrays, map { "project_cvar_$_->{name}" } @{ $project_cvar_configs };
 
-  my @tax_arrays = qw(taxbase tax taxdescription taxrate taxnumber);
+  my @tax_arrays = qw(taxbase tax taxdescription taxrate taxnumber tax_id);
 
   my @payment_arrays = qw(payment paymentaccount paymentdate paymentsource paymentmemo);
 
@@ -441,9 +442,9 @@ sub invoice_details {
         my $sortorder = "";
         if ($form->{groupitems}) {
           $sortorder =
-            qq|ORDER BY pg.partsgroup, a.oid|;
+            qq|ORDER BY pg.partsgroup, a.position|;
         } else {
-          $sortorder = qq|ORDER BY a.oid|;
+          $sortorder = qq|ORDER BY a.position|;
         }
 
         my $query =
@@ -504,10 +505,25 @@ sub invoice_details {
     push(@{ $form->{TEMPLATE_ARRAYS}->{taxrate} },        $form->format_amount($myconfig, $form->{"${item}_rate"} * 100));
     push(@{ $form->{TEMPLATE_ARRAYS}->{taxrate_nofmt} },  $form->{"${item}_rate"} * 100);
     push(@{ $form->{TEMPLATE_ARRAYS}->{taxnumber} },      $form->{"${item}_taxnumber"});
+    push(@{ $form->{TEMPLATE_ARRAYS}->{tax_id} },         $form->{"${item}_tax_id"});
 
-    my $tax_obj     = SL::DB::Manager::Tax->find_by(taxnumber => $form->{"${item}_taxnumber"});
-    my $description = $tax_obj ? $tax_obj->translated_attribute('taxdescription',  $form->{language_id}, 0) : '';
-    push(@{ $form->{TEMPLATE_ARRAYS}->{taxdescription} }, $description . q{ } . 100 * $form->{"${item}_rate"} . q{%});
+    # taxnumber (= accno) is used for grouping the amounts of the various taxes and as a prefix in form
+
+    # This code used to assume that at most one tax entry can point to the same
+    # chart_id, even though chart_id does not have a unique constraint!
+
+    # This chart_id was then looked up via its accno, which is the key that is
+    # used to group the different taxes by for a record
+
+    # As we now also store the tax_id we can use that to look up the tax
+    # instead, this is only done here to get the (translated) taxdescription.
+
+    if ( $form->{"${item}_tax_id"} ) {
+      my $tax_obj = SL::DB::Manager::Tax->find_by(id => $form->{"${item}_tax_id"}) or die "Can't find tax with id " . $form->{"${item}_tax_id"};
+      my $description = $tax_obj ? $tax_obj->translated_attribute('taxdescription',  $form->{language_id}, 0) : '';
+      push(@{ $form->{TEMPLATE_ARRAYS}->{taxdescription} }, $description . q{ } . 100 * $form->{"${item}_rate"} . q{%});
+    }
+
   }
 
   for my $i (1 .. $form->{paidaccounts}) {
@@ -559,20 +575,6 @@ sub invoice_details {
   $form->{$_} = $form->format_amount($myconfig, $form->{$_}, 2) for @separate_totals;
 
   $main::lxdebug->leave_sub();
-}
-
-sub project_description {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $dbh, $id) = @_;
-  my $form = \%main::form;
-
-  my $query = qq|SELECT description FROM project WHERE id = ?|;
-  my ($description) = selectrow_query($form, $dbh, $query, conv_i($id));
-
-  $main::lxdebug->leave_sub();
-
-  return $_;
 }
 
 sub customer_details {
@@ -681,18 +683,19 @@ sub customer_details {
 }
 
 sub post_invoice {
-  my ($self, $myconfig, $form, $provided_dbh, $payments_only) = @_;
+  my ($self, $myconfig, $form, $provided_dbh, %params) = @_;
   $main::lxdebug->enter_sub();
 
-  my $rc = SL::DB->client->with_transaction(\&_post_invoice, $self, $myconfig, $form, $provided_dbh, $payments_only);
+  my $rc = SL::DB->client->with_transaction(\&_post_invoice, $self, $myconfig, $form, $provided_dbh, %params);
 
   $::lxdebug->leave_sub;
   return $rc;
 }
 
 sub _post_invoice {
-  my ($self, $myconfig, $form, $provided_dbh, $payments_only) = @_;
+  my ($self, $myconfig, $form, $provided_dbh, %params) = @_;
 
+  my $payments_only = $params{payments_only};
   my $dbh = $provided_dbh || SL::DB->client->dbh;
   my $restricter = SL::HTML::Restrict->create;
 
@@ -1034,7 +1037,7 @@ SQL
 
   $project_id = conv_i($form->{"globalproject_id"});
   # entsprechend auch beim Bestimmen des Steuerschlüssels in Taxkey.pm berücksichtigen
-  my $taxdate = $form->{deliverydate} ? $form->{deliverydate} : $form->{invdate};
+  my $taxdate = $form->{tax_point} ||$form->{deliverydate} || $form->{invdate};
 
   foreach my $trans_id (keys %{ $form->{amount_cogs} }) {
     foreach my $accno (keys %{ $form->{amount_cogs}{$trans_id} }) {
@@ -1143,6 +1146,8 @@ SQL
     }
   }
 
+  my %already_cleared = %{ $params{already_cleared} // {} };
+
   # record payments and offsetting AR
   if (!$form->{storno}) {
     for my $i (1 .. $form->{paidaccounts}) {
@@ -1172,9 +1177,16 @@ SQL
       # record AR
       $amount = $form->round_amount($form->{"paid_$i"} * $form->{exchangerate} + $diff, 2);
 
+      my $new_cleared = !$form->{"acc_trans_id_$i"}                                                       ? 'f'
+                      : !$already_cleared{$form->{"acc_trans_id_$i"}}                                     ? 'f'
+                      : $already_cleared{$form->{"acc_trans_id_$i"}}->{amount} != $form->{"paid_$i"} * -1 ? 'f'
+                      : $already_cleared{$form->{"acc_trans_id_$i"}}->{accno}  != $accno                  ? 'f'
+                      : $already_cleared{$form->{"acc_trans_id_$i"}}->{cleared}                           ? 't'
+                      :                                                                                     'f';
+
       if ($form->{amount}{ $form->{id} }{ $form->{AR} } != 0) {
         $query =
-        qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, tax_id, taxkey, project_id, chart_link)
+        qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, tax_id, taxkey, project_id, cleared, chart_link)
            VALUES (?, (SELECT id FROM chart WHERE accno = ?), ?, ?,
                    (SELECT tax_id
                     FROM taxkeys
@@ -1190,9 +1202,9 @@ SQL
                                      WHERE accno = ?)
                     AND startdate <= ?
                     ORDER BY startdate DESC LIMIT 1),
-                   ?,
+                   ?, ?,
                    (SELECT link FROM chart WHERE accno = ?))|;
-        @values = (conv_i($form->{"id"}), $form->{AR}, $amount, $form->{"datepaid_$i"}, $form->{AR}, conv_date($taxdate), $form->{AR}, conv_date($taxdate), $project_id, $form->{AR});
+        @values = (conv_i($form->{"id"}), $form->{AR}, $amount, $form->{"datepaid_$i"}, $form->{AR}, conv_date($taxdate), $form->{AR}, conv_date($taxdate), $project_id, $new_cleared, $form->{AR});
         do_query($form, $dbh, $query, @values);
       }
 
@@ -1201,7 +1213,7 @@ SQL
       my $gldate = (conv_date($form->{"gldate_$i"}))? conv_date($form->{"gldate_$i"}) : conv_date($form->current_date($myconfig));
 
       $query =
-      qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, gldate, source, memo, tax_id, taxkey, project_id, chart_link)
+      qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, gldate, source, memo, tax_id, taxkey, project_id, cleared, chart_link)
          VALUES (?, (SELECT id FROM chart WHERE accno = ?), ?, ?, ?, ?, ?,
                  (SELECT tax_id
                   FROM taxkeys
@@ -1217,10 +1229,10 @@ SQL
                                    WHERE accno = ?)
                   AND startdate <= ?
                   ORDER BY startdate DESC LIMIT 1),
-                 ?,
+                 ?, ?,
                  (SELECT link FROM chart WHERE accno = ?))|;
       @values = (conv_i($form->{"id"}), $accno, $form->{"paid_$i"}, $form->{"datepaid_$i"},
-                 $gldate, $form->{"source_$i"}, $form->{"memo_$i"}, $accno, conv_date($taxdate), $accno, conv_date($taxdate), $project_id, $accno);
+                 $gldate, $form->{"source_$i"}, $form->{"memo_$i"}, $accno, conv_date($taxdate), $accno, conv_date($taxdate), $project_id, $new_cleared, $accno);
       do_query($form, $dbh, $query, @values);
 
       # exchangerate difference
@@ -1300,7 +1312,7 @@ SQL
 
   $query = qq|UPDATE ar set
                 invnumber   = ?, ordnumber     = ?, quonumber     = ?, cusordnumber  = ?,
-                transdate   = ?, orddate       = ?, quodate       = ?, customer_id   = ?,
+                transdate   = ?, orddate       = ?, quodate       = ?, tax_point     = ?, customer_id   = ?,
                 amount      = ?, netamount     = ?, paid          = ?,
                 duedate     = ?, deliverydate  = ?, invoice       = ?, shippingpoint = ?,
                 shipvia     = ?,                    notes         = ?, intnotes      = ?,
@@ -1315,7 +1327,7 @@ SQL
                 delivery_term_id = ?
               WHERE id = ?|;
   @values = (          $form->{"invnumber"},           $form->{"ordnumber"},             $form->{"quonumber"},          $form->{"cusordnumber"},
-             conv_date($form->{"invdate"}),  conv_date($form->{"orddate"}),    conv_date($form->{"quodate"}),    conv_i($form->{"customer_id"}),
+             conv_date($form->{"invdate"}),  conv_date($form->{"orddate"}),    conv_date($form->{"quodate"}), conv_date($form->{tax_point}), conv_i($form->{"customer_id"}),
                        $amount,                        $netamount,                       $form->{"paid"},
              conv_date($form->{"duedate"}),  conv_date($form->{"deliverydate"}),    '1',                                $form->{"shippingpoint"},
                        $form->{"shipvia"},                                $restricter->process($form->{"notes"}),       $form->{"intnotes"},
@@ -1439,7 +1451,7 @@ sub transfer_out {
 
   my (@errors, @transfers);
 
-  # do nothing, if transfer default is not requeseted at all
+  # do nothing, if transfer default is not requested at all
   if (!$::instance_conf->get_transfer_default) {
     $::lxdebug->leave_sub;
     return \@errors;
@@ -1449,26 +1461,56 @@ sub transfer_out {
 
   foreach my $i (1 .. $form->{rowcount}) {
     next if !$form->{"id_$i"};
-    my ($err, $wh_id, $bin_id) = _determine_wh_and_bin($dbh, $::instance_conf,
-                                                       $form->{"id_$i"},
-                                                       $form->{"qty_$i"},
-                                                       $form->{"unit_$i"});
-    if (!@{ $err } && $wh_id && $bin_id) {
-      push @transfers, {
-        'parts_id'         => $form->{"id_$i"},
-        'qty'              => $form->{"qty_$i"},
-        'unit'             => $form->{"unit_$i"},
-        'transfer_type'    => 'shipped',
-        'src_warehouse_id' => $wh_id,
-        'src_bin_id'       => $bin_id,
-        'project_id'       => $form->{"project_id_$i"},
-        'invoice_id'       => $form->{"invoice_id_$i"},
-        'comment'          => $::locale->text("Default transfer invoice"),
-      };
-    }
 
+    my ($err, $qty, $wh_id, $bin_id, $chargenumber);
+
+    if ($::instance_conf->get_sales_serial_eq_charge && $form->{"serialnumber_$i"}) {
+      my @serials = split(" ", $form->{"serialnumber_$i"});
+      if (scalar @serials != $form->{"qty_$i"}) {
+        push @errors, $::locale->text("Cannot transfer #1 qty with #2 serial number(s)", $form->{"qty_$i"}, scalar @serials);
+        last;
+      }
+      foreach my $serial (@serials) {
+        ($qty, $wh_id, $bin_id, $chargenumber) = WH->get_wh_and_bin_for_charge(chargenumber => $serial);
+        if (!$qty) {
+          push @errors, $::locale->text("Not enough in stock for the serial number #1", $serial);
+          last;
+        }
+        push @transfers, {
+            'parts_id'         => $form->{"id_$i"},
+            'qty'              => 1,
+            'unit'             => $form->{"unit_$i"},
+            'transfer_type'    => 'shipped',
+            'src_warehouse_id' => $wh_id,
+            'src_bin_id'       => $bin_id,
+            'chargenumber'     => $chargenumber,
+            'project_id'       => $form->{"project_id_$i"},
+            'invoice_id'       => $form->{"invoice_id_$i"},
+            'comment'          => $::locale->text("Default transfer invoice with charge number"),
+        };
+      }
+      $err = []; # error handling uses @errors direct
+    } else {
+      ($err, $wh_id, $bin_id)    = _determine_wh_and_bin($dbh, $::instance_conf,
+                                                         $form->{"id_$i"},
+                                                         $form->{"qty_$i"},
+                                                         $form->{"unit_$i"});
+      if (!@{ $err } && $wh_id && $bin_id) {
+        push @transfers, {
+          'parts_id'         => $form->{"id_$i"},
+          'qty'              => $form->{"qty_$i"},
+          'unit'             => $form->{"unit_$i"},
+          'transfer_type'    => 'shipped',
+          'src_warehouse_id' => $wh_id,
+          'src_bin_id'       => $bin_id,
+          'project_id'       => $form->{"project_id_$i"},
+          'invoice_id'       => $form->{"invoice_id_$i"},
+          'comment'          => $::locale->text("Default transfer invoice"),
+        };
+      }
+    }
     push @errors, @{ $err };
-  }
+  } # end form rowcount
 
   if (!@errors) {
     WH->transfer(@transfers);
@@ -1619,6 +1661,15 @@ sub _post_payment {
 
   $old_form = save_form();
 
+  $query = <<SQL;
+    SELECT at.acc_trans_id, at.amount, at.cleared, c.accno
+    FROM acc_trans at
+    LEFT JOIN chart c ON (at.chart_id = c.id)
+    WHERE (at.trans_id = ?)
+SQL
+
+  my %already_cleared = selectall_as_map($form, $dbh, $query, 'acc_trans_id', [ qw(amount cleared accno) ], $form->{id});
+
   # Delete all entries in acc_trans from prior payments.
   if (SL::DB::Default->get->payments_changeable != 0) {
     $self->_delete_payments($form, $dbh);
@@ -1665,7 +1716,7 @@ sub _post_payment {
   ($form->{AR}) = selectfirst_array_query($form, $dbh, $query, conv_i($form->{id}));
 
   # Post the new payments.
-  $self->post_invoice($myconfig, $form, $dbh, 1);
+  $self->post_invoice($myconfig, $form, $dbh, payments_only => 1, already_cleared => \%already_cleared);
 
   restore_form($old_form);
 
@@ -1961,7 +2012,7 @@ sub _retrieve_invoice {
       qq|SELECT
            a.invnumber, a.ordnumber, a.quonumber, a.cusordnumber,
            a.orddate, a.quodate, a.globalproject_id,
-           a.transdate AS invdate, a.deliverydate, a.paid, a.storno, a.storno_id, a.gldate,
+           a.transdate AS invdate, a.deliverydate, a.tax_point, a.paid, a.storno, a.storno_id, a.gldate,
            a.shippingpoint, a.shipvia, a.notes, a.intnotes, a.taxzone_id,
            a.duedate, a.taxincluded, (SELECT cu.name FROM currencies cu WHERE cu.id=a.currency_id) AS currency, a.shipto_id, a.cp_id,
            a.employee_id, a.salesman_id, a.payment_id,
@@ -2004,7 +2055,8 @@ sub _retrieve_invoice {
     $sth->finish;
     map { $form->{$_} =~ s/ +$//g } qw(printed emailed queued);
 
-    my $transdate = $form->{deliverydate} ? $dbh->quote($form->{deliverydate})
+    my $transdate = $form->{tax_point}    ? $dbh->quote($form->{tax_point})
+                  : $form->{deliverydate} ? $dbh->quote($form->{deliverydate})
                   : $form->{invdate}      ? $dbh->quote($form->{invdate})
                   :                         "current_date";
 
@@ -2063,7 +2115,8 @@ sub _retrieve_invoice {
       # get tax rates and description
       my $accno_id = ($form->{vc} eq "customer") ? $ref->{income_accno} : $ref->{expense_accno};
       $query =
-        qq|SELECT c.accno, t.taxdescription, t.rate, t.taxnumber FROM tax t
+        qq|SELECT c.accno, t.taxdescription, t.rate, t.id as tax_id, c.accno as taxnumber
+           FROM tax t
            LEFT JOIN chart c ON (c.id = t.chart_id)
            WHERE t.id IN
              (SELECT tk.tax_id FROM taxkeys tk
@@ -2085,7 +2138,8 @@ sub _retrieve_invoice {
         if (!($form->{taxaccounts} =~ /\Q$ptr->{accno}\E/)) {
           $form->{"$ptr->{accno}_rate"}        = $ptr->{rate};
           $form->{"$ptr->{accno}_description"} = $ptr->{taxdescription};
-          $form->{"$ptr->{accno}_taxnumber"}   = $ptr->{taxnumber};
+          $form->{"$ptr->{accno}_taxnumber"}   = $ptr->{taxnumber}; # don't use this anymore
+          $form->{"$ptr->{accno}_tax_id"}      = $ptr->{tax_id};
           $form->{taxaccounts} .= "$ptr->{accno} ";
         }
 
@@ -2157,7 +2211,7 @@ sub get_customer {
   $ref = selectfirst_hashref_query($form, $dbh, $query, @values);
 
   delete $ref->{salesman_id} if !$ref->{salesman_id};
-  delete $ref->{payment_id}  if $form->{payment_id};
+  delete $ref->{payment_id}  if !$ref->{payment_id};
 
   map { $form->{$_} = $ref->{$_} } keys %$ref;
 
@@ -2353,8 +2407,8 @@ sub retrieve_item {
       push @{ $ref->{matches} ||= [] }, $::locale->text('EAN') . ': ' . $ref->{ean};
     }
 
-    $ref->{type_and_classific} = $::request->presenter->type_abbreviation($ref->{part_type}).
-                                 $::request->presenter->classification_abbreviation($ref->{classification_id});
+    $ref->{type_and_classific} = type_abbreviation($ref->{part_type}) .
+                                 classification_abbreviation($ref->{classification_id});
     if (! $ref->{used_for_sale} ) {
       $has_wrong_pclass = PCLASS_NOTFORSALE ;
       next;
@@ -2387,7 +2441,7 @@ sub retrieve_item {
     # get tax rates and description
     my $accno_id = ($form->{vc} eq "customer") ? $ref->{income_accno} : $ref->{expense_accno};
     $query =
-      qq|SELECT c.accno, t.taxdescription, t.rate, t.taxnumber
+      qq|SELECT c.accno, t.taxdescription, t.id as tax_id, t.rate, c.accno as taxnumber
          FROM tax t
          LEFT JOIN chart c ON (c.id = t.chart_id)
          WHERE t.id in
@@ -2416,6 +2470,7 @@ sub retrieve_item {
         $form->{"$ptr->{accno}_rate"}        = $ptr->{rate};
         $form->{"$ptr->{accno}_description"} = $ptr->{taxdescription};
         $form->{"$ptr->{accno}_taxnumber"}   = $ptr->{taxnumber};
+        $form->{"$ptr->{accno}_tax_id"}      = $ptr->{tax_id};
         $form->{taxaccounts} .= "$ptr->{accno} ";
       }
 
@@ -2436,7 +2491,6 @@ sub retrieve_item {
     }
 
     $ref->{onhand} *= 1;
-
     push @{ $form->{item_list} }, $ref;
   }
   $sth->finish;

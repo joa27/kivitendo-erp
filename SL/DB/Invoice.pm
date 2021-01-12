@@ -13,9 +13,11 @@ use SL::DB::Helper::AttrHTML;
 use SL::DB::Helper::AttrSorted;
 use SL::DB::Helper::FlattenToForm;
 use SL::DB::Helper::LinkedRecords;
+use SL::DB::Helper::PDF_A;
 use SL::DB::Helper::PriceTaxCalculator;
 use SL::DB::Helper::PriceUpdater;
 use SL::DB::Helper::TransNumberGenerator;
+use SL::DB::Helper::ZUGFeRD;
 use SL::Locale::String qw(t8);
 use SL::DB::CustomVariable;
 
@@ -59,6 +61,12 @@ __PACKAGE__->meta->add_relationship(
       with_objects => [ 'chart' ],
       sort_by      => 'acc_trans_id ASC',
     },
+  },
+  dunnings       => {
+    type         => 'one to many',
+    class        => 'SL::DB::Dunning',
+    column_map   => { id => 'trans_id' },
+    manager_args => { with_objects => [ 'dunnings' ] }
   },
 );
 
@@ -148,7 +156,7 @@ sub new_from {
   my (@columns, @item_columns, $item_parent_id_column, $item_parent_column);
 
   if (ref($source) eq 'SL::DB::Order') {
-    @columns      = qw(quonumber delivery_customer_id delivery_vendor_id);
+    @columns      = qw(quonumber delivery_customer_id delivery_vendor_id tax_point);
     @item_columns = qw(subtotal);
 
     $item_parent_id_column = 'trans_id';
@@ -165,8 +173,8 @@ sub new_from {
   $terms = $source->customer->payment_terms if !defined $terms && $source->customer;
 
   my %args = ( map({ ( $_ => $source->$_ ) } qw(customer_id taxincluded shippingpoint shipvia notes intnotes salesman_id cusordnumber ordnumber department_id
-                                                cp_id language_id taxzone_id globalproject_id transaction_description currency_id delivery_term_id), @columns),
-               transdate   => DateTime->today_local,
+                                                cp_id language_id taxzone_id tax_point globalproject_id transaction_description currency_id delivery_term_id), @columns),
+               transdate   => $params{transdate} // DateTime->today_local,
                gldate      => DateTime->today_local,
                duedate     => $terms ? $terms->calc_date(reference_date => DateTime->today_local) : DateTime->today_local,
                invoice     => 1,
@@ -178,9 +186,16 @@ sub new_from {
 
   $args{payment_id} = ( $terms ? $terms->id : $source->payment_id);
 
-  if ($source->type =~ /_order$/) {
+  if ($source->type =~ /_delivery_order$/) {
+    $args{deliverydate} = $source->reqdate;
+    if (my $order = SL::DB::Manager::Order->find_by(ordnumber => $source->ordnumber)) {
+      $args{orddate}    = $order->transdate;
+    }
+
+  } elsif ($source->type =~ /_order$/) {
     $args{deliverydate} = $source->reqdate;
     $args{orddate}      = $source->transdate;
+
   } else {
     $args{quodate}      = $source->transdate;
   }
@@ -260,7 +275,7 @@ sub post {
 
     $self->_post_add_acctrans($data{amounts_cogs});
     $self->_post_add_acctrans($data{amounts});
-    $self->_post_add_acctrans($data{taxes});
+    $self->_post_add_acctrans($data{taxes_by_chart_id});
 
     $self->_post_add_acctrans({ $params{ar_id} => $self->amount * -1 });
 
@@ -290,14 +305,16 @@ sub _post_add_acctrans {
     $chart_link = SL::DB::Manager::Chart->find_by(id => $chart_id)->{'link'};
     $chart_link ||= '';
 
-    SL::DB::AccTransaction->new(trans_id   => $self->id,
-                                chart_id   => $chart_id,
-                                amount     => $spec->{amount},
-                                tax_id     => $spec->{tax_id},
-                                taxkey     => $spec->{taxkey},
-                                project_id => $self->globalproject_id,
-                                transdate  => $self->transdate,
-                                chart_link => $chart_link)->save;
+    if ($spec->{amount} != 0) {
+      SL::DB::AccTransaction->new(trans_id   => $self->id,
+                                  chart_id   => $chart_id,
+                                  amount     => $spec->{amount},
+                                  tax_id     => $spec->{tax_id},
+                                  taxkey     => $spec->{taxkey},
+                                  project_id => $self->globalproject_id,
+                                  transdate  => $self->transdate,
+                                  chart_link => $chart_link)->save;
+    }
   }
 }
 
@@ -349,6 +366,7 @@ sub add_ar_amount_row {
     chart_id   => $params{chart}->id,
     chart_link => $params{chart}->link,
     transdate  => $self->transdate,
+    gldate     => $self->gldate,
     taxkey     => $tax->taxkey,
     tax_id     => $tax->id,
     project_id => $params{project_id},
@@ -363,6 +381,7 @@ sub add_ar_amount_row {
        chart_id   => $tax->chart_id,
        chart_link => $tax->chart->link,
        transdate  => $self->transdate,
+       gldate     => $self->gldate,
        taxkey     => $tax->taxkey,
        tax_id     => $tax->id,
      );
@@ -578,8 +597,8 @@ sub link {
   my ($self) = @_;
 
   my $html;
-  $html   = SL::Presenter->get->sales_invoice($self, display => 'inline') if $self->invoice;
-  $html   = SL::Presenter->get->ar_transaction($self, display => 'inline') if !$self->invoice;
+  $html   = $self->presenter->sales_invoice(display => 'inline') if $self->invoice;
+  $html   = $self->presenter->ar_transaction(display => 'inline') if !$self->invoice;
 
   return $html;
 }
@@ -588,6 +607,12 @@ sub mark_as_paid {
   my ($self) = @_;
 
   $self->update_attributes(paid => $self->amount);
+}
+
+sub effective_tax_point {
+  my ($self) = @_;
+
+  return $self->tax_point || $self->deliverydate || $self->transdate;
 }
 
 1;
@@ -714,7 +739,7 @@ See L<SL::DB::Object::basic_info>.
 =item C<closed>
 
 Returns 1 or 0, depending on whether the invoice is closed or not. Currently
-invoices that are overpaid also count as closed.
+invoices that are overpaid also count as closed and credit notes in general.
 
 =item C<recalculate_amounts %params>
 

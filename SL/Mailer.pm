@@ -25,6 +25,7 @@ package Mailer;
 
 use Email::Address;
 use Email::MIME::Creator;
+use Encode;
 use File::MimeInfo::Magic;
 use File::Slurp;
 use List::UtilsBy qw(bundle_by);
@@ -34,6 +35,7 @@ use SL::DB::EmailJournal;
 use SL::DB::EmailJournalAttachment;
 use SL::DB::Employee;
 use SL::Template;
+use SL::Version;
 
 use strict;
 
@@ -42,6 +44,19 @@ my $num_sent = 0;
 my %mail_delivery_modules = (
   sendmail => 'SL::Mailer::Sendmail',
   smtp     => 'SL::Mailer::SMTP',
+);
+
+my %type_to_table = (
+  sales_quotation         => 'oe',
+  request_quotation       => 'oe',
+  sales_order             => 'oe',
+  purchase_order          => 'oe',
+  invoice                 => 'ar',
+  credit_note             => 'ar',
+  purchase_invoice        => 'ap',
+  letter                  => 'letter',
+  purchase_delivery_order => 'delivery_orders',
+  sales_delivery_order    => 'delivery_orders',
 );
 
 sub new {
@@ -87,7 +102,7 @@ sub _create_message_id {
   $domain     =~ s/.*\@//;
   $domain     =~ s/>.*//;
 
-  return  "kivitendo-$self->{version}-" . time() . "-${$}-${num_sent}\@$domain";
+  return  "kivitendo-" . SL::Version->get_version . "-" . time() . "-${$}-${num_sent}\@$domain";
 }
 
 sub _create_address_headers {
@@ -136,8 +151,6 @@ sub _create_attachment_part {
   my $file_id       = 0;
   my $email_journal = $::instance_conf->get_email_journal;
 
-  $::lxdebug->message(LXDebug->DEBUG2(), "mail5 att=" . $attachment . " email_journal=" . $email_journal . " id=" . $attachment->{id});
-
   if (ref($attachment) eq "HASH") {
     $attributes{filename}     = $attachment->{name};
     $file_id                  = $attachment->{id}   || '0';
@@ -162,18 +175,22 @@ sub _create_attachment_part {
   $attachment_content ||= ' ';
   $attributes{charset}  = $self->{charset} if $self->{charset} && ($attributes{content_type} =~ m{^text/});
 
-  $::lxdebug->message(LXDebug->DEBUG2(), "mail6 mtype=" . $attributes{content_type} . " filename=" . $attributes{filename});
-
   my $ent;
   if ( $attributes{content_type} eq 'message/rfc822' ) {
     $ent = Email::MIME->new($attachment_content);
-    $ent->header_str_set('Content-disposition' => 'attachment; filename='.$attributes{filename});
   } else {
     $ent = Email::MIME->create(
       attributes => \%attributes,
       body       => $attachment_content,
     );
   }
+
+  # Due to a bug in Email::MIME it's not enough to hand over the encoded file name in the "attributes" hash in the
+  # "create" call. Email::MIME iterates over the keys in the hash, and depending on which key it has already seen during
+  # the iteration it might revert the encoding. As Perl's hash key order is randomized for each Perl run, this means
+  # that the file name stays unencoded sometimes.
+  # Setting the header manually after the "create" call circumvents this problem.
+  $ent->header_set('Content-disposition' => 'attachment; filename="' . encode('MIME-Q', $attributes{filename}) . '"');
 
   push @{ $self->{mail_attachments}} , SL::DB::EmailJournalAttachment->new(
     name      => $attributes{filename},
@@ -195,7 +212,7 @@ sub _create_message {
   if ($self->{message}) {
     push @parts, Email::MIME->create(
       attributes => {
-        content_type => $self->{contenttype},
+        content_type => $self->{content_type},
         charset      => $self->{charset},
         encoding     => 'quoted-printable',
       },
@@ -203,7 +220,7 @@ sub _create_message {
     );
 
     push @{ $self->{headers} }, (
-      'Content-Type' => qq|$self->{contenttype}; charset="$self->{charset}"|,
+      'Content-Type' => qq|$self->{content_type}; charset="$self->{charset}"|,
     );
   }
 
@@ -229,13 +246,14 @@ sub send {
   }
 
   # Set defaults & headers
-  $self->{charset}       =  'UTF-8';
-  $self->{contenttype} ||=  "text/plain";
-  $self->{headers}       =  [
-    Subject              => $self->{subject},
-    'Message-ID'         => '<' . $self->_create_message_id . '>',
-    'X-Mailer'           => "kivitendo $self->{version}",
-  ];
+  $self->{charset}        =  'UTF-8';
+  $self->{content_type} ||=  "text/plain";
+  $self->{headers}      ||=  [];
+  push @{ $self->{headers} }, (
+    Subject               => $self->{subject},
+    'Message-ID'          => '<' . $self->_create_message_id . '>',
+    'X-Mailer'            => "kivitendo " . SL::Version->get_version,
+  );
   $self->{mail_attachments} = [];
   $self->{content_by_name}  = $::instance_conf->get_email_journal == 1 && $::instance_conf->get_doc_files;
 
@@ -247,10 +265,6 @@ sub send {
 
     my $email = $self->_create_message;
 
-    #$::lxdebug->message(0, "message: " . $email->as_string);
-    # return "boom";
-
-    $::lxdebug->message(LXDebug->DEBUG2(), "mail1 from=".$self->{from}." to=".$self->{to});
     my $from_obj = (Email::Address->parse($self->{from}))[0];
 
     $self->{driver}->start_mail(from => $from_obj->address, to => [ $self->_all_recipients ]);
@@ -262,7 +276,9 @@ sub send {
 
   $error = $@ if !$ok;
 
+  # create journal and link to record
   $self->{journalentry} = $self->_store_in_journal;
+  $self->_create_record_link if $self->{journalentry};
 
   return $ok ? '' : ($error || "undefined error");
 }
@@ -302,4 +318,123 @@ sub _store_in_journal {
   return $jentry->id;
 }
 
+
+sub _create_record_link {
+  my ($self) = @_;
+
+  # check for custom/overloaded types and ids (form != controller)
+  my $record_type = $self->{record_type} || $::form->{type};
+  my $record_id   = $self->{record_id}   || $::form->{id};
+
+  # you may send mails for unsaved objects (no record_id => unlinkable case)
+  if ($self->{journalentry} && $record_id && exists($type_to_table{$record_type})) {
+    RecordLinks->create_links(
+      mode       => 'ids',
+      from_table => $type_to_table{$record_type},
+      from_ids   => $record_id,
+      to_table   => 'email_journal',
+      to_id      => $self->{journalentry},
+    );
+  }
+}
+
 1;
+
+
+__END__
+
+=pod
+
+=encoding utf8
+
+=head1 NAME
+
+SL::Mailer - Base class for sending mails from kivitendo
+
+=head1 SYNOPSIS
+
+  package SL::BackgroundJob::CreatePeriodicInvoices;
+
+  use SL::Mailer;
+
+  my $mail              = Mailer->new;
+  $mail->{from}         = $config{periodic_invoices}->{email_from};
+  $mail->{to}           = $email;
+  $mail->{subject}      = $config{periodic_invoices}->{email_subject};
+  $mail->{content_type} = $filename =~ m/.html$/ ? 'text/html' : 'text/plain';
+  $mail->{message}      = $output;
+
+  $mail->send;
+
+=head1 OVERVIEW
+
+Mail can be sent from kivitendo via the sendmail command or the smtp protocol.
+
+
+=head1 INTERNAL DATA TYPES
+
+
+=over 2
+
+=item C<%mail_delivery_modules>
+
+  Currently two modules are supported: smtp or sendmail.
+
+=item C<%type_to_table>
+
+  Due to the lack of a single global mapping for $form->{type},
+  type is mapped to the corresponding database table. All types which
+  implement a mail action are currently mapped and should be mapped.
+  Type is either the value of the old form or the newer controller
+  based object type.
+
+=back
+
+=head1 FUNCTIONS
+
+=over 4
+
+=item C<new>
+
+=item C<_create_driver>
+
+=item C<_cleanup_addresses>
+
+=item C<_create_address_headers>
+
+=item C<_create_message_id>
+
+=item C<_create_attachment_part>
+
+=item C<_create_message>
+
+=item C<send>
+
+  If a mail was sent successfully the internal function _store_in_journal
+  is called if email journaling is enabled. If _store_in_journal was executed
+  successfully and the calling form is already persistent (database id) a
+  record_link will be created.
+
+=item C<_all_recipients>
+
+=item C<_store_in_journal>
+
+=item C<_create_record_link $self->{journalentry}, $::form->{id}, $self->{record_id}>
+
+
+  If $self->{journalentry} and either $self->{record_id} or $::form->{id} (checked in
+  this order) exist a record link from record to email journal is created.
+  Will fail silently if record_link creation wasn't successful (same behaviour as
+  _store_in_journal).
+
+=item C<validate>
+
+=back
+
+=head1 BUGS
+
+Nothing here yet.
+
+=head1 AUTHOR
+
+=cut

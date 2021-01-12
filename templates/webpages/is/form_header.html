@@ -54,7 +54,7 @@
         <tr>
           <th align="right">[% 'Customer' | $T8 %]</th>
           <td>
-           [% P.customer_vendor_picker("customer_id", customer_id, type="customer", style="width: 250px", class="initial_focus", onchange="\$('#update_button').click()") %]
+           [% P.customer_vendor.picker("customer_id", customer_id, type="customer", style="width: 250px", class="initial_focus", onchange="\$('#update_button').click()") %]
            [% L.button_tag("show_vc_details('customer')", LxERP.t8('Details (one letter abbreviation)')) %]
            [% L.hidden_tag("previous_customer_id", customer_id) %]
            [% L.hidden_tag("customer_pricegroup_id", customer_pricegroup_id) %]
@@ -136,6 +136,14 @@
   [%- END %]
           </td>
         </tr>
+[%- IF ALL_LANGUAGES %]
+        <tr>
+          <th align="right" nowrap>[% 'Language' | $T8 %]</th>
+          <td colspan="3">
+            [% L.select_tag('language_id', ALL_LANGUAGES, default = language_id, title_key = 'description', with_empty = 1, style = 'width:250px') %]
+          </td>
+        </tr>
+[%- END %]
 [%- IF ALL_DEPARTMENTS %]
         <tr>
           <th align="right" nowrap>[% 'Department' | $T8 %]</th>
@@ -163,7 +171,7 @@
           <th align="right">[% 'Exchangerate' | $T8 %]</th>
           <td>
            [%- IF forex %]
-            [% LxERP.format_amount(exchangerate, 2) %]
+            [% LxERP.format_amount(exchangerate, 5) %]
            [%- ELSE %]
             <input name="exchangerate" size="10" value="[% HTML.escape(LxERP.format_amount(exchangerate)) %]">
            [%- END %]
@@ -230,8 +238,14 @@
            <span id="duedate_fixed"[% IF !payment_terms_obj.auto_calculation %] style="display:none"[% END %]>[% HTML.escape(duedate) %]</span>
           </td>
         </tr>
+[%- END %]
         <tr>
-        <th align="right" nowrap>[% 'Delivery Order Number' | $T8 %]</th>
+          <th align="right" nowrap>[% LxERP.t8('Tax point') %]</th>
+          <td nowrap>[% L.date_tag('tax_point', tax_point, id='tax_point') %]</td>
+        </tr>
+[%- IF !is_type_credit_note %]
+        <tr>
+          <th align="right" nowrap>[% 'Delivery Order Number' | $T8 %]</th>
           <td colspan="3"><input size='11' name="donumber" id="donumber" value="[% HTML.escape(donumber) %]"></td>
         </tr>
 [%- END %]

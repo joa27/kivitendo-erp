@@ -37,7 +37,7 @@
      </tr>
      <tr>
       <th align="right">[% 'Project Number' | $T8 %]</th>
-      <td>[% P.project_picker("project_id", project_id, style=style) %]</td>
+      <td>[% P.project.picker("project_id", project_id, style=style) %]</td>
       <th align="right">[% 'Part Number' | $T8 %]</th>
       <td>[% L.input_tag("parts_partnumber", "", style=style) %]</td>
      </tr>
@@ -47,6 +47,14 @@
        [% L.date_tag('transdatefrom') %]
        [% 'Bis' | $T8 %]
        [% L.date_tag('transdateto') %]
+     </td>
+    </tr>
+     <tr>
+      <th align=right nowrap>[% 'Due Date' | $T8 %]</th>
+      <td>
+       [% L.date_tag('duedatefrom') %]
+       [% 'Bis' | $T8 %]
+       [% L.date_tag('duedateto') %]
      </td>
     </tr>
    <input type=hidden name=sort value=transdate>
@@ -103,6 +111,8 @@
            <td nowrap>[% 'Notes' | $T8 %]</td>
            <td align=right><input name="l_employee" class=checkbox type=checkbox value=Y></td>
            <td nowrap>[% 'Employee' | $T8 %]</td>
+           <td align=right><input name="l_department" class=checkbox type=checkbox value=Y></td>
+           <td nowrap>[% 'Department' | $T8 %]</td>
           </tr>
           <tr>
            <td align=right><input name="l_subtotal" class=checkbox type=checkbox value=Y></td>

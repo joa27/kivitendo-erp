@@ -47,7 +47,7 @@
               <tr>
                 <th align="right" nowrap>[% 'Customer' | $T8 %]</th>
                 <td colspan=3>
-                 [% P.customer_vendor_picker("customer_id", customer_id, type="customer", style="width: 300px", class=(initial_focus == 'customer_id' ? "initial_focus" : ""), onchange="\$('#update_button').click()") %]
+                 [% P.customer_vendor.picker("customer_id", customer_id, type="customer", style="width: 300px", class=(initial_focus == 'customer_id' ? "initial_focus" : ""), onchange="\$('#update_button').click()") %]
                  [% L.button_tag("show_vc_details('customer')", LxERP.t8('Details (one letter abbreviation)')) %]
                  [% L.hidden_tag("previous_customer_id", customer_id) %]
                  [% L.hidden_tag('terms', terms) %]
@@ -100,7 +100,7 @@
                 [% L.hidden_tag('forex', forex) %]
                 [% IF show_exch %]
                    <th align=right>[% 'Exchangerate' | $T8 %]</th>
-                   <td>[%- IF forex %][% L.hidden_tag('exchangerate', LxERP.format_amount(exchangerate, 5)) %][% LxERP.format_amount(exchangerate, 5) %][%- ELSE %][% L.input_tag('exchangerate', LxERP.format_amount(exchangerate, 5), size=10) %][%- END %]</td>
+                   <td>[%- IF forex %][% L.hidden_tag('exchangerate', LxERP.format_amount(exchangerate, 5, 1)) %][% LxERP.format_amount(exchangerate, 5, 1) %][%- ELSE %][% L.input_tag('exchangerate', LxERP.format_amount(exchangerate, 5, 1), size=10) %][%- END %]</td>
                 [% END %]
               </tr>
               [% IF ALL_DEPARTMENTS %]
@@ -142,6 +142,14 @@
                 <td>[% L.date_tag('duedate', duedate) %]</td>
               </tr>
               <tr>
+                <th align="right" nowrap>[% LxERP.t8('Tax point') %]</th>
+                <td>[% L.date_tag('tax_point', tax_point, id='tax_point') %]</td>
+              </tr>
+              <tr>
+                <th align=right nowrap>[% 'Delivery Date' | $T8 %]</th>
+                <td>[% L.date_tag('deliverydate', deliverydate) %]</td>
+              </tr>
+              <tr>
                 <th align=right nowrap>[% 'Project Number' | $T8 %]</th>
                 <td>[% L.select_tag('globalproject_id', ALL_PROJECTS, title_key = 'projectnumber', default = globalproject_id, with_empty = 1, onChange = "document.getElementById('update_button').click();") %]</td>
               </tr>
@@ -181,7 +189,7 @@
           </td>
         </tr>
         <tr>
-          <td>[% P.chart_picker("AR_chart_id", AR_chart_id, style="width: 400px", type="AR") %]</td>
+          <td>[% P.chart.picker("AR_chart_id", AR_chart_id, style="width: 400px", type="AR") %]</td>
           <th align=left>[% LxERP.format_amount(invtotal, 2) | html %]</th>
 
           <input type=hidden name=oldinvtotal value='[% oldinvtotal %]'>
@@ -267,9 +275,9 @@
 [%- IF show_exch %]
          <td align=center>
     [%- IF row.forex || !row.changeable%]
-          <input type=hidden name="exchangerate_[% loop.count %]" value='[% row.exchangerate | html %]'>[% row.exchangerate | html %]
+          <input type=hidden name="exchangerate_[% loop.count %]" value="[%- LxERP.format_amount(row.exchangerate, 5, 1) -%]">[%- LxERP.format_amount(row.exchangerate, 5, 1) -%]
     [%- ELSE %]
-          <input name="exchangerate_[% loop.count %]" size=10 value='[% row.exchangerate | html %]'>
+          <input name="exchangerate_[% loop.count %]" size=10 value="[%- LxERP.format_amount(row.exchangerate, 5, 1) -%]">
     [%- END %]
           <input type=hidden name="forex_[% loop.count %]" value='[% row.forex | html %]'>
          </td>

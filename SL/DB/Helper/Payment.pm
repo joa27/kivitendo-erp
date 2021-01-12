@@ -30,21 +30,38 @@ sub pay_invoice {
 
   my $is_sales = ref($self) eq 'SL::DB::Invoice';
   my $mult = $is_sales ? 1 : -1;  # multiplier for getting the right sign depending on ar/ap
-
+  my @new_acc_ids;
   my $paid_amount = 0; # the amount that will be later added to $self->paid, should be in default currency
 
   # default values if not set
   $params{payment_type} = 'without_skonto' unless $params{payment_type};
   validate_payment_type($params{payment_type});
 
-  # check for required parameters
+  # check for required parameters and optional params depending on payment_type
   Common::check_params(\%params, qw(chart_id transdate));
+  if ( $params{'payment_type'} eq 'without_skonto' && abs($params{'amount'}) < 0) {
+    croak "invalid amount for payment_type 'without_skonto': $params{'amount'}\n";
+  }
+  if ($params{'payment_type'} eq 'free_skonto') {
+    # we dont like too much automagic for this payment type.
+    # we force caller input for amount and skonto amount
+    Common::check_params(\%params, qw(amount skonto_amount));
+    # secondly we dont want to handle credit notes and purchase credit notes
+    croak("Cannot use 'free skonto' for credit or debit notes") if ($params{amount} <= 0 || $params{skonto_amount} <= 0);
+    # both amount have to be rounded
+    $params{skonto_amount} = _round($params{skonto_amount});
+    $params{amount}        = _round($params{amount});
+    # lastly skonto_amount has to be smaller than the open invoice amount or payment amount ;-)
+    if ($params{skonto_amount} > abs($self->open_amount) || $params{skonto_amount} > $params{amount}) {
+      croak("Skonto amount higher than the payment or invoice amount");
+    }
+  }
 
   my $transdate_obj;
-  if (ref($params{transdate} eq 'DateTime')) {
+  if (ref($params{transdate}) eq 'DateTime') {
     $transdate_obj = $params{transdate};
   } else {
-   $transdate_obj = $::locale->parse_date_to_object($params{transdate});
+    $transdate_obj = $::locale->parse_date_to_object($params{transdate});
   };
   croak t8('Illegal date') unless ref $transdate_obj;
 
@@ -84,11 +101,6 @@ sub pay_invoice {
     $exchangerate = 1;
   };
 
-  # input checks:
-  if ( $params{'payment_type'} eq 'without_skonto' ) {
-    croak "invalid amount for payment_type 'without_skonto': $params{'amount'}\n" unless abs($params{'amount'}) > 0;
-  };
-
   # options with_skonto_pt and difference_as_skonto don't require the parameter
   # amount, but if amount is passed, make sure it matches the expected value
   if ( $params{'payment_type'} eq 'difference_as_skonto' ) {
@@ -107,7 +119,7 @@ sub pay_invoice {
 
   # account where money is paid to/from: bank account or cash
   my $account_bank = SL::DB::Manager::Chart->find_by(id => $params{chart_id});
-  croak "can't find bank account" unless ref $account_bank;
+  croak "can't find bank account with id " . $params{chart_id} unless ref $account_bank;
 
   my $reference_account = $self->reference_account;
   croak "can't find reference account (link = AR/AP) for invoice" unless ref $reference_account;
@@ -123,15 +135,15 @@ sub pay_invoice {
     my $new_acc_trans;
 
     # all three payment type create 1 AR/AP booking (the paid part)
-    # difference_as_skonto creates n skonto bookings (1 for each tax type)
-    # with_skonto_pt creates 1 bank booking and n skonto bookings (1 for each tax type)
+    # difference_as_skonto creates n skonto bookings (1 for each buchungsgruppe type)
+    # with_skonto_pt creates 1 bank booking and n skonto bookings (1 for each buchungsgruppe type)
     # without_skonto creates 1 bank booking
 
     # as long as there is no automatic tax, payments are always booked with
     # taxkey 0
 
     unless ( $params{payment_type} eq 'difference_as_skonto' ) {
-      # cases with_skonto_pt and without_skonto
+      # cases with_skonto_pt, free_skonto and without_skonto
 
       # for case with_skonto_pt we need to know the corrected amount at this
       # stage if we are going to use $params{amount}
@@ -158,6 +170,7 @@ sub pay_invoice {
                                                    tax_id     => SL::DB::Manager::Tax->find_by(taxkey => 0)->id);
       $new_acc_trans->save;
 
+      push @new_acc_ids, $new_acc_trans->acc_trans_id;
       # deal with fxtransaction
       if ( $self->currency_id != $::instance_conf->get_currency_id ) {
         my $fxamount = _round($amount - ($amount * $exchangerate));
@@ -172,6 +185,7 @@ sub pay_invoice {
                                                      fx_transaction => 1,
                                                      tax_id         => SL::DB::Manager::Tax->find_by(taxkey => 0)->id);
         $new_acc_trans->save;
+        push @new_acc_ids, $new_acc_trans->acc_trans_id;
         # if invoice exchangerate differs from exchangerate of payment
         # deal with fxloss and fxamount
         if ($self->exchangerate and $self->exchangerate != 1 and $self->exchangerate != $exchangerate) {
@@ -192,20 +206,23 @@ sub pay_invoice {
                                                        fx_transaction => 0,
                                                        tax_id         => SL::DB::Manager::Tax->find_by(taxkey => 0)->id);
           $new_acc_trans->save;
+          push @new_acc_ids, $new_acc_trans->acc_trans_id;
 
-        };
-      };
-    };
-
-    if ( $params{payment_type} eq 'difference_as_skonto' or $params{payment_type} eq 'with_skonto_pt' ) {
+        }
+      }
+    }
+    # better everything except without_skonto
+    if ($params{payment_type} eq 'difference_as_skonto' or $params{payment_type} eq 'with_skonto_pt'
+        or $params{payment_type} eq 'free_skonto' ) {
 
       my $total_skonto_amount;
       if ( $params{payment_type} eq 'with_skonto_pt' ) {
         $total_skonto_amount = $self->skonto_amount;
       } elsif ( $params{payment_type} eq 'difference_as_skonto' ) {
         $total_skonto_amount = $self->open_amount;
-      };
-
+      } elsif ( $params{payment_type} eq 'free_skonto') {
+        $total_skonto_amount = $params{skonto_amount};
+      }
       my @skonto_bookings = $self->skonto_charts($total_skonto_amount);
 
       # error checking:
@@ -232,6 +249,7 @@ sub pay_invoice {
 
         # the acc_trans entries are saved individually, not added to $self and then saved all at once
         $new_acc_trans->save;
+        push @new_acc_ids, $new_acc_trans->acc_trans_id;
 
         $reference_amount -= abs($amount);
         $paid_amount      += -1 * $amount * $exchangerate;
@@ -240,8 +258,7 @@ sub pay_invoice {
       if ( $params{payment_type} eq 'difference_as_skonto' ) {
           die "difference_as_skonto calculated incorrectly, sum of calculated payments doesn't add up to open amount $total_open_amount, reference_amount = $reference_amount\n" unless _round($reference_amount) == 0;
       }
-
-    };
+    }
 
     my $arap_amount = 0;
 
@@ -254,7 +271,11 @@ sub pay_invoice {
       # with_skonto_pt for completely unpaid invoices we just use the value
       # from the invoice
       $arap_amount = $total_open_amount;
-    };
+    } elsif ( $params{payment_type} eq 'free_skonto' ) {
+      # we forced positive values and forced rounding at the beginning
+      # therefore the above comment can be safely applied for this payment type
+      $arap_amount = $params{amount} + $params{skonto_amount};
+    }
 
     # regardless of payment_type there is always only exactly one arap booking
     # TODO: compare $arap_amount to running total
@@ -267,6 +288,7 @@ sub pay_invoice {
                                                   taxkey     => 0,
                                                   tax_id     => SL::DB::Manager::Tax->find_by(taxkey => 0)->id);
     $arap_booking->save;
+    push @new_acc_ids, $arap_booking->acc_trans_id;
 
     $fx_gain_loss_amount *= -1 if $self->is_sales;
     $self->paid($self->paid + _round($paid_amount) + $fx_gain_loss_amount) if $paid_amount;
@@ -309,29 +331,16 @@ sub pay_invoice {
     1;
 
   }) || die t8('error while paying invoice #1 : ', $self->invnumber) . $db->error . "\n";
-
-  return 1;
-};
+  return wantarray ? @new_acc_ids : 1;
+}
 
 sub skonto_date {
 
   my $self = shift;
 
-  my $is_sales = ref($self) eq 'SL::DB::Invoice';
-
-  my $skonto_date;
-
-  if ( $is_sales ) {
-    return undef unless ref $self->payment_terms;
-    return undef unless $self->payment_terms->terms_skonto > 0;
-    $skonto_date = DateTime->from_object(object => $self->transdate)->add(days => $self->payment_terms->terms_skonto);
-  } else {
-    return undef unless ref $self->vendor->payment_terms;
-    return undef unless $self->vendor->payment_terms->terms_skonto > 0;
-    $skonto_date = DateTime->from_object(object => $self->transdate)->add(days => $self->vendor->payment_terms->terms_skonto);
-  };
-
-  return $skonto_date;
+  return undef unless ref $self->payment_terms;
+  return undef unless $self->payment_terms->terms_skonto > 0;
+  return DateTime->from_object(object => $self->transdate)->add(days => $self->payment_terms->terms_skonto);
 };
 
 sub reference_account {
@@ -421,29 +430,21 @@ sub remaining_skonto_days {
 sub percent_skonto {
   my $self = shift;
 
-  my $is_sales = ref($self) eq 'SL::DB::Invoice';
-
   my $percent_skonto = 0;
 
-  if ( $is_sales ) {
-    return undef unless ref $self->payment_terms;
-    return undef unless $self->payment_terms->percent_skonto > 0;
-    $percent_skonto = $self->payment_terms->percent_skonto;
-  } else {
-    return undef unless ref $self->vendor->payment_terms;
-    return undef unless $self->vendor->payment_terms->terms_skonto > 0;
-    $percent_skonto = $self->vendor->payment_terms->percent_skonto;
-  };
+  return undef unless ref $self->payment_terms;
+  return undef unless $self->payment_terms->percent_skonto > 0;
+  $percent_skonto = $self->payment_terms->percent_skonto;
 
   return $percent_skonto;
 };
 
 sub amount_less_skonto {
   # amount that has to be paid if skonto applies, always return positive rounded values
+  # no, rare case, but credit_notes and negative ap have negative amounts
+  # and therefore this comment may be misguiding
   # the result is rounded so we can directly compare it with the user input
   my $self = shift;
-
-  my $is_sales = ref($self) eq 'SL::DB::Invoice';
 
   my $percent_skonto = $self->percent_skonto || 0;
 
@@ -461,7 +462,13 @@ sub check_skonto_configuration {
   # my $transactions = $self->transactions;
   foreach my $transaction (@{ $self->transactions }) {
     # find all transactions with an AR_amount or AP_amount link
-    my $tax = SL::DB::Manager::Tax->get_first( where => [taxkey => $transaction->taxkey]);
+    my $tax = SL::DB::Manager::Tax->get_first( where => [taxkey => $transaction->taxkey, id => $transaction->tax_id ]);
+
+    # acc_trans entries for the taxes (chart_link == A[RP]_tax) often
+    # have combinations of taxkey & tax_id that don't exist in
+    # tax. Those must be skipped.
+    next if !$tax && ($transaction->chart_link !~ m{A[RP]_amount});
+
     croak "no tax for taxkey " . $transaction->{taxkey} unless ref $tax;
 
     $transaction->{chartlinks} = { map { $_ => 1 } split(m/:/, $transaction->chart_link) };
@@ -513,8 +520,7 @@ sub skonto_charts {
   # TODO: check whether there are negative values in invoice / acc_trans ... credited items
 
   # don't check whether skonto applies, because user may want to override this
-  # return undef unless $self->percent_skonto;  # for is_sales
-  # return undef unless $self->vendor->payment_terms->percent_skonto;  # for purchase
+  # return undef unless $self->percent_skonto;
 
   my $is_sales = ref($self) eq 'SL::DB::Invoice';
 
@@ -542,7 +548,8 @@ sub skonto_charts {
         # $reference_ARAP_amount += $transaction->{amount} * $mult;
 
         # quick hack that works around problem of non-unique tax keys in SKR04
-        my $tax = SL::DB::Manager::Tax->get_first( where => [taxkey => $transaction->{taxkey}]);
+        # ? use tax_id in acc_trans
+        my $tax = SL::DB::Manager::Tax->get_first( where => [id => $transaction->{tax_id}]);
         croak "no tax for taxkey " . $transaction->{taxkey} unless ref $tax;
 
         if ( $is_sales ) {
@@ -628,29 +635,30 @@ sub valid_skonto_amount {
 sub get_payment_select_options_for_bank_transaction {
   my ($self, $bt_id, %params) = @_;
 
-  my $bt = SL::DB::Manager::BankTransaction->find_by( id => $bt_id );
-  die unless $bt;
 
-  my $open_amount = $self->open_amount;
-  #$main::lxdebug->message(LXDebug->DEBUG2(),"skonto_date=".$self->skonto_date." open amount=".$open_amount);
+  # CAVEAT template code expects with_skonto_pt at position 1 for visual help
+  # due to skonto_charts, we cannot offer skonto for credit notes and neg ap
+  my $skontoable = $self->amount > 0 ? 1 : 0;
   my @options;
-  if ( $open_amount &&                   # invoice amount not 0
-       $self->skonto_date &&             # check whether skonto applies
-       ( abs(abs($self->amount_less_skonto) - abs($bt->amount)) < 0.01 ||
-        ( $bt->transaction_code eq "191" && abs($self->amount_less_skonto) < abs($bt->amount) )) &&
-       $self->check_skonto_configuration) {
-         if ( $self->within_skonto_period($bt->transdate) ) {
-           push(@options, { payment_type => 'without_skonto', display => t8('without skonto') });
-           push(@options, { payment_type => 'with_skonto_pt', display => t8('with skonto acc. to pt'), selected => 1 });
-         } else {
-           push(@options, { payment_type => 'without_skonto', display => t8('without skonto') , selected => 1 });
-           push(@options, { payment_type => 'with_skonto_pt', display => t8('with skonto acc. to pt')});
-         };
-  };
-
+  if(!$self->skonto_date) {
+    push(@options, { payment_type => 'without_skonto', display => t8('without skonto'), selected => 1 });
+    # wrong call to presenter or not implemented? disabled option is ignored
+    # push(@options, { payment_type => 'with_skonto_pt', display => t8('with skonto acc. to pt'), disabled => 1 });
+    push(@options, { payment_type => 'free_skonto', display => t8('free skonto') }) if $skontoable;
+    return @options;
+  }
+  # valid skonto date, check if skonto is preferred
+  my $bt = SL::DB::BankTransaction->new(id => $bt_id)->load;
+  if ($self->skonto_date && $self->within_skonto_period($bt->transdate)) {
+    push(@options, { payment_type => 'without_skonto', display => t8('without skonto') });
+    push(@options, { payment_type => 'with_skonto_pt', display => t8('with skonto acc. to pt'), selected => 1 }) if $skontoable;
+  } else {
+    push(@options, { payment_type => 'without_skonto', display => t8('without skonto') , selected => 1 });
+    push(@options, { payment_type => 'with_skonto_pt', display => t8('with skonto acc. to pt')}) if $skontoable;
+  }
+  push(@options, { payment_type => 'free_skonto', display => t8('free skonto') }) if $skontoable;
   return @options;
-
-};
+}
 
 sub exchangerate {
   my ($self) = @_;
@@ -714,7 +722,7 @@ sub get_payment_suggestions {
 sub validate_payment_type {
   my $payment_type = shift;
 
-  my %allowed_payment_types = map { $_ => 1 } qw(without_skonto with_skonto_pt difference_as_skonto);
+  my %allowed_payment_types = map { $_ => 1 } qw(without_skonto with_skonto_pt difference_as_skonto free_skonto);
   croak "illegal payment type: $payment_type, must be one of: " . join(' ', keys %allowed_payment_types) unless $allowed_payment_types{ $payment_type };
 
   return 1;
@@ -761,6 +769,17 @@ Create a payment booking for an existing invoice object (type ar/ap/is/ir) via
 a configured bank account.
 
 This function deals with all the acc_trans entries and also updates paid and datepaid.
+The params C<transdate> and C<chart_id> are mandantory.
+If the default payment ('without_skonto') is used the param amount is also
+mandantory.
+If the payment type ('free_skonto') is used the number params skonto_amount and amount
+are as well mandantory and need to be positive. Furthermore the skonto amount has
+to be lower than the payment or open invoice amount.
+
+Transdate can either be a date object or a date string.
+Chart_id is the id of the payment booking chart.
+Amount is either a postive or negative number, but never 0.
+
 
 Example:
 
@@ -791,7 +810,7 @@ or in a certain currency:
                    transdate     => DateTime->now->to_kivitendo,
                    memo          => 'foobar',
                    source        => 'barfoo',
-                   payment_type  => 'with_skonto',
+                   payment_type  => 'with_skonto_pt',
                   );
 
 Allowed payment types are:
@@ -850,6 +869,9 @@ If no amount is given the whole open amout is paid.
 If neither currency or currency_id are given as params, the currency of the
 invoice is assumed to be the payment currency.
 
+If successful the return value will be 1 in scalar context or in list context
+the two ids (acc_trans_id) of the newly created bookings.
+
 =item C<reference_account>
 
 Returns a chart object which is the chart of the invoice with link AR or AP.
@@ -862,12 +884,11 @@ Example (1200 is the AR account for SKR04):
 =item C<percent_skonto>
 
 Returns the configured skonto percentage of the payment terms of an invoice,
-e.g. 0.02 for 2%. Payment terms come from invoice settings for ar, from vendor
-settings for ap.
+e.g. 0.02 for 2%. Payment terms come from invoice settingssettings for ap.
 
 =item C<amount_less_skonto>
 
-If the invoice has a payment term (via ar for sales, via vendor for purchase),
+If the invoice has a payment term,
 calculate the amount to be paid in the case of skonto.  This doesn't check,
 whether skonto applies (i.e. skonto doesn't wasn't exceeded), it just subtracts
 the configured percentage (e.g. 2%) from the total amount.
@@ -1064,9 +1085,13 @@ might always want to pay as late as possible.
 Make suggestion for a skonto payment type by returning an HTML blob of the options
 of a HTML drop-down select with the most likely option preselected.
 
-This is a helper function for BankTransaction/ajax_payment_suggestion.
+This is a helper function for BankTransaction/ajax_payment_suggestion and
+template/webpages/bank_transactions/invoices.html
 
 We are working with an existing payment, so difference_as_skonto never makes sense.
+
+If skonto is not possible (skonto_date does not exists) simply return
+the single 'no skonto' option as a visual hint.
 
 If skonto is possible (skonto_date exists), add two possibilities:
 without_skonto and with_skonto_pt if payment date is within skonto_date,
@@ -1095,6 +1120,12 @@ Returns 1 if record uses a different currency, 0 if the default currency is used
 
 when looking at open amount, maybe consider that there may already be queued
 amounts in SEPA Export
+
+=item * C<skonto_charts>
+
+Cannot handle negative skonto amounts, will always calculate the skonto amount
+for credit notes or negative ap transactions with a positive sign.
+
 
 =back
 

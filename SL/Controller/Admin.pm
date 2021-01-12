@@ -17,6 +17,7 @@ use SL::Helper::Flash;
 use SL::Locale::String qw(t8);
 use SL::System::InstallationLock;
 use SL::User;
+use SL::Version;
 use SL::Layout::AdminLogin;
 
 use Rose::Object::MakeMethods::Generic
@@ -30,7 +31,7 @@ __PACKAGE__->run_before(\&setup_layout);
 __PACKAGE__->run_before(\&setup_client, only => [ qw(list_printers new_printer edit_printer save_printer delete_printer) ]);
 
 sub get_auth_level { "admin" };
-sub keep_auth_vars {
+sub keep_auth_vars_in_form {
   my ($class, %params) = @_;
   return $params{action} eq 'login';
 }
@@ -83,10 +84,9 @@ sub action_create_auth_tables {
   $::auth->set_session_value('admin_password', $::lx_office_conf{authentication}->{admin_password});
   $::auth->create_or_refresh_session;
 
-  return if $self->apply_dbupgrade_scripts;
+  my $scripts_applied = $self->apply_dbupgrade_scripts;
 
-  my $group = (SL::DB::Manager::AuthGroup->get_all(limit => 1))[0];
-  if (!$group) {
+  if (! SL::DB::Manager::AuthGroup->get_all_count) {
     SL::DB::AuthGroup->new(
       name        => t8('Full Access'),
       description => t8('Full access to all functions'),
@@ -94,7 +94,7 @@ sub action_create_auth_tables {
     )->save;
   }
 
-  $self->action_login;
+  $self->action_login unless $scripts_applied;
 }
 
 #
@@ -595,8 +595,8 @@ sub use_multiselect_js {
 sub login_form {
   my ($self, %params) = @_;
   $::request->layout(SL::Layout::AdminLogin->new);
-  my $version         = $::form->read_version;
-  $self->render('admin/adminlogin', title => t8('kivitendo v#1 administration', $version), %params, version => $version);
+  my $version         = SL::Version->get_version;
+  $self->render('admin/adminlogin', title => t8('kivitendo v#1 administration', $version), %params, version => $version );
 }
 
 sub edit_user_form {

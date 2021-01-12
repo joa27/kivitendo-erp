@@ -56,7 +56,7 @@ namespace('kivi.ActionBar', function(k){
           case 'enter': return 13;
           default:
             if (val.length == 1) {
-              return val.charChodeAt(0);
+              return val.charCodeAt(0);
             } else if (val % 1 === 0) {
               return val;
             } else {
@@ -107,21 +107,23 @@ namespace('kivi.ActionBar', function(k){
     }
   };
 
-  k.removeTooltip = function($e) {
+  k.removeTooltip = function(e) {
+    var $e = $(e);
     if ($e.hasClass('tooltipstered'))
       $e.tooltipster('destroy');
     $e.prop('title', '');
   };
 
-  k.setTooltip = function($e, tooltip) {
+  k.setTooltip = function(e, tooltip) {
+    var $e = $(e);
     if ($e.hasClass('tooltipstered'))
       $e.tooltipster('content', tooltip);
     else
       $e.tooltipster({ content: tooltip, theme: 'tooltipster-light' });
   };
 
-  k.setDisabled = function($e, tooltip) {
-    var data = $e.data('action');
+  k.setDisabled = function(e, tooltip) {
+    var $e = $(e);
 
     $e.addClass(CLASSES.disabled);
 
@@ -131,7 +133,8 @@ namespace('kivi.ActionBar', function(k){
       kivi.ActionBar.removeTooltip($e);
   };
 
-  k.setEnabled = function($e) {
+  k.setEnabled = function(e) {
+    var $e   = $(e);
     var data = $e.data('action');
 
     $e.removeClass(CLASSES.disabled);

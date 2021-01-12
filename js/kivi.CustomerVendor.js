@@ -58,7 +58,7 @@ namespace('kivi.CustomerVendor', function(ns) {
   this.selectContact = function(params) {
     var contactId = $('#contact_cp_id').val();
 
-	  var url = 'controller.pl?action=CustomerVendor/ajaj_get_contact&id='+ $('#cv_id').val() +'&db='+ $('#db').val() +'&contact_id='+ contactId;
+    var url = 'controller.pl?action=CustomerVendor/ajaj_get_contact&id='+ $('#cv_id').val() +'&db='+ $('#db').val() +'&contact_id='+ contactId;
 
     $.getJSON(url, function(data) {
       var contact = data.contact;
@@ -67,16 +67,22 @@ namespace('kivi.CustomerVendor', function(ns) {
 
       kivi.CustomerVendor.setCustomVariablesFromAJAJ(data.contact_cvars, 'contact_cvars_');
 
-      if ( contactId )
+      if ( contactId ) {
         $('#action_delete_contact').show();
-      else
+        $('#contact_cp_title_select').val(contact['cp_title']);
+        $('#contact_cp_abteilung_select').val(contact['cp_abteilung']);
+      } else {
         $('#action_delete_contact').hide();
-
+        $('#contact_cp_title_select, #contact_cp_abteilung_select').val('');
+      }
+      if (data.contact.disable_cp_main === 1)
+        $("#contact_cp_main").prop("disabled", true);
+      else
+        $("#contact_cp_main").prop("disabled", false);
       if ( params.onFormSet )
         params.onFormSet();
     });
 
-    $('#contact_cp_title_select, #contact_cp_abteilung_select').val('');
   };
 
   var mapSearchStmts = [
@@ -208,6 +214,7 @@ namespace('kivi.CustomerVendor', function(ns) {
   };
 
   this.inline_report = function(target, source, data){
+//    alert("HALLO S " + source + " --T " + target + " tt D " + data);
     $.ajax({
       url:        source,
       success:    function (rsp) {
@@ -271,7 +278,7 @@ namespace('kivi.CustomerVendor', function(ns) {
         'filter.all:substr:multi::ilike': term,
         'filter.obsolete': 0,
         current:  this.$real.val(),
-        type:     this.o.type,
+        type:     this.o.cv_type,
       };
     },
     set_item: function(item) {
@@ -395,6 +402,9 @@ namespace('kivi.CustomerVendor', function(ns) {
         },
         select: function(event, ui) {
           self.set_item(ui.item);
+          if (self.o.action.commit_one) {
+            self.run_action(self.o.action.commit_one);
+          }
         },
         search: function(event, ui) {
           if ((event.which == KEY.SHIFT) || (event.which == KEY.CTRL) || (event.which == KEY.ALT))
@@ -448,7 +458,39 @@ namespace('kivi.CustomerVendor', function(ns) {
     ns.reinit_widgets();
   }
 
+  ns.get_price_report = function(target, source, data) {
+    $.ajax({
+      url:        source,
+      success:    function (rsp) {
+        $(target).html(rsp);
+        $(target).find('a.report-generator-header-link').click(function(event){ ns.price_report_redirect_event(event, target) });
+      },
+    });
+  };
+
+  ns.price_report_redirect_event = function (event, target) {
+    event.preventDefault();
+    ns.get_price_report(target, event.target + '');
+  };
+
+  ns.price_list_init = function () {
+    $("#customer_vendor_tabs").on('tabsbeforeactivate', function(event, ui){
+      if (ui.newPanel.attr('id') == 'price_list') {
+        ns.get_price_report('#price_list', "controller.pl?action=CustomerVendor/ajax_list_prices&id=" + $('#cv_id').val() + "&db=" + $('#db').val() + "&callback=" + $('#callback').val());
+      }
+      return 1;
+    });
+
+    $("#customer_vendor_tabs").on('tabscreate', function(event, ui){
+      if (ui.panel.attr('id') == 'price_list') {
+        ns.get_price_report('#price_list', "controller.pl?action=CustomerVendor/ajax_list_prices&id=" + $('#cv_id').val() + "&db=" + $('#db').val() + "&callback=" + $('#callback').val());
+      }
+      return 1;
+    });
+  }
+
   $(function(){
     ns.init();
+    ns.price_list_init();
   });
 });

@@ -47,8 +47,14 @@ use SL::DB::AuthUser;
 use SL::DB::Default;
 use SL::DB::Employee;
 use SL::DB::Chart;
+use SL::DB::Customer;
+use SL::DB::Part;
+use SL::DB::Vendor;
 use SL::DB;
 use SL::GenericTranslations;
+use SL::Helper::UserPreferences::PositionsScrollbar;
+use SL::Helper::UserPreferences::PartPickerSearch;
+use SL::Helper::UserPreferences::UpdatePositions;
 
 use strict;
 
@@ -100,7 +106,7 @@ sub get_account {
 
     # get the taxkeys of the account
     $form->{ACCOUNT_TAXKEYS} = [];
-    foreach my $taxkey ( @{ $chart_obj->taxkeys } ) {
+    foreach my $taxkey ( sort { $b->startdate <=> $a->startdate } @{ $chart_obj->taxkeys } ) {
       push @{ $form->{ACCOUNT_TAXKEYS} }, { id             => $taxkey->id,
                                             chart_id       => $taxkey->chart_id,
                                             tax_id         => $taxkey->tax_id,
@@ -114,7 +120,7 @@ sub get_account {
     }
 
     # get new accounts (Folgekonto). Find all charts with the same link
-    $form->{NEWACCOUNT} = $chart_obj->db->dbh->selectall_arrayref('select id, accno,description from chart where link = ? order by accno', {Slice => {}}, $chart_obj->link);
+    $form->{NEWACCOUNT} = $chart_obj->db->dbh->selectall_arrayref('select id, accno,description from chart where link = ? and id != ? order by accno', {Slice => {}}, $chart_obj->link, $form->{id});
 
   } else { # set to orphaned for new charts, so chart_type can be changed (needed by $AccountIsPosted)
     $form->{orphaned} = 1;
@@ -507,6 +513,39 @@ sub save_template {
   return $error;
 }
 
+sub displayable_name_specs_by_module {
+  +{
+     'SL::DB::Customer' => {
+       specs => SL::DB::Customer->displayable_name_specs,
+       prefs => SL::DB::Customer->displayable_name_prefs,
+     },
+     'SL::DB::Vendor' => {
+       specs => SL::DB::Vendor->displayable_name_specs,
+       prefs => SL::DB::Vendor->displayable_name_prefs,
+     },
+     'SL::DB::Part' => {
+       specs => SL::DB::Part->displayable_name_specs,
+       prefs => SL::DB::Part->displayable_name_prefs,
+     },
+  };
+}
+
+sub positions_scrollbar_height {
+  SL::Helper::UserPreferences::PositionsScrollbar->new()->get_height();
+}
+
+sub purchase_search_makemodel {
+  SL::Helper::UserPreferences::PartPickerSearch->new()->get_purchase_search_makemodel();
+}
+
+sub sales_search_customer_partnumber {
+  SL::Helper::UserPreferences::PartPickerSearch->new()->get_sales_search_customer_partnumber();
+}
+
+sub positions_show_update_button {
+  SL::Helper::UserPreferences::UpdatePositions->new()->get_show_update_button();
+}
+
 sub save_preferences {
   $main::lxdebug->enter_sub();
 
@@ -521,6 +560,29 @@ sub save_preferences {
       %{ $user->config_values },
       map { ($_ => $form->{$_}) } SL::DB::AuthUser::CONFIG_VARS(),
     });
+
+  # Displayable name preferences
+  my $displayable_name_specs_by_module = displayable_name_specs_by_module();
+  foreach my $specs (@{ $form->{displayable_name_specs} }) {
+    if (!$specs->{value} || $specs->{value} eq $displayable_name_specs_by_module->{$specs->{module}}->{prefs}->get_default()) {
+      $displayable_name_specs_by_module->{$specs->{module}}->{prefs}->delete($specs->{value});
+    } else {
+      $displayable_name_specs_by_module->{$specs->{module}}->{prefs}->store_value($specs->{value});
+    }
+  }
+
+  if (exists $form->{positions_scrollbar_height}) {
+    SL::Helper::UserPreferences::PositionsScrollbar->new()->store_height($form->{positions_scrollbar_height})
+  }
+  if (exists $form->{purchase_search_makemodel}) {
+    SL::Helper::UserPreferences::PartPickerSearch->new()->store_purchase_search_makemodel($form->{purchase_search_makemodel})
+  }
+  if (exists $form->{sales_search_customer_partnumber}) {
+    SL::Helper::UserPreferences::PartPickerSearch->new()->store_sales_search_customer_partnumber($form->{sales_search_customer_partnumber})
+  }
+  if (exists $form->{positions_show_update_button}) {
+    SL::Helper::UserPreferences::UpdatePositions->new()->store_show_update_button($form->{positions_show_update_button})
+  }
 
   $main::lxdebug->leave_sub();
 
@@ -970,13 +1032,16 @@ sub taxes {
                    t.taxkey,
                    t.taxdescription,
                    round(t.rate * 100, 2) AS rate,
-                   (SELECT accno FROM chart WHERE id = chart_id) AS taxnumber,
-                   (SELECT description FROM chart WHERE id = chart_id) AS account_description,
-                   (SELECT accno FROM chart WHERE id = skonto_sales_chart_id) AS skonto_chart_accno,
-                   (SELECT description FROM chart WHERE id = skonto_sales_chart_id) AS skonto_chart_description,
-                   (SELECT accno FROM chart WHERE id = skonto_purchase_chart_id) AS skonto_chart_purchase_accno,
-                   (SELECT description FROM chart WHERE id = skonto_purchase_chart_id) AS skonto_chart_purchase_description
+                   tc.accno               AS taxnumber,
+                   tc.description         AS account_description,
+                   ssc.accno              AS skonto_chart_accno,
+                   ssc.description        AS skonto_chart_description,
+                   spc.accno              AS skonto_chart_purchase_accno,
+                   spc.description        AS skonto_chart_purchase_description
                  FROM tax t
+                 LEFT JOIN chart tc  ON (tc.id = t.chart_id)
+                 LEFT JOIN chart ssc ON (ssc.id = t.skonto_sales_chart_id)
+                 LEFT JOIN chart spc ON (spc.id = t.skonto_purchase_chart_id)
                  ORDER BY taxkey, rate|;
 
   my $sth = $dbh->prepare($query);
@@ -1117,14 +1182,13 @@ sub _save_tax {
   $chart_categories .= 'E' if $form->{expense};
   $chart_categories .= 'C' if $form->{costs};
 
-  my @values = ($form->{taxkey}, $form->{taxdescription}, $form->{rate}, conv_i($form->{chart_id}), conv_i($form->{chart_id}), conv_i($form->{skonto_sales_chart_id}), conv_i($form->{skonto_purchase_chart_id}), $chart_categories);
+  my @values = ($form->{taxkey}, $form->{taxdescription}, $form->{rate}, conv_i($form->{chart_id}), conv_i($form->{skonto_sales_chart_id}), conv_i($form->{skonto_purchase_chart_id}), $chart_categories);
   if ($form->{id} ne "") {
     $query = qq|UPDATE tax SET
                   taxkey                   = ?,
                   taxdescription           = ?,
                   rate                     = ?,
                   chart_id                 = ?,
-                  taxnumber                = (SELECT accno FROM chart WHERE id = ? ),
                   skonto_sales_chart_id    = ?,
                   skonto_purchase_chart_id = ?,
                   chart_categories         = ?
@@ -1138,13 +1202,12 @@ sub _save_tax {
                   taxdescription,
                   rate,
                   chart_id,
-                  taxnumber,
                   skonto_sales_chart_id,
                   skonto_purchase_chart_id,
                   chart_categories,
                   id
                 )
-                VALUES (?, ?, ?, ?, (SELECT accno FROM chart WHERE id = ?), ?, ?,  ?, ?)|;
+                VALUES (?, ?, ?, ?, ?, ?,  ?, ?)|;
   }
   push(@values, $form->{id});
   do_query($form, $dbh, $query, @values);
@@ -1305,12 +1368,14 @@ sub get_warehouse {
   map { $form->{$_} = $ref->{$_} } keys %{ $ref };
 
   $query = <<SQL;
-    SELECT b.*,
-      (   EXISTS(SELECT i.bin_id FROM inventory i WHERE i.bin_id = b.id LIMIT 1)
-       OR EXISTS(SELECT p.bin_id FROM parts     p WHERE p.bin_id = b.id LIMIT 1))
-      AS in_use
-    FROM bin b
-    WHERE b.warehouse_id = ?
+   SELECT b.*, use.in_use
+     FROM bin b
+     LEFT JOIN (
+       SELECT DISTINCT bin_id, TRUE AS in_use FROM inventory
+       UNION
+       SELECT DISTINCT bin_id, TRUE AS in_use FROM parts
+     ) use ON use.bin_id = b.id
+     WHERE b.warehouse_id = ?;
 SQL
 
   $form->{BINS} = selectall_hashref_query($form, $dbh, $query, conv_i($form->{id}));

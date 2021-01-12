@@ -19,11 +19,17 @@ Support::TestSetup::login();
 my $dbh = SL::DB->client->dbh;
 
 clear_up();
+
+my $d = SL::DB::Default->get;
+$d->update_attributes(datev_export_format => 'cp1252');
+
+my $ustid           = 'DE123456788';
 my $buchungsgruppe7 = SL::DB::Manager::Buchungsgruppe->find_by(description => 'Standard 7%') || die "No accounting group for 7\%";
 my $date            = DateTime->new(year => 2017, month =>  7, day => 19);
 my $department      = create_department(description => 'Kästchenweiße heiße Preise');
 my $project         = create_project(projectnumber => 2017, description => '299');
-my $customer        = new_customer(name => 'Test customer', ustid => 'DE12345678')->save();
+my $bank            = SL::DB::Manager::Chart->find_by(description => 'Bank') || die 'Can\'t find chart "Bank"';
+my $customer        = new_customer(name => 'Test customer', ustid => $ustid)->save();
 my $part1 = new_part(partnumber => '19', description => 'Part 19%')->save;
 my $part2 = new_part(
   partnumber         => '7',
@@ -46,7 +52,7 @@ my $invoice = create_sales_invoice(
 );
 
 # lets make a boom
-# generate_datev_* doesnt care about encoding but
+# generate_datev_* doesn't care about encoding but
 # csv_buchungsexport does! all arabic will be deleted
 # and no string will be left as invnumber
 
@@ -56,9 +62,8 @@ my $datev1 = SL::DATEV->new(
 );
 
 my $startdate = DateTime->new(year => 2017, month =>  1, day =>  1);
-my $enddate   = DateTime->new(year => 2017, month =>  12, day => 31);
+my $enddate   = DateTime->new(year => 2017, month => 12, day => 31);
 my $today     = DateTime->new(year => 2017, month =>  3, day => 17);
-
 
 $datev1->from($startdate);
 $datev1->to($enddate);
@@ -117,6 +122,13 @@ ok($die_message2 =~ m/Falscher Feldwert 'ݗݘݰݶmuh' für Feld 'belegfeld1' bei
 $invoice->invnumber('meine muh');
 $invoice->save();
 
+$invoice->pay_invoice(chart_id      => $bank->id,
+                      amount        => $invoice->open_amount,
+                      transdate     => $invoice->transdate->clone->add(days => 10),
+                      memo          => 'foobar',
+                      source        => 'barfoo',
+                     );
+
 my $datev4 = SL::DATEV->new(
   dbh        => $dbh,
   trans_id   => $invoice->id,
@@ -126,6 +138,7 @@ $datev4->from($startdate);
 $datev4->to($enddate);
 $datev4->generate_datev_data;
 $datev4->generate_datev_lines;
+
 my ($datev_csv4, $die_message3, $lines_aref);
 eval {
   $datev_csv4 = SL::DATEV::CSV->new(datev_lines  => $datev4->generate_datev_lines,
@@ -142,91 +155,90 @@ eval {
 ok(!($die_message3), 'no die message');
 ok(scalar @{ $datev_csv4->warnings } == 0, 'no warnings');
 
-my @sorted =  sort { $a->[0] cmp $b->[0] } @{ $lines_aref };
-cmp_deeply $sorted[0],    [ '1963,5', 'S', 'EUR', '', '', '',
-                            '1400', '8400', '', '1907', 'meine muh',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', "K\x{e4}stchen",
-                            '299', '','DE12345678', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '',
-                          ];
-cmp_deeply $sorted[1],     [ '535', 'S', 'EUR', '', '', '',
-                             '1400', '8300', '', '1907','meine muh',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', "K\x{e4}stchen",
-                            '299', '','DE12345678', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '', '', '', '', '', '', '', '', '',
-                            '',
-                          ];
+
+note('testing invoice without deliverydate');
+my @sorted =  sort { $a->[0] cmp $b->[0] } @{ $lines_aref }; # sort by string-comparison of amount
+cmp_deeply $sorted[0],
+           [ '1963,5', 'S', 'EUR', '', '', '',
+             '1400', '8400', '', '1907', 'meine muh',
+             '', '', 'Test customer', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', "K\x{e4}stchen",
+             '299', '', $ustid, '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '1', '',
+             '', '', '', '', '',
+           ],
+           'invoice without deliverydate 19% tax export ok';
+cmp_deeply $sorted[2],
+           [ '535', 'S', 'EUR', '', '', '',
+             '1400', '8300', '', '1907','meine muh',
+             '', '', 'Test customer', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', "K\x{e4}stchen",
+             '299', '', $ustid, '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '1', '',
+             '', '', '', '', '',
+           ],
+           'invoice without deliverydate 16% tax export ok';
+cmp_deeply $sorted[1],
+           [ '2498,5', 'S', 'EUR', '', '', '',
+             '1200', '1400', '', '2907','meine muh',
+             '', '', 'Test customer', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', "K\x{e4}stchen",
+             '299', '', $ustid, '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '1', '',
+             '', '', '', '', '',
+           ],
+           'invoice without deliverydate payment export ok';
+
 # create one haben buchung with GLTransaction today
 
 my $expense_chart = SL::DB::Manager::Chart->find_by(accno => '4660'); # Reisekosten
 my $cash_chart    = SL::DB::Manager::Chart->find_by(accno => '1000'); # Kasse
-my $tax_chart     = SL::DB::Manager::Chart->find_by(accno => '1576'); # Vorsteuer
-my $tax_9         = SL::DB::Manager::Tax->find_by(taxkey => 9, rate => 0.19) || die "No tax";
 
-my @acc_trans;
-push(@acc_trans, SL::DB::AccTransaction->new(
-                                      chart_id   => $expense_chart->id,
-                                      chart_link => $expense_chart->link,
-                                      amount     => -84.03,
-                                      transdate  => $today,
-                                      source     => '',
-                                      taxkey     => 9,
-                                      tax_id     => $tax_9->id,
-                                      project_id => $project->id,
-));
-push(@acc_trans, SL::DB::AccTransaction->new(
-                                      chart_id   => $tax_chart->id,
-                                      chart_link => $tax_chart->link,
-                                      amount     => -15.97,
-                                      transdate  => $today,
-                                      source     => '',
-                                      taxkey     => 9,
-                                      tax_id     => $tax_9->id,
-                                      project_id => $project->id,
-));
-push(@acc_trans, SL::DB::AccTransaction->new(
-                                      chart_id   => $cash_chart->id,
-                                      chart_link => $cash_chart->link,
-                                      amount     => 100,
-                                      transdate  => $today,
-                                      source     => '',
-                                      taxkey     => 0,
-                                      tax_id     => 0,
-));
-
-my $gl_transaction = SL::DB::GLTransaction->new(
+note('testing gl transaction without deliverydate');
+my $gl_transaction = create_gl_transaction(
   reference      => "Reise März 2018",
-  description    => "Reisekonsten März 2018 / Ma Schmidt",
+  description    => "Reisekosten März 2018 / Ma Schmidt",
   transdate      => $today,
-  gldate         => $today,
-  employee_id    => SL::DB::Manager::Employee->current->id,
   taxincluded    => 1,
   type           => undef,
-  ob_transaction => 0,
-  cb_transaction => 0,
-  storno         => 0,
-  storno_id      => undef,
-  transactions   => \@acc_trans,
-)->save;
+  bookings       => [
+                      {
+                        chart  => $expense_chart,
+                        taxkey => 9,
+                        debit  => 100, # net 84.03
+                      },
+                      {
+                        chart  => $cash_chart,
+                        taxkey => 0,
+                        credit => 100,
+                      },
+                    ],
+);
+
 my $datev2 = SL::DATEV->new(
   dbh        => $dbh,
   trans_id   => $gl_transaction->id,
@@ -235,7 +247,6 @@ my $datev2 = SL::DATEV->new(
 $datev2->from($startdate);
 $datev2->to($enddate);
 $datev2->generate_datev_data;
-$datev2->generate_datev_lines;
 
 my $datev_csv3  = SL::DATEV::CSV->new(datev_lines  => $datev2->generate_datev_lines,
                                       from         => $startdate,
@@ -244,17 +255,132 @@ my $datev_csv3  = SL::DATEV::CSV->new(datev_lines  => $datev2->generate_datev_li
                                      );
 
 my @data_csv    = sort { $a->[0] cmp $b->[0] } @{ $datev_csv3->lines };
-cmp_deeply($data_csv[0], [ 100, 'S', 'EUR', '', '', '', '4660', '1000', 9, '1703', 'Reise März 2',
-                     '', '', '', '', '', '', '', '', '', '', '',
-                     '', '', '', '', '', '', '', '', '', '', '', '', '',
-                     '', '', '', '', '', '', '', '', '', '', '',
-                     '', '', '', '', '', '', '', '', '', '', '', '', '',
-                     '', '', '', '', '', '', '', '', '', '', '', '', '',
-                     '', '', '', '', '', '', '', '', '', '', '', '', '',
-                     '', '', '', '', '', '', '', '', '', '', '', '', '',
-                     '', '', '', '', '', '', '', '', '', '', '', '', '',
-                     '', '', '', '', '' ]
-       );
+cmp_deeply($data_csv[0],
+           [ '100', 'S', 'EUR', '', '', '', '4660', '1000', 9, '1703', 'Reise März 2',
+             '', '', 'Reisekosten März 2018 / Ma Schmidt', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '1', '', '', '', '', '', '',
+           ],
+           'gl datev export without delivery date ok');
+
+
+note('testing same invoice, but with deliverydate');
+# 8400 and 8300 should have deliverydate in datev, payment should not
+$invoice->deliverydate(DateTime->new(year => 2017, month =>  7, day => 18));
+$invoice->save();
+
+$datev1 = SL::DATEV->new(
+  dbh        => $dbh,
+  trans_id   => $invoice->id,
+);
+
+$datev1->from($startdate);
+$datev1->to($enddate);
+$datev1->generate_datev_data;
+$datev1->generate_datev_lines;
+
+$datev_csv = SL::DATEV::CSV->new(datev_lines  => $datev1->generate_datev_lines,
+                                 from         => $startdate,
+                                 to           => $enddate,
+                                 locked       => $datev1->locked,
+);
+@sorted    = sort { $a->[0] cmp $b->[0] } @{ $datev_csv->lines };
+cmp_deeply $sorted[0],
+           [ '1963,5', 'S', 'EUR', '', '', '',
+             '1400', '8400', '', '1907', 'meine muh',
+             '', '', 'Test customer', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', "K\x{e4}stchen",
+             '299', '', $ustid, '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '1', '18072017',
+             '', '', '', '', '',
+           ],
+           'invoice with deliverydate 19% tax export ok';
+
+cmp_deeply $sorted[2],
+           [ '535', 'S', 'EUR', '', '', '',
+             '1400', '8300', '', '1907','meine muh',
+             '', '', 'Test customer', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', "K\x{e4}stchen",
+             '299', '', $ustid, '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '1', '18072017',
+             '', '', '', '', '',
+           ],
+           'invoice with deliverydate 16% tax export ok';
+
+cmp_deeply $sorted[1],
+           [ '2498,5', 'S', 'EUR', '', '', '',
+             '1200', '1400', '', '2907','meine muh',
+             '', '', 'Test customer', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', "K\x{e4}stchen",
+             '299', '', $ustid, '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '1', '',
+             '', '', '', '', '',
+           ],
+           'invoice with deliverydate payment export ok';
+
+note('testing same gl transaction with deliverydate');
+$gl_transaction->deliverydate(DateTime->new(year => 2017, month =>  7, day => 18));
+$gl_transaction->save;
+
+$datev1 = SL::DATEV->new(
+  dbh        => $dbh,
+  trans_id   => $gl_transaction->id,
+);
+
+$datev1->from($startdate);
+$datev1->to($enddate);
+$datev1->generate_datev_data;
+
+$datev_csv   = SL::DATEV::CSV->new(datev_lines  => $datev1->generate_datev_lines,
+                                   from         => $startdate,
+                                   to           => $enddate,
+                                   locked       => $datev1->locked,
+);
+
+@sorted      = sort { $a->[0] cmp $b->[0] } @{ $datev_csv->lines };
+cmp_deeply($sorted[0],
+           [ '100', 'S', 'EUR', '', '', '', '4660', '1000', 9, '1703', 'Reise März 2',
+             '', '', 'Reisekosten März 2018 / Ma Schmidt', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '', '', '', '', '', '', '', '', '', '', '',
+             '', '', '1', '18072017', '', '', '', '', '',
+           ],
+          'testing gl transaction with delivery date datev export ok');
 
 # TODO warnings are not yet tested
 # currently most of the valid_checks are senseless because of

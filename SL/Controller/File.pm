@@ -135,7 +135,8 @@ sub action_ajax_unimport {
 
 sub action_ajax_rename {
   my ($self) = @_;
-  my $file = SL::File->get(id => $::form->{id});
+  my ($id, $version) = split /_/, $::form->{id};
+  my $file = SL::File->get(id => $id);
   if ( ! $file ) {
     $self->js->flash('error', $::locale->text('File not exists !'))->render();
     return;
@@ -320,9 +321,9 @@ sub check_object_params {
   } elsif ( $::form->{object_type} ) {
     $type = $::form->{object_type};
   }
-  die "No object type"     unless $type;
-  die "No file type"       unless $::form->{file_type};
-  die "Unkown object type" unless $file_types{$type};
+  die "No object type"      unless $type;
+  die "No file type"        unless $::form->{file_type};
+  die "Unknown object type" unless $file_types{$type};
 
   $self->is_global($gldoc);
   $self->file_type($::form->{file_type});
@@ -494,7 +495,8 @@ sub _get_sources {
         'chkall_title' => $main::locale->text('Delete all'),
         'file_title'   => $main::locale->text('filename'),
         'confirm_text' => $main::locale->text('delete'),
-        'can_rename'   => 1,
+        'can_delete'   => $::instance_conf->get_doc_delete_printfiles,
+        'can_rename'   => $::instance_conf->get_doc_delete_printfiles,
         'rename_title' => $main::locale->text('Rename Documents'),
         'done_text'    => $main::locale->text('deleted')
       };
@@ -514,6 +516,7 @@ sub _get_sources {
           'can_rename'   => 1,
           'rename_title' => $main::locale->text('Rename Documents'),
           'can_import'   => 1,
+          'can_delete'   => 0,
           'import_title' => $main::locale->text('Add Document from \'#1\'', $scanner_or_mailrx->{name}),
           'path'         => $scanner_or_mailrx->{directory},
           'done_text'    => $main::locale->text('unimported')
@@ -535,6 +538,7 @@ sub _get_sources {
       'are_existing' => $self->existing ? 1 : 0,
       'rename_title' => $main::locale->text('Rename Attachments'),
       'can_upload'   => 1,
+      'can_delete'   => 1,
       'upload_title' => $main::locale->text('Upload Attachments'),
       'done_text'    => $main::locale->text('deleted')
     };
@@ -553,6 +557,7 @@ sub _get_sources {
       'are_existing' => $self->existing ? 1 : 0,
       'rename_title' => $main::locale->text('Rename Images'),
       'can_upload'   => 1,
+      'can_delete'   => 1,
       'upload_title' => $main::locale->text('Upload Images'),
       'done_text'    => $main::locale->text('deleted')
     };

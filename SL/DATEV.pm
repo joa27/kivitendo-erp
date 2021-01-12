@@ -35,7 +35,9 @@ use SL::DATEV::KNEFile;
 use SL::DATEV::CSV;
 use SL::DB;
 use SL::HTML::Util ();
+use SL::Iconv;
 use SL::Locale::String qw(t8);
+use SL::VATIDNr;
 
 use Data::Dumper;
 use DateTime;
@@ -393,11 +395,31 @@ sub csv_export {
                 eol          => "\r\n",
               }) or die "Cannot use CSV: ".Text::CSV_XS->error_diag();
 
-    my $csv_file = IO::File->new($self->export_path . '/' . $filename, '>:encoding(cp1252)') or die "Can't open: $!";
+    # get encoding from defaults - use cp1252 if DATEV strict export is used
+    my $enc = ($::instance_conf->get_datev_export_format eq 'cp1252') ? 'cp1252' : 'utf-8';
+    my $csv_file = IO::File->new($self->export_path . '/' . $filename, ">:encoding($enc)") or die "Can't open: $!";
+
     $csv->print($csv_file, $_) for @{ $datev_csv->header };
     $csv->print($csv_file, $_) for @{ $datev_csv->lines  };
     $csv_file->close;
     $self->{warnings} = $datev_csv->warnings;
+
+    # convert utf-8 to cp1252//translit if set
+    if ($::instance_conf->get_datev_export_format eq 'cp1252-translit') {
+
+      my $filename_translit = "EXTF_DATEV_kivitendo_translit" . $self->from->ymd() . '-' . $self->to->ymd() . ".csv";
+      open my $fh_in,  '<:encoding(UTF-8)',  $self->export_path . '/' . $filename or die "could not open $filename for reading: $!";
+      open my $fh_out, '>', $self->export_path . '/' . $filename_translit         or die "could not open $filename_translit for writing: $!";
+
+      my $converter = SL::Iconv->new("utf-8", "cp1252//translit");
+
+      print $fh_out $converter->convert($_) while <$fh_in>;
+      close $fh_in;
+      close $fh_out;
+
+      unlink $self->export_path . '/' . $filename or warn "Could not unlink $filename: $!";
+      $filename = $filename_translit;
+    }
 
     return { download_token => $self->download_token, filenames => $filename };
 
@@ -438,6 +460,14 @@ sub locked {
    $self->{locked} = $_[0];
  }
  return $self->{locked};
+}
+sub imported {
+ my $self = shift;
+
+ if (@_) {
+   $self->{imported} = $_[0];
+ }
+ return $self->{imported};
 }
 
 sub generate_datev_data {
@@ -492,10 +522,14 @@ sub generate_datev_data {
     $ar_accno = "CASE WHEN ac.chart_link = 'AR' THEN ct.customernumber ELSE c.accno END as accno";
     $ap_accno = "CASE WHEN ac.chart_link = 'AP' THEN ct.vendornumber   ELSE c.accno END as accno";
   }
+  my $gl_imported;
+  if ( !$self->imported ) {
+    $gl_imported = " AND NOT imported";
+  }
 
   my $query    =
     qq|SELECT ac.acc_trans_id, ac.transdate, ac.gldate, ac.trans_id,ar.id, ac.amount, ac.taxkey, ac.memo,
-         ar.invnumber, ar.duedate, ar.amount as umsatz, ar.deliverydate, ar.itime::date,
+         ar.invnumber, ar.duedate, ar.amount as umsatz, COALESCE(ar.tax_point, ar.deliverydate) AS deliverydate, ar.itime::date,
          ct.name, ct.ustid, ct.customernumber AS vcnumber, ct.id AS customer_id, NULL AS vendor_id,
          $ar_accno, c.description AS accname, c.taxkey_id as charttax, c.datevautomatik, c.id, ac.chart_link AS link,
          ar.invoice,
@@ -524,7 +558,7 @@ sub generate_datev_data {
        UNION ALL
 
        SELECT ac.acc_trans_id, ac.transdate, ac.gldate, ac.trans_id,ap.id, ac.amount, ac.taxkey, ac.memo,
-         ap.invnumber, ap.duedate, ap.amount as umsatz, ap.deliverydate, ap.itime::date,
+         ap.invnumber, ap.duedate, ap.amount as umsatz, COALESCE(ap.tax_point, ap.deliverydate) AS deliverydate, ap.itime::date,
          ct.name, ct.ustid, ct.vendornumber AS vcnumber, NULL AS customer_id, ct.id AS vendor_id,
          $ap_accno, c.description AS accname, c.taxkey_id as charttax, c.datevautomatik, c.id, ac.chart_link AS link,
          ap.invoice,
@@ -553,7 +587,7 @@ sub generate_datev_data {
        UNION ALL
 
        SELECT ac.acc_trans_id, ac.transdate, ac.gldate, ac.trans_id,gl.id, ac.amount, ac.taxkey, ac.memo,
-         gl.reference AS invnumber, gl.transdate AS duedate, ac.amount as umsatz, NULL as deliverydate, gl.itime::date,
+         gl.reference AS invnumber, NULL AS duedate, ac.amount as umsatz, COALESCE(gl.tax_point, gl.deliverydate) AS deliverydate, gl.itime::date,
          gl.description AS name, NULL as ustid, '' AS vcname, NULL AS customer_id, NULL AS vendor_id,
          c.accno, c.description AS accname, c.taxkey_id as charttax, c.datevautomatik, c.id, ac.chart_link AS link,
          FALSE AS invoice,
@@ -575,6 +609,7 @@ sub generate_datev_data {
          $trans_id_filter
          $gl_itime_filter
          $gl_department_id_filter
+         $gl_imported
          $filter
 
        ORDER BY trans_id, acc_trans_id|;
@@ -1024,10 +1059,25 @@ sub generate_datev_lines {
         $datev_data{buchungstext} = $transaction->[$haben]->{'name'};
       }
       if (($transaction->[$haben]->{'ustid'} // '') ne "") {
-        $datev_data{ustid} = $transaction->[$haben]->{'ustid'};
+        $datev_data{ustid} = SL::VATIDNr->normalize($transaction->[$haben]->{'ustid'});
       }
       if (($transaction->[$haben]->{'duedate'} // '') ne "") {
         $datev_data{belegfeld2} = $transaction->[$haben]->{'duedate'};
+      }
+
+      # if deliverydate exists, add it to datev export if it is
+      # * an ar/ap booking that is not a payment
+      # * a gl booking
+      if (    ($transaction->[$haben]->{'deliverydate'} // '') ne ''
+           && (
+                (    $transaction->[$haben]->{'table'} =~ /^(ar|ap)$/
+                  && $transaction->[$haben]->{'link'}  !~ m/_paid/
+                  && $transaction->[$soll]->{'link'}   !~ m/_paid/
+                )
+                || $transaction->[$haben]->{'table'} eq 'gl'
+              )
+         ) {
+        $datev_data{leistungsdatum} = $transaction->[$haben]->{'deliverydate'};
       }
     }
     $datev_data{umsatz} = abs($umsatz); # sales invoices without tax have a different sign???
@@ -1049,8 +1099,10 @@ sub generate_datev_lines {
       # $datev_data{buchungsschluessel} = !$datevautomatik ? $taxkey : "4";
       $datev_data{buchungsschluessel} = $taxkey;
     }
+    # set lock for each transaction
+    $datev_data{locked} = $self->locked;
 
-    push(@datev_lines, \%datev_data);
+    push(@datev_lines, \%datev_data) if $datev_data{umsatz};
   }
 
   # example of modifying export data:
@@ -1141,7 +1193,7 @@ sub kne_buchungsexport {
     $name =~ s/\ *$//;
     $kne_file->add_block("\x1E" . $name . "\x1C");
 
-    $kne_file->add_block("\xBA" . $kne->{'ustid'}    . "\x1C") if $kne->{'ustid'};
+    $kne_file->add_block("\xBA" . SL::VATIDNr->normalize($kne->{'ustid'}) . "\x1C") if $kne->{'ustid'};
 
     $kne_file->add_block("\xB3" . $kne->{'waehrung'} . "\x1C" . "\x79");
   };
@@ -1610,7 +1662,7 @@ Forces a garbage collection on previous exports which will delete all exports th
 
 =item errors
 
-Returns a list of errors that occured. If no errors occured, the export was a success.
+Returns a list of errors that occurred. If no errors occurred, the export was a success.
 
 =item export
 

@@ -2,7 +2,7 @@
 <!DOCTYPE book PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
 "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
 <book id="kivitendo-documentation" lang="de">
-  <title>kivitendo 3.5.1-beta: Installation, Konfiguration,
+  <title>kivitendo 3.5.6.1: Installation, Konfiguration,
   Entwicklung</title>
 
   <chapter id="Aktuelle-Hinweise">
@@ -13,7 +13,7 @@
     <itemizedlist>
       <listitem>
         <para>im Community-Forum: <ulink
-        url="https://forum.kivitendo.de:32443">https://forum.kivitendo.de:32443</ulink></para>
+        url="https://forum.kivitendo.de">https://forum.kivitendo.de</ulink></para>
       </listitem>
 
       <listitem>
@@ -106,8 +106,7 @@
         ohne große Probleme auf den derzeit aktuellen verbreiteten
         Distributionen läuft.</para>
 
-        <para>Anfang 2016 sind das folgende Systeme, von denen bekannt ist,
-        dass kivitendo auf ihnen läuft:</para>
+        <para>Mitte 2020 (ab Version 3.5.6) empfehlen wir:</para>
 
         <itemizedlist>
           <listitem>
@@ -115,27 +114,25 @@
 
             <itemizedlist>
               <listitem>
-                <para>7.0 "Wheezy"</para>
+                <para>10.0 "Buster"</para>
               </listitem>
-
               <listitem>
-                <para>8.0 "Jessie"</para>
+                <para>11.0 "Bullseye"</para>
               </listitem>
             </itemizedlist>
           </listitem>
 
           <listitem>
-            <para>Ubuntu 12.04 LTS "Precise Pangolin", 14.04 "Trusty Tahr"
-            LTS, 15.10 "Wily Werewolf" und 16.04 "Xenial Xerus" LTS
-            Alpha</para>
+            <para>20.04 "Focal Fossa" LTS
+          </para>
           </listitem>
 
           <listitem>
-            <para>openSUSE LEAP 42.1</para>
+            <para>openSUSE Leap 15.x und SUSE Linux Enterprise Server 15 GA</para>
           </listitem>
 
           <listitem>
-            <para>Fedora 22</para>
+            <para>Fedora 29</para>
           </listitem>
         </itemizedlist>
       </sect2>
@@ -159,7 +156,7 @@
 
         <itemizedlist>
           <listitem>
-            <para><literal>parent</literal> (nur bei Perl vor 5.10.1)</para>
+            <para><literal>Algorithm::CheckDigits</literal></para>
           </listitem>
 
           <listitem>
@@ -167,7 +164,7 @@
           </listitem>
 
           <listitem>
-            <para><literal>Algorithm::CheckDigits</literal></para>
+            <para><literal>CAM::PDF</literal></para>
           </listitem>
 
           <listitem>
@@ -183,11 +180,23 @@
           </listitem>
 
           <listitem>
+            <para><literal>Daemon::Generic</literal></para>
+          </listitem>
+
+          <listitem>
             <para><literal>DateTime</literal></para>
           </listitem>
 
           <listitem>
+            <para><literal>DateTime::Event::Cron</literal></para>
+          </listitem>
+
+          <listitem>
             <para><literal>DateTime::Format::Strptime</literal></para>
+          </listitem>
+
+          <listitem>
+            <para><literal>DateTime::Set</literal></para>
           </listitem>
 
           <listitem>
@@ -207,6 +216,10 @@
           </listitem>
 
           <listitem>
+            <para><literal>Exception::Class</literal></para>
+          </listitem>
+
+          <listitem>
             <para><literal>FCGI</literal> (nicht Versionen 0.68 bis 0.71
             inklusive; siehe <xref
             linkend="Apache-Konfiguration.FCGI.WebserverUndPlugin"/>)</para>
@@ -217,7 +230,15 @@
           </listitem>
 
           <listitem>
+            <para><literal>File::Flock</literal></para>
+          </listitem>
+
+          <listitem>
             <para><literal>File::MimeInfo</literal></para>
+          </listitem>
+
+          <listitem>
+            <para><literal>File::Slurp</literal></para>
           </listitem>
 
           <listitem>
@@ -281,6 +302,10 @@
           </listitem>
 
           <listitem>
+            <para><literal>Regexp::IPv6</literal></para>
+          </listitem>
+
+          <listitem>
             <para><literal>Rose::Object</literal></para>
           </listitem>
 
@@ -291,6 +316,10 @@
           <listitem>
             <para><literal>Rose::DB::Object</literal> Version 0.788 oder
             neuer</para>
+          </listitem>
+
+          <listitem>
+            <para><literal>Set::Infinite</literal></para>
           </listitem>
 
           <listitem>
@@ -326,16 +355,31 @@
           </listitem>
 
           <listitem>
-            <para><literal>YAML</literal></para>
+            <para><literal>XML::LibXML</literal></para>
+          </listitem>
+
+          <listitem>
+            <para><literal>YAML::XS</literal> oder <literal>YAML</literal></para>
           </listitem>
         </itemizedlist>
 
+
+        <para>Seit Version größer v3.5.6 sind die folgenden Pakete hinzugekommen: <literal>XML::LibXML</literal>, <literal>CAM::PDF</literal></para>
+        <para>Seit Version größer v3.5.3 sind die folgenden Pakete hinzugekommen: <literal>Exception::Class</literal></para>
+
+        <para>Seit Version größer v3.5.1 sind die folgenden Pakete hinzugekommen: <literal>Set::Infinite</literal>,
+        <literal>List::UtilsBy</literal>, <literal>DateTime::Set</literal>, <literal>DateTime::Event::Cron</literal>
+        <literal>Daemon::Generic</literal>, <literal>DateTime::Event::Cron</literal>, <literal>File::Flock</literal>,
+        <literal>File::Slurp</literal></para>
+
         <para>Seit Version größer v3.5.0 sind die folgenden Pakete
-        hinzugekommen: <literal>Text::Unidecode, LWP::Authen::Digest,
-        LWP::UserAgent</literal></para>
+        hinzugekommen: <literal>Text::Unidecode</literal>,
+        <literal>LWP::Authen::Digest</literal>,
+        <literal>LWP::UserAgent</literal></para>
 
         <para>Seit Version v3.4.0 sind die folgenden Pakete hinzugekommen:
-        <literal>Algorithm::CheckDigits</literal><literal>PBKDF2::Tiny</literal></para>
+        <literal>Algorithm::CheckDigits</literal>,
+        <literal>PBKDF2::Tiny</literal></para>
 
         <para>Seit Version v3.2.0 sind die folgenden Pakete hinzugekommen:
         <literal>GD</literal>, <literal>HTML::Restrict</literal>,
@@ -371,9 +415,8 @@
 
         <sect3>
           <title>Debian und Ubuntu</title>
-
           <para>Für Debian und Ubuntu stehen die meisten der benötigten
-          Perl-Pakete als Debian-Pakete zur Verfügung. Sie können mit
+          Pakete als Debian-Pakete zur Verfügung. Sie können mit
           folgendem Befehl installiert werden:</para>
 
           <programlisting>apt install  apache2 libarchive-zip-perl libclone-perl \
@@ -386,15 +429,19 @@
   libtext-iconv-perl liburi-perl libxml-writer-perl libyaml-perl \
   libimage-info-perl libgd-gd2-perl libapache2-mod-fcgid \
   libfile-copy-recursive-perl postgresql libalgorithm-checkdigits-perl \
-  libcrypt-pbkdf2-perl git libcgi-pm-perl libtext-unidecode-perl libwww-perl
+  libcrypt-pbkdf2-perl git libcgi-pm-perl libtext-unidecode-perl libwww-perl\
+  postgresql-contrib poppler-utils libhtml-restrict-perl\
+  libdatetime-set-perl libset-infinite-perl liblist-utilsby-perl\
+  libdaemon-generic-perl libfile-flock-perl libfile-slurp-perl\
+  libfile-mimeinfo-perl libpbkdf2-tiny-perl libregexp-ipv6-perl \
+  libdatetime-event-cron-perl libexception-class-perl libcam-pdf-perl \
+  libxml-libxml-perl
 </programlisting>
-
-          <para>Für das Paket HTML::Restrict gibt es kein Debian-Paket, dies
-          muß per CPAN installiert werden. Unter Ubuntu funktioniert das
-          mit:</para>
-
-          <programlisting>apt-get install build-essential
-cpan HTML::Restrict</programlisting>
+<para>Sollten Pakete nicht zu Verfügung stehen, so können diese auch mittels CPAN installiert werden. Ferner muss für Ubuntu das Repository "Universe" aktiv sein (s.a. Anmerkungen).</para>
+          <note id="ubuntu-universe">
+            <para>Die Perl Pakete für Ubuntu befinden sich im "Universe" Repository. Falls dies nicht aktiv ist, kann dies mit folgendem Aufruf aktiviert werden:
+<programlisting>add-apt-repository universe</programlisting></para>
+          </note>
         </sect3>
 
         <sect3>
@@ -404,62 +451,122 @@ cpan HTML::Restrict</programlisting>
           RPM-Pakete zur Verfügung. Sie können mit folgendem Befehl
           installiert werden:</para>
 
-          <programlisting>dnf install httpd mod_fcgid perl-Archive-Zip perl-Clone perl-DBD-Pg \
-  perl-DBI perl-DateTime perl-Email-Address perl-Email-MIME perl-FCGI \
-  perl-File-Copy-Recursive perl-JSON perl-List-MoreUtils perl-Net-SMTP-SSL perl-Net-SSLGlue \
-  perl-PDF-API2 perl-Params-Validate perl-Rose-DB perl-Rose-DB-Object \
+          <programlisting>dnf install httpd mod_fcgid postgresql-server postgresql-contrib\
+  perl-Algorithm-CheckDigits perl-Archive-Zip perl-CPAN perl-Class-XSAccessor \
+  perl-Clone perl-Config-Std perl-DBD-Pg perl-DBI perl-Daemon-Generic \
+  perl-DateTime perl-DateTime-Set perl-Email-Address perl-Email-MIME perl-FCGI \
+  perl-File-Copy-Recursive perl-File-Flock perl-File-MimeInfo perl-File-Slurp \
+  perl-GD perl-HTML-Restrict perl-JSON perl-List-MoreUtils perl-List-UtilsBy \
+  perl-Net-SMTP-SSL perl-Net-SSLGlue perl-PBKDF2-Tiny perl-PDF-API2 \
+  perl-Params-Validate perl-Regexp-IPv6 perl-Rose-DB perl-Rose-DB-Object \
   perl-Rose-Object perl-Sort-Naturally perl-String-ShellQuote \
-  perl-Template-Toolkit perl-Text-CSV_XS perl-Text-Iconv perl-URI \
-  perl-XML-Writer perl-YAML perl-parent postgresql-server perl-CPAN \
-  perl-Algorithm-CheckDigits perl-GD perl-Class-XSAccessor perl-Text-Balanced perl-libwww-perl</programlisting>
-
-          <para>Zusätzlich müssen einige Pakete aus dem CPAN installiert
-          werden. Dazu können Sie die folgenden Befehle nutzen:</para>
-
-          <programlisting>cpan Config::Std HTML::Restrict</programlisting>
+  perl-Template-Toolkit perl-Text-CSV_XS perl-Text-Iconv perl-URI perl-XML-Writer \
+  perl-YAML perl-libwww-perl</programlisting>
         </sect3>
 
         <sect3>
-          <title>openSUSE</title>
+          <title>openSUSE Leap 15.x und SUSE Linux Enterprise Server 15 GA</title>
 
-          <para>Für openSUSE stehen die meisten der benötigten Perl-Pakete als
-          RPM-Pakete zur Verfügung. Sie können mit folgendem Befehl
-          installiert werden:</para>
+          <para>Für openSUSE Leap 15.x stehen die meisten der benötigten Perl-Pakete als RPM-Pakete zur Verfügung.</para>
+          <para>Damit diese installiert werden können, muß das System die erforderlichen Repositories kennen und Zugriff über das Internet darauf haben.</para>
+          <para>Daher machen wir die Repositories dem System bekannt.</para>
+          <para>Um die zusätzlichen Repositories für die Installation zur Verfügung zu stellen, kann man diese mit YaST oder auch in einem Terminal auf der Konsole bekannt geben. Wir beschränken uns hier mit der Eingabe auf der Konsole. In den allermeisten Fällen verwenden die Administratoren eine sichere SSH-Verbindung zum zu administrierenden Server.</para>
+          <para>Dazu geben wir folgenden Befehl ein:</para>
+          <programlisting>zypper addrepo -f \
+  http://download.opensuse.org/repositories/devel:languages:perl/openSUSE_Leap_15.2/ \
+  "devel:languages:perl"
+          </programlisting>
+          <programlisting>zypper addrepo -f \
+  https://download.opensuse.org/repositories/devel:languages:haskell:lts:13/\
+  openSUSE_Leap_15.0/ "devel:languages:haskell:lts:13"
+          </programlisting>
+          <programlisting>zypper addrepo -f \
+  https://download.opensuse.org/repositories/devel:languages:haskell:lts:13/\
+  openSUSE_Leap_15.0/ "devel:languages:haskell:lts:13"
+          </programlisting>
+          <para>Danach geben wir noch die beiden folgenden Befehle ein:</para>
+          <programlisting>zypper clean</programlisting>
+          <programlisting>zypper refresh</programlisting>
+          <para>Sollte zypper eine Meldung ausgeben, ob der Repositorie Key abgelehnt, nicht vertraut oder für immer akzeptiert werden soll, ist die Beantwortung durch drücken der "i" Taste am besten geeignet. Wer noch mehr über zypper erfahren möchte, kann sich einmal die zypper Hilfe anschauen.</para>
+          <programlisting>zypper --help</programlisting>
+          <note>
+          <para>Offiziell wird von openSUSE nur noch Versionen ab 15.2 unterstützt. Die SuSE Macher haben ab Version 15.x einen großen Umbau in der Verwaltung der Pakete vorgenommen, das heißt, der Paketumfang ist der SLES 15 als Programmunterbau angepasst. Dies gilt besonders der openSUSE Distribution. Es gibt ja einmal die openSUSE Distri und die Professionelle SLES Version. Dadurch sind viele Pakete aus dem ursprünglich nur für die openSUSE geltenen Repositorie enfernt worden, aber auch viele auf aktuellem Stand gehalten.</para>
+          </note>
+          <para>Ab openSUSE Leap 15.x kann man die Distribution auch als reine Text Version, also ohne KDE Oberfläche aufsetzen. Vorteil hierbei ist, dass weniger Balast und unnötige Pakte installiert werden.</para>
+          <para>Bei openSUSE Versionen bis 15.x, also 10.x, 11.x, 12.x, 13.x hatte der Administrator die Möglichkeit, bei der Installation der Distribution die KDE Oberfläche zu aktivieren. In dieser Konstellation hat man die Möglichkeit, eine VNC Verbindung vom administrativen Client zu verwenden. Ist das nicht eingerichtet, arbeitet der Admin dann direkt am Bildschirm des Servers. Nun loggen wir uns am Server direkt ein, starten Yast2 in einer Konsole wie folgt:</para>
+          <para>yast2 return.</para>
+          <para>Oder über die Menüführung wie folgt: Ein Klick auf das runde Icon, ganz links unten in der Menüleiste, dann die Maus verfahren auf System und YaST.</para>
+          <para>Im weiteren Verlauf der Installation, beschränken wir uns mit dem Installations Werkzeug zypper. Zypper ist ein Komandozeilen basiertes Installations Tool, welches bei openSUSE Standard ist. Zypper weist ein etwas eigenartiges Verhalten auf, dass sich in etwa wie folgt darstellt. Hat man die Repositories eingerichtet, kann man diese mit Yast als auch mit Zypper benutzen, setzt man einen Befehl wie etwa: zypper up ab, so findet zypper mehr neuere Programmversionen als Yast. Ich habe im allgemeinen noch keine Nachteile damit erlebt.</para>
+          <para>Programmpakete können mit folgendem Befehl installiert werden:</para>
+          <para>zypper install Paketname</para>
+          <para>Es wird empfohlen zusätzliche Pakete nicht direkt mit CPAN zu installieren, da man diese auch über andere Repositories beziehen kann, die bei openSUSE zur Verfügung stehen. Dadurch hat man den Vorteil, dass die Pakete mit YaST verwaltet werden, also wieder deinstalliert oder durch neuere ersetzt werden können. Zudem kann man auch noch eventuelle Bugs an openSUSE senden und diese dem Maintainer melden.</para>
 
-          <programlisting>zypper install apache2 apache2-mod_fcgid perl-Archive-Zip perl-Clone \
-  perl-Config-Std perl-DBD-Pg perl-DBI perl-DateTime perl-Email-Address \
-  perl-Email-MIME perl-FastCGI perl-File-Copy-Recursive perl-JSON perl-List-MoreUtils \
-  perl-Net-SMTP-SSL perl-Net-SSLGlue perl-PDF-API2 perl-Params-Validate \
-  perl-Sort-Naturally perl-Template-Toolkit perl-Text-CSV_XS perl-Text-Iconv \
-  perl-URI perl-XML-Writer perl-YAML perl-CPAN \
-  perl-Algorithm-CheckDigits perl-GD perl-Class-XSAccessor postgresql-server perl-libwwww-perl</programlisting>
+          <programlisting>zypper install perl-threads-shared ghc-pdfinfo apache2-mod_fcgid \
+  yast2-http-server postgresql-server postgresql-contrib perl-Algorithm-CheckDigits \
+  perl-Archive-Zip perl-CGI perl-CGI-Ajax perl-Clone \
+  perl-Config-Std perl-Class-XSAccessor perl-Daemon-Generic perl-DateTime \
+  perl-DateTime-Event-Cron perl-DateTime-Format-Strptime perl-DateTime-Set \
+  perl-DBI perl-DBD-Pg perl-Devel-REPL perl-FastCGI perl-Email-Address \
+  perl-Email-MIME perl-Email-MIME-ContentType perl-Email-MIME-Encodings \
+  perl-FCGI perl-File-Copy-Recursive perl-File-Flock perl-File-MimeInfo \
+  perl-File-Slurp perl-GD perl-HTML-Restrict perl-Image-Info \
+  perl-JSON perl-List-MoreUtils perl-List-UtilsBy perl-Log-Log4perl perl-Net-LDAP-Server \
+  perl-Net-SSLGlue perl-Net-SMTP-SSL perl-PBKDF2-Tiny perl-PDF-API2 \
+  perl-Params-Validate perl-Regexp-IPv6 perl-Rose-DB perl-Rose-Object \
+  perl-Rose-DB-Object perl-MooseX-Role-Cmd perl-Set-Crontab perl-Set-Infinite \
+  perl-Sort-Naturally perl-String-ShellQuote perl-Sys-CPU perl-Template-Toolkit \
+  perl-Text-CSV_XS perl-Test-Deep perl-Test-Output perl-Text-Iconv \
+  perl-Text-Unidecode perl-URI perl-URI-Find perl-XML-Writer \
+  perl-YAML perl-libwww-perl
+          </programlisting>
+
+          <para>Für die Entwickler installiert man noch die folgenden Pakete:</para>
+
+          <programlisting>zypper install ghc-mtl-devel ghc-old-locale-devel \
+  ghc-process-extras-devel ghc-rpm-macros ghc-text-devel ghc-time-devel \
+  ghc-Cabal-devel ghc-time-locale-compat-devel perl-Log-Log4perl ghc-pdfinfo \
+  ghc-pdfinfo-devel perl-Devel-REPL perl-URI-Find perl-Class-Utils \
+  perl-Error-Pure perl-File-Object perl-Readonly perl-Test-Warnings \
+  perl-Test-NoWarnings perl-Test-Deep perl-Test-Output perl-Test-Strict \
+  perl-Test-LongString perl-File-Find-Rule
+          </programlisting>
+
+          <para>Zusätzlich müssen einige Pakete für den Umgang mit Latex installiert werden. Die Latex Module barcodes sind nützliche Helfer um auch Barcodes im Dokument zu platzieren, der Vollständigkeit halber hier für die Installation mit angegeben.
+              Dazu können Sie die folgenden Befehle nutzen:</para>
+
+          <programlisting>zypper install texlive-wallpaper texlive-colortbl \
+  texlive-scrlttr2copy texlive-eurosym \
+  texlive-geometry texlive-german texlive-graphbox texlive-hyperref \
+  texlive-xifthen texlive-luainputenc texlive-lastpage texlive-ltabptch \
+  texlive-nomentbl texlive-threeparttablex texlive-substr texlive-tabulary \
+  texlive-ulem texlive-wallpaper texlive-xcolor texlive-xstring \
+  texlive-xypic texlive-mwe texlive-mweights texlive-barcodes \
+  texlive-GS1 texlive-ean texlive-makebarcode texlive-pst-barcode \
+  texlive-upca
+          </programlisting>
 
           <para>Zusätzlich müssen einige Pakete aus dem CPAN installiert
-          werden. Dazu können Sie die folgenden Befehle nutzen:</para>
+          werden. Dazu können Sie die folgenden Befehle anwenden:</para>
 
-          <programlisting>cpan Rose::Db::Object</programlisting>
+          <programlisting>cpan DateTime::event::Cron DateTime::Set FCGI \
+  HTML::Restrict PBKDF2::Tiny Rose::Db::Object Set::Infinite</programlisting>
         </sect3>
       </sect2>
 
       <sect2>
         <title>Andere Pakete installieren</title>
 
-        <para>Seit Version v3.4.0 wird für den Bankimport optional das Paket
-        'aqbanking-tools' benötigt.</para>
-
-        <para>Debian und Ubuntu: <programlisting>apt install aqbanking-tools
-        </programlisting></para>
-
-        <para>OpenSuSE: <programlisting>zypper install aqbanking-tools</programlisting></para>
-
-        <para>Seit Version v3.4.1 wird generell zum Feststellen der
-        Seitenanzahl von PDF_Dokumenten 'pdfinfo' benötigt was im Paket
-        'poppler-utils' enthalten ist.</para>
-
-        <para>Debian und Ubuntu: <programlisting>apt install poppler-utils
-        </programlisting></para>
-
-        <para>OpenSuSE: <programlisting>zypper install poppler-tools</programlisting></para>
+        <itemizedlist>
+          <listitem>
+            <para><literal>poppler-utils</literal> 'pdfinfo' zum Erkennen der Seitenanzahl bei der PDF-Generierung</para>
+          </listitem>
+          <listitem>
+            <para><literal>Postgres Trigram-Index</literal> Für datenbankoptimierte Suchanfragen. Bspw. im Paket <literal>postgresql-contrib</literal> enthalten</para>
+          </listitem>
+        </itemizedlist>
+        <para>Debian und Ubuntu: <programlisting>apt install postgresql-contrib poppler-utils</programlisting></para>
+        <para>Fedora: <programlisting>dnf install poppler-utils postgresql-contrib</programlisting></para>
+        <para>openSUSE: <programlisting>zypper install poppler-tools</programlisting></para>
       </sect2>
     </sect1>
 
@@ -472,15 +579,15 @@ cpan HTML::Restrict</programlisting>
       url="https://github.com/kivitendo/kivitendo-erp/releases">hier</ulink>
       heruntergeladen werden.</para>
 
-      <para>Die kivitendo ERP Installationsdatei
-      (<filename>kivitendo-erp-3.4.1.tgz</filename>) wird im
+      <para>Das aktuelleste kivitendo ERP-Archiv
+      (<filename>kivitendo-erp-*.tgz</filename>) wird dann im
       Dokumentenverzeichnis des Webservers (z.B.
       <filename>/var/www/html/</filename>,
       <filename>/srv/www/htdocs</filename> oder
       <filename>/var/www/</filename>) entpackt:</para>
 
       <programlisting>cd /var/www
-tar xvzf kivitendo-erp-3.4.1.tgz</programlisting>
+tar xvzf kivitendo-erp-*.tgz</programlisting>
 
       <para>Wechseln Sie in das entpackte Verzeichnis:</para>
 
@@ -501,7 +608,7 @@ tar xvzf kivitendo-erp-3.4.1.tgz</programlisting>
       restlichen Dateien müssen für diesen Benutzer lesbar sein. Die Benutzer-
       und Gruppennamen sind bei verschiedenen Distributionen unterschiedlich
       (z.B. bei Debian/Ubuntu <constant>www-data</constant>, bei Fedora
-      <constant>apache</constant> oder bei OpenSUSE
+      <constant>apache</constant> oder bei openSUSE
       <constant>wwwrun</constant>).</para>
 
       <para>Der folgende Befehl ändert den Besitzer für die oben genannten
@@ -538,24 +645,30 @@ git checkout `git tag -l | egrep -ve "(alpha|beta|rc)" | tail -1`</programlistin
         3.4.1 nach 3.5: <programlisting>
 $ git clone https://github.com/kivitendo/kivitendo-erp.git
 $ cd kivitendo-erp/
-$ git checkout release-3.4.1     # das ist der aktuelle release, den wir wollen
-$ git add templates/fullhouse    # das sind unsere druckvorlagen inkl. produktbilder
-$ git commit -m "juhu tolle ändernungen"
+$ git checkout release-3.4.1                # das ist ein alter release aus dem wir starten ...
+$ git checkout -b meine_eigene_änderungen   # unser lokaler branch - unabhängig von allen anderen
+$ git add templates/mein_druck              # das sind unsere druckvorlagen inkl. produktbilder
+$ git commit -m "juhu tolle änderungen"
+
 [meine_aenderungen 1d89e41] juhu tolle ändernungen
  4 files changed, 380 insertions(+)
- create mode 100644 templates/fullhouse/img/webdav/tesla.png
- create mode 100644 templates/fullhouse/mahnung.tex
- create mode 100644 templates/fullhouse/zahlungserinnerung_zwei.tex
- create mode 100644 templates/fullhouse/zahlungserinnerung_zwei_invoice.tex
+ create mode 100644 templates/mein_druck/img/webdav/tesla.png
+ create mode 100644 templates/mein_druck/mahnung.tex
+ create mode 100644 templates/mein_druck/zahlungserinnerung_zwei.tex
+ create mode 100644 templates/mein_druck/zahlungserinnerung_zwei_invoice.tex
 
 # 5 Jahre später ...
+# webserver abschalten!
 
-$ git fetch
-$ git rebase --onto release-3.5.0 release-3.4.1 meine_aenderungen
+$ git checkout master
+$ git pull                                  # oder git fetch und danach ein stable release tag auswählen (s.o.)
+$ git checkout meine_eigenen_änderungen
+$ git rebase master
+
 Zunächst wird der Branch zurückgespult, um Ihre Änderungen
 darauf neu anzuwenden ...
-Wende an: juhu tolle ändernungen
-$ service apache2 restart
+Wende an: juhu tolle änderungen
+$ service apache2 restart                   # webserver starten!
 </programlisting></para>
       </note>
     </sect1>
@@ -734,7 +847,7 @@ default_manager = german</programlisting>
 
         <para>kivitendo bringt eine eigene Komponente zur zeitgesteuerten
         Ausführung bestimmter Aufgaben mit, den <link
-        linkend="config.task-server">Taskserver</link>. Er wird u.a. für
+        linkend="config.task-server">Task-Server</link>. Er wird u.a. für
         Features wie die <link
         linkend="features.periodic-invoices">wiederkehrenden Rechnungen</link>
         benötigt, erledigt aber auch andere erforderliche Aufgaben und muss
@@ -769,7 +882,19 @@ default_manager = german</programlisting>
       <title>Anpassung der PostgreSQL-Konfiguration</title>
 
       <para>PostgreSQL muss auf verschiedene Weisen angepasst werden.</para>
-
+      <para>Dies variert je nach eingesetzter Distribution, da distributionsabhängig unterschiedliche Strategien beim Upgrade der Postgres Version eingesetzt werden.
+            Als Hinweis einige Links zu den drei Distribution (Stand Dezember 2018):</para>
+          <itemizedlist>
+            <listitem>
+              <para><ulink url="https://fedoraproject.org/wiki/PostgreSQL">Fedora (Postgres-Installation unter Fedora)</ulink></para>
+            </listitem>
+            <listitem>
+              <para><ulink url="https://help.ubuntu.com/lts/serverguide/postgresql.html">Ubuntu (Infos für Postgres für die aktuelle LTS Version)</ulink></para>
+            </listitem>
+            <listitem>
+              <para><ulink url="https://de.opensuse.org/PostgreSQL">OpenSuSE (aktuell nur bis Version OpenSuSE 13 verifiziert)</ulink></para>
+            </listitem>
+          </itemizedlist>
       <sect2 id="Zeichensätze-die-Verwendung-von-UTF-8">
         <title>Zeichensätze/die Verwendung von Unicode/UTF-8</title>
 
@@ -856,8 +981,8 @@ psql template1</programlisting> führen Sie die folgenden Kommandos aus:</para>
         <para>Ab Version 3.5.1 wird die Trigram-Index-Erweiterung benötigt.
         Diese wird mit dem SQL-Updatescript
         sql/Pg-upgrade2/trigram_extension.sql und Datenbank-Super-Benutzer
-        Rechten automatisch installiert. Um den Systembenutzer "postgres" mit
-        SuperUserRechten auszustatten braucht dieser ein Passwort.</para>
+        Rechten automatisch installiert. Dazu braucht der
+        DatenbankSuperbenutzer "postgres" ein Passwort.</para>
 
         <programlisting>su - postgres
 psql
@@ -870,20 +995,12 @@ Eingabe Passwort
         einer Datenbank bzw. bei Updatescripten, die SuperuserRechte
         benötigen, eingegeben werden.</para>
 
-        <para>Um die Trigramerweiterung selbst zu installieren:</para>
-
-        <para><programlisting>su - postgres
-psql template1</programlisting> führen Sie die folgenden Kommandos aus:</para>
-
-        <programlisting>CREATE EXTENSION IF NOT EXISTS pg_trgm;
-\q</programlisting>
-
         <note>
           <para><literal>pg_trgm</literal> ist je nach Distribution nicht im
           Standard-Paket von Postgres enthalten. Ein <programlisting>select * from pg_available_extensions where name ='pg_trgm';</programlisting>
           in template1 sollte entsprechend erfolgreich sein. Andernfalls muss
           das Paket nachinstalliert werden, bspw. bei debian/ubuntu
-          <programlisting>apt install potgresql-contrib</programlisting></para>
+          <programlisting>apt install postgresql-contrib</programlisting></para>
         </note>
       </sect2>
 
@@ -1003,21 +1120,19 @@ Alias /kivitendo-erp/ /var/www/kivitendo-erp/
 
           <itemizedlist>
             <listitem>
-              <para>Apache 2.2.11 (Ubuntu) und mod_fcgid.</para>
-            </listitem>
-
-            <listitem>
-              <para>Apache 2.2.11 / 2.2.22 (Ubuntu) und mod_fastcgi.</para>
-            </listitem>
-
-            <listitem>
               <para>Apache 2.4.7 (Ubuntu 14.04.2 LTS) und mod_fcgid.</para>
             </listitem>
-          </itemizedlist>
+            <listitem>
+              <para>Apache 2.4.18 (Ubuntu 16.04 LTS) und mod_fcgid</para>
+            </listitem>
+            <listitem>
+              <para>Apache 2.4.29 (Ubuntu 18.04 LTS) und mod_fcgid</para>
+            </listitem>
+             <listitem>
+              <para>Apache 2.4.41 (Ubuntu 20.04 LTS) und mod_fcgid</para>
+            </listitem>
 
-          <para>Dabei wird mod_fcgid empfohlen, weil mod_fastcgi seit geraumer
-          Zeit nicht mehr weiter entwickelt wird. Im Folgenden wird auf
-          mod_fastcgi nicht mehr explizit eingegangen.</para>
+          </itemizedlist>
 
           <para>Als Perl Backend wird das Modul <filename>FCGI.pm</filename>
           verwendet.</para>
@@ -1114,13 +1229,11 @@ FcgidMaxRequestLen 10485760
 &lt;Directory /path/to/kivitendo-erp&gt;
   AllowOverride All
   Options ExecCGI Includes FollowSymlinks
-  Order Allow,Deny
-  Allow from All
+  Require all granted
 &lt;/Directory&gt;
 
 &lt;DirectoryMatch /path/to/kivitendo-erp/users&gt;
-  Order Deny,Allow
-  Deny from All
+Require all denied
 &lt;/DirectoryMatch&gt;</programlisting>
 
           <para>Hierdurch wird nur ein zentraler Dispatcher gestartet. Alle
@@ -1147,6 +1260,40 @@ Alias       /url/for/kivitendo-erp-fcgid/          /path/to/kivitendo-erp/</prog
       </sect2>
 
       <sect2>
+       <title>Authentifizierung mittels HTTP Basic Authentication</title>
+
+       <para>
+        Kivitendo unterstützt, dass Benutzerauthentifizierung über den Webserver mittels des »Basic«-HTTP-Authentifizierungs-Schema erfolgt
+        (siehe <ulink url="https://tools.ietf.org/html/rfc7617">RFC 7617</ulink>). Dazu ist es aber nötig, dass der dabei vom Client
+        mitgeschickte Header <constant>Authorization</constant> vom Webserver an Kivitendo über die Umgebungsvariable
+        <constant>HTTP_AUTHORIZATION</constant> weitergegeben wird, was standardmäßig nicht der Fall ist. Für Apache kann dies über die
+        folgende Konfigurationsoption aktiviert werden:
+       </para>
+
+       <programlisting>SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1</programlisting>
+      </sect2>
+      <sect2>
+       <title>Aktivierung von mod_rewrite/directory_match für git basierte Installationen</title>
+
+       <para>
+        Aufgrund von aktuellen (Mitte 2020) Sicherheitswarnungen für git basierte Webanwendungen ist die mitausgelieferte .htaccess
+        restriktiver geworden und verhindert somit das Auslesen von git basierten Daten.
+        Für debian/ubuntu muss das Modul mod_rewrite einmalig so aktiviert werden:
+        <programlisting>a2enmod rewrite</programlisting>
+        Alternativ und für Installationen ohne Apache ist folgender Artikel interessant:
+        <ulink url="https://www.cyberscan.io/blog/git-luecke">git-lücke</ulink>.
+        Anstelle des dort beschriebenen DirectoryMatch für Apache2 würden wir etwas weitergehend auch noch das Verzeichnis config miteinbeziehen
+        sowie ferner auch die Möglichkeit nicht ausschließen, dass es in Unterverzeichnissen auch noch .git Repositories geben kann.
+        Die Empfehlung für Apache 2.4 wäre damit:
+        <programlisting>
+        &lt;DirectoryMatch "/(\.git|config)/"&gt;
+          Require all denied
+        &lt;/DirectoryMatch&gt;</programlisting>
+       </para>
+      </sect2>
+
+
+      <sect2>
         <title>Weitergehende Konfiguration</title>
 
         <para>Für einen deutlichen Sicherheitsmehrwert sorgt die Ausführung
@@ -1159,6 +1306,19 @@ Alias       /url/for/kivitendo-erp-fcgid/          /path/to/kivitendo-erp/</prog
         url="https://mozilla.github.io/server-side-tls/ssl-config-generator/">
         SSL-Konfigurations-Generator</ulink>.</para>
       </sect2>
+      <sect3>
+        <title>Aktivierung von Apache2 modsecurity</title>
+
+        <para>Aufgrund des OpenSource Charakters ist kivitendo nicht "out of the box" sicher.
+  Organisatorisch empfehlen wir hier die enge Zusammenarbeit mit einem kivitendo Partner der auch in der
+Lage ist weiterführende Fragen in Bezug auf Datenschutz und Datensicherheit zu beantworten.
+Unabhängig davon empfehlen wir im Webserver Bereich die Aktivierung und Konfiguration des Moduls modsecurity für den Apache2, damit
+XSS und SQL-Injections verhindert werden.</para>
+<para> Als Idee hierfür sei dieser Blog-Eintrag genannt:
+<ulink url="https://doxsec.wordpress.com/2017/06/11/using-modsecurity-web-application-firewall-to-prevent-sql-injection-and-xss-using-blocking-rules/">
+        Test Apache2 modsecurity for SQL Injection</ulink>.</para>
+      </sect3>
+
     </sect1>
 
     <sect1 id="config.task-server">
@@ -1178,12 +1338,17 @@ Alias       /url/for/kivitendo-erp-fcgid/          /path/to/kivitendo-erp/</prog
       Servers integriert werden muss, damit er automatisch gestartet wird.
       Dies kann kivitendo nicht für Sie erledigen.</para>
 
-      <para>Da der Taskserver als Perlscript läuft, wird Arbeitsspeicher, der
+      <para>Da der Task-Server als Perlscript läuft, wird Arbeitsspeicher, der
       einmal benötigt wurde, nicht mehr an das Betriebssystem zurückgegeben,
-      solange der Taskserver läuft. Dies kann dazu führen, dass ein länger
-      laufender Taskserver mit der Zeit immer mehr Arbeitsspeicher für sich
-      beansprucht. Es ist deshalb sinnvoll, dass der Taskserver in
-      regelmässigen Abständen neu gestartet wird.</para>
+      solange der Task-Server läuft. Dies kann dazu führen, dass ein länger
+      laufender Task-Server mit der Zeit immer mehr Arbeitsspeicher für sich
+      beansprucht. Es ist deshalb sinnvoll, dass der Task-Server in
+      regelmässigen Abständen neu gestartet wird. Allerdings berücksichtigt der
+      Task-Server ein Memory-Limit, wenn dieses in der Konfigurationsdatei
+      angegeben ist. Bei Überschreiten dieses Limits beendet sich der
+      Task-Server. Sofern der Task-Server als systemd-Service mit dem
+      mitgelieferten Skript eingerichtet wurde, startet dieser danach
+      automatisch erneut.</para>
 
       <sect2 id="Konfiguration-des-Task-Servers">
         <title>Verfügbare und notwendige Konfigurationsoptionen</title>
@@ -1249,7 +1414,7 @@ Alias       /url/for/kivitendo-erp-fcgid/          /path/to/kivitendo-erp/</prog
 
         <sect3>
           <title>SystemV-basierende Systeme (z.B. ältere Debian, ältere
-          OpenSUSE, ältere Fedora)</title>
+          openSUSE, ältere Fedora)</title>
 
           <para>Kopieren Sie die Datei
           <filename>scripts/boot/system-v/kivitendo-task-server</filename>
@@ -1267,7 +1432,7 @@ insserv kivitendo-task-server</programlisting>
             </listitem>
 
             <listitem>
-              <para>Ältere OpenSUSE und ältere Fedora:</para>
+              <para>Ältere openSUSE und ältere Fedora:</para>
 
               <programlisting>chkconfig --add kivitendo-task-server</programlisting>
             </listitem>
@@ -1317,6 +1482,15 @@ systemctl enable kivitendo-task-server.service</programlisting>
           Befehl tun:</para>
 
           <programlisting>systemctl start kivitendo-task-server.service</programlisting>
+
+          <para>Ein so eingerichteter Task-Server startet nach Beendigung
+          automatisch erneut. Das betrifft eine Beendigung über die Oberfläche,
+          eine Beendingung über die Prozesskontrolle und eine Beendigung bei
+          Überschreiten des Memory-Limits. Soll der Task-Server nicht erneut
+          starten, so können Sie ihn mit folgendem Befehl stoppen:</para>
+
+          <programlisting>systemctl stop kivitendo-task-server.service</programlisting>
+
         </sect3>
       </sect2>
 
@@ -1350,7 +1524,7 @@ systemctl enable kivitendo-task-server.service</programlisting>
           <listitem>
             <para><literal>status</literal> berichtet, ob der Task-Server
             läuft.</para>
-          </listitem>
+          </listitem>yy
         </itemizedlist>
 
         <para>Der Task-Server wechselt beim Starten automatisch in das
@@ -1358,9 +1532,64 @@ systemctl enable kivitendo-task-server.service</programlisting>
 
         <para>Dieselben Optionen können auch für die SystemV-basierenden
         Runlevel-Scripte benutzt werden (siehe oben).</para>
-      </sect2>
-    </sect1>
 
+        <para>Wurde der Task-Server als systemd-Service eingerichtet (s.o.),
+        so startet dieser nach Beendigung automatisch erneut.</para>
+
+      </sect2>
+      <sect2 id="Tasks konfigurieren">
+        <title>Exemplarische Konfiguration eines Hintergrund-Jobs, der die Jahreszahl in allen Nummernkreisen zum Jahreswechsel erhöht</title>
+
+        <para>Hintergrund-Jobs werden über System -> Hintergrund-Jobs und Task-Server -> Aktuelle Hintergrund-Jobs anzeigen -> Aktions-Knopf 'erfassen' angelegt. </para>
+        <para>Nachdem wir über das Menü dort angelangt sind, legen wir unseren exemplarischen Hintergrund-Jobs "Erhöhung der Nummernkreise" mit folgenden Werten an:</para>
+        <itemizedlist>
+          <listitem>
+            <para><literal>Aktiv:</literal> Hier ein 'Ja' auswählen</para>
+          </listitem>
+          <listitem>
+            <para><literal>Ausführungsart:</literal> 'wiederholte Ausführung' auswählen</para>
+          </listitem>
+          <listitem>
+            <para><literal>Paketname:</literal> 'SetNumberRange' auswählen</para>
+          </listitem>
+          <listitem>
+            <para><literal>Ausführungszeitplan:</literal> Hier entsprechend Werte wie in der crontab eingeben.</para><para>Syntax:</para>
+<programlisting>* * * * *
+┬ ┬ ┬ ┬ ┬
+│ │ │ │ │
+│ │ │ │ └──── Wochentag (0-7, Sonntag ist 0 oder 7)
+│ │ │ └────── Monat (1-12)
+│ │ └──────── Tag (1-31)
+│ └────────── Stunde (0-23)
+└──────────── Minute (0-59)  </programlisting>
+            <para>Die Sterne können folgende Werte haben:</para>
+            <programlisting>
+1 2 3 4 5
+
+1 = Minute (0-59)
+2 = Stunde (0-23)
+3 = Tag (0-31)
+4 = Monat (1-12)
+5 = Wochentag (0-7, Sonntag ist 0 oder 7)
+</programlisting>
+<para>Um die Ausführung auf eine Minute vor Sylvester zu setzen, müssen die folgenden Werte eingetragen werden:</para>
+<programlisting>59 23 31 12 *</programlisting>
+          </listitem>
+          <listitem>
+            <para><literal>Daten:</literal>In diesem Feld können optionale Parameter für den Hintergrund im JSON-Format gesetzt werden. Der Hintergrund-Job <literal>SetNumberRange</literal> akzeptiert zwei Variable nämlich <literal>digit_year</literal> sowieso <literal>multiplier</literal>.</para><para> <literal>digit_year</literal> kann zwei Werte haben entweder 2 oder 4, darüber wird gesteuert ob die Jahreszahl zwei oder vierstellig kodiert wird (für 2019, dann entweder 19 oder 2019). Der Standardwert ist vierstellig.</para><para> <literal>multiplier</literal> ist ein Vielfaches von 10, darüber wird die erste Nummer im Nummernkreis (die Anzahl der Stellen) wie folgt bestimmt:</para>
+<programlisting>
+multiplier     Nummernkreis 2020
+10        ->   20200
+100       ->   202000
+1000      ->   2020000
+</programlisting>
+<para>Wir gehen jetzt beispielhaft von einer letzten Rechnungsnummer von RE2019456 aus. Demnach sollte ab Januar 2020 die erste Nummer RE2020001 sein. Da der Task auch Präfixe berücksichtigt, kann dies mit folgenden JSON-kodierten Werten umgesetzt werden:</para>
+<literal>Daten:</literal><programlisting>multiplier: 100
+digits_year: 4</programlisting>
+          </listitem>
+        </itemizedlist>
+     </sect2>
+    </sect1>
     <sect1 id="Benutzerauthentifizierung-und-Administratorpasswort">
       <title>Benutzerauthentifizierung und Administratorpasswort</title>
 
@@ -1380,9 +1609,8 @@ systemctl enable kivitendo-task-server.service</programlisting>
         Datenbank, in der sowohl die Benutzerinformationen als auch die Daten
         abgelegt werden.</para>
 
-        <para>Zusätzlich ermöglicht es kivitendo, dass die Benutzerpasswörter
-        entweder gegen die Authentifizierungsdatenbank oder gegen einen
-        LDAP-Server überprüft werden.</para>
+        <para>Zusätzlich ermöglicht es kivitendo, dass die Benutzerpasswörter gegen die Authentifizierungsdatenbank oder gegen einen oder
+        mehrere LDAP-Server überprüft werden.</para>
 
         <para>Welche Art der Passwortüberprüfung kivitendo benutzt und wie
         kivitendo die Authentifizierungsdatenbank erreichen kann, wird in der
@@ -1465,22 +1693,28 @@ systemctl enable kivitendo-task-server.service</programlisting>
         <title>Passwortüberprüfung</title>
 
         <para>kivitendo unterstützt Passwortüberprüfung auf zwei Arten: gegen
-        die Authentifizierungsdatenbank und gegen einen externen LDAP- oder
+        die Authentifizierungsdatenbank und gegen externe LDAP- oder
         Active-Directory-Server. Welche davon benutzt wird, regelt der
         Parameter <varname>module</varname> im Abschnitt
         <varname>[authentication]</varname>.</para>
 
-        <para>Sollen die Benutzerpasswörter in der Authentifizierungsdatenbank
-        gespeichert werden, so muss der Parameter <varname>module</varname>
-        den Wert <literal>DB</literal> enthalten. In diesem Fall können sowohl
-        der Administrator als auch die Benutzer selber ihre Passwörter in
-        kivitendo ändern.</para>
+        <para>Dieser Parameter listet die zu verwendenden Authentifizierungsmodule auf. Es muss mindestens ein Modul angegeben werden, es
+        können aber auch mehrere angegeben werden. Weiterhin ist es möglich, das LDAP-Modul mehrfach zu verwenden und für jede Verwendung
+        eine unterschiedliche Konfiguration zu nutzen, z.B. um einen Fallback-Server anzugeben, der benutzt wird, sofern der Hauptserver
+        nicht erreichbar ist.</para>
 
-        <para>Soll hingegen ein externer LDAP- oder Active-Directory-Server
-        benutzt werden, so muss der Parameter <varname>module</varname> auf
-        <literal>LDAP</literal> gesetzt werden. In diesem Fall müssen
-        zusätzliche Informationen über den LDAP-Server im Abschnitt
-        <literal>[authentication/ldap]</literal> angegeben werden:</para>
+        <para>Sollen die Benutzerpasswörter in der Authentifizierungsdatenbank geprüft werden, so muss der Parameter
+        <varname>module</varname> das Modul <literal>DB</literal> enthalten. Sofern das Modul in der Liste enthalten ist, egal an welcher
+        Position, können sowohl der Administrator als auch die Benutzer selber ihre Passwörter in kivitendo ändern.</para>
+
+        <para>Wenn Passwörter gegen einen oder mehrere externe LDAP- oder Active-Directory-Server geprüft werden, so muss der Parameter
+        <varname>module</varname> den Wert <literal>LDAP</literal> enthalten. In diesem Fall müssen zusätzliche Informationen über den
+        LDAP-Server im Abschnitt <literal>[authentication/ldap]</literal> angegeben werden. Das Modul kann auch mehrfach angegeben werden,
+        wobei jedes Modul eine eigene Konfiguration bekommen sollte. Der Name der Konfiguration wird dabei mit einem Doppelpunkt getrennt an
+        den Modulnamen angehängt (<literal>LDAP:Name-der-Konfiguration</literal>). Der entsprechende Abschnitt in der Konfigurationsdatei
+        lautet dann <literal>[authentication/Name-der-Konfiguration]</literal>.</para>
+
+        <para>Die verfügbaren Parameter für die LDAP-Konfiguration lauten:</para>
 
         <variablelist>
           <varlistentry>
@@ -1508,6 +1742,17 @@ systemctl enable kivitendo-task-server.service</programlisting>
               <para>Wenn Verbindungsverschlüsselung gewünscht ist, so diesen
               Wert auf ‘<literal>1</literal>’ setzen, andernfalls auf
               ‘<literal>0</literal>’ belassen</para>
+            </listitem>
+          </varlistentry>
+
+          <varlistentry>
+            <term><literal>verify</literal></term>
+
+            <listitem>
+              <para>Wenn Verbindungsverschlüsselung gewünscht und der Parameter <parameter>tls</parameter> gesetzt ist, so gibt dieser
+              Parameter an, ob das Serverzertifikat auf Gültigkeit geprüft wird. Mögliche Werte sind <literal>require</literal> (Zertifikat
+              wird überprüft und muss gültig sei; dies ist der Standard) und <literal>none</literal> (Zertifikat wird nicht
+              überpfüft).</para>
             </listitem>
           </varlistentry>
 
@@ -1558,6 +1803,14 @@ systemctl enable kivitendo-task-server.service</programlisting>
               Mustermann,cn=Users,dc=firmendomain</literal>’ auch nur der
               volle Name des Benutzers eingegeben werden; in diesem Beispiel
               also ‘<literal>Martin Mustermann</literal>’.</para>
+            </listitem>
+          </varlistentry>
+
+          <varlistentry>
+            <term><literal>timeout</literal></term>
+
+            <listitem>
+              <para>Timeout beim Verbindungsversuch, bevor der Server als nicht erreichbar gilt; Standardwert: 10</para>
             </listitem>
           </varlistentry>
         </variablelist>
@@ -1918,8 +2171,8 @@ systemctl enable kivitendo-task-server.service</programlisting>
       einfachsten ist dazu eine <literal>texlive</literal> Installation. Unter
       debianoiden Betriebssystemen installiert man die Pakete mit:</para>
 
-      <para><programlisting>apt-get install texlive-base-bin texlive-latex-recommended texlive-fonts-recommended \
-  texlive-latex-extra texlive-lang-german texlive-generic-extra</programlisting></para>
+      <para><programlisting>apt install texlive-base-bin texlive-latex-recommended texlive-fonts-recommended \
+  texlive-latex-extra texlive-lang-german ghostscript</programlisting></para>
 
       <para>Für Fedora benötigen Sie die folgenden Pakete:</para>
 
@@ -1933,24 +2186,23 @@ systemctl enable kivitendo-task-server.service</programlisting>
   texlive-collection-latexrecommended texlive-collection-langgerman \
   texlive-collection-langenglish</programlisting></para>
 
+      <note>kivitendo erwartet eine aktuelle TeX Live Umgebung, um PDF/A zu erzeugen. Aktuelle Distributionen von 2020 erfüllen diese. Überprüfbar ist dies mit dem Aufruf des installation_check.pl mit Parameter -l: <programlisting>scripts/installations_check.pl -l</programlisting> </note>
       <para>kivitendo bringt drei alternative Vorlagensätze mit:</para>
 
       <itemizedlist>
         <listitem>
           <para>RB</para>
         </listitem>
-
         <listitem>
-          <para>f-tex</para>
+          <para>marei</para>
         </listitem>
-
         <listitem>
           <para>rev-odt</para>
         </listitem>
       </itemizedlist>
 
-      <para>Der ehemalige Druckvorlagensatz "Standard" wurde mit der Version
-      3.3 entfernt, da er nicht mehr gepflegt wurde.</para>
+      <para>Der ehemalige Druckvorlagensatz "f-tex" wurde mit der Version
+      3.6 entfernt, da er nicht mehr gepflegt wird.</para>
 
       <sect2 id="Vorlagenverzeichnis-anlegen"
              xreflabel="Vorlagenverzeichnis anlegen">
@@ -1974,7 +2226,7 @@ systemctl enable kivitendo-task-server.service</programlisting>
           <listitem>
             <para><option>Vorlagen auswählen</option>: Wählen Sie hier den
             Vorlagensatz aus, der kopiert werden soll
-            (<filename>RB</filename>, <filename>f-tex</filename> oder
+            (<filename>RB</filename>, <filename>marei</filename> oder
             <filename>odt-rev</filename>.)</para>
           </listitem>
 
@@ -2032,247 +2284,7 @@ systemctl enable kivitendo-task-server.service</programlisting>
         </itemizedlist>
       </sect2>
 
-      <sect2 id="f-tex">
-        <title>f-tex</title>
-
-        <para>Ein Vorlagensatz, der in wenigen Minuten alle Dokumente zur
-        Verfügung stellt.</para>
-
-        <sect3 id="f-tex-Feature-Übersicht">
-          <title>Feature-Übersicht</title>
-
-          <itemizedlist>
-            <listitem>
-              <para>Keine Redundanz. Es wird ein- und dieselbe LaTeX-Vorlage
-              für alle briefartigen Dokumente verwendet. Also Angebot,
-              Rechnung, Proformarechnung, Lieferschein, aber eben nicht für
-              Paketaufkleber etc.</para>
-            </listitem>
-
-            <listitem>
-              <para>Leichte Anpassung an das Firmen-Layout durch Verwendung
-              eines Hintergrund-PDFs. Dieses kann leicht mit dem eigenen
-              Lieblingsprogramm erstellt werden (Openoffice, Inkscape, Gimp,
-              Adobe*)</para>
-            </listitem>
-
-            <listitem>
-              <para>Hintergrund-PDF umschaltbar auf "nur erste Seite"
-              (Standard) oder "alle Seiten" (Option
-              "<option>bgPdfFirstPageOnly</option>" in Datei
-              <filename>letter.lco</filename>)</para>
-            </listitem>
-
-            <listitem>
-              <para>Hintergrund-PDF für Ausdruck auf bereits bedrucktem
-              Briefpapier abschaltbar. Es wird dann nur bei per E-Mail
-              versendeten Dokumenten eingebunden (Option
-              "<option>bgPdfEmailOnly</option>" in Datei
-              <filename>letter.lco</filename>).</para>
-            </listitem>
-
-            <listitem>
-              <para>Nutzung der Layout-Funktionen von LaTeX für Seitenumbruch,
-              Wiederholung von Kopfzeilen, Zwischensummen etc. (danke an
-              Kai-Martin Knaak für die Vorarbeit)</para>
-            </listitem>
-
-            <listitem>
-              <para>Anzeige des Empfängerlandes im Adressfeld nur, wenn es vom
-              Land des eigenen Unternehmens abweicht (also die Rechnung das
-              Land verlässt).</para>
-            </listitem>
-
-            <listitem>
-              <para>Multisprachfähig leicht um weitere Sprachen zu erweitern,
-              alle Übersetzungen in der Datei
-              <filename>translatinos.tex</filename>.</para>
-            </listitem>
-
-            <listitem>
-              <para>Auflistung von Bruttopreisen für Endverbraucher.</para>
-            </listitem>
-          </itemizedlist>
-        </sect3>
-
-        <sect3 id="f-tex-Installation">
-          <title>Die Installation</title>
-
-          <itemizedlist>
-            <listitem>
-              <para>Vorlagenverzeichnis mit Option f-tex anlegen, siehe: <xref
-              linkend="Vorlagenverzeichnis-anlegen"/>. Das Vorlagensystem
-              funktioniert jetzt schon, hat allerdings noch einen
-              Beispiel-Briefkopf.</para>
-            </listitem>
-
-            <listitem>
-              <para>Erstelle eine pdf-Hintergrund Datei und verlinke sie nach
-              <filename>./letter_head.pdf</filename>.</para>
-            </listitem>
-
-            <listitem>
-              <para>Editiere den Bereich "<option>settings</option>" in der
-              datei <filename>letter.lco</filename>.</para>
-            </listitem>
-          </itemizedlist>
-
-          <para>oder etwas detaillierter:</para>
-
-          <para>Es wird eine Datei <filename>sample.lco</filename> erstellt
-          und diese nach <filename>letter.lco</filename> verlinkt. Eigentlich
-          ist dies die Datei die für die firmenspezifischen Anpassungen
-          gedacht ist. Da die Einstiegshürde in LaTeX nicht ganz niedrig ist,
-          wird in dieser Datei auf ein Hintergrund-PDF verwiesen. Ich empfehle
-          über dieses PDF die persönlichen Layoutanpassungen vorzunehmen und
-          <filename>sample.lco</filename> unverändert zu lassen. Die Anpassung
-          über eine <filename>*.lco</filename>-Datei, die letztlich auf
-          <filename>letter.lco</filename> verlinkt ist ist aber auch
-          möglich.</para>
-
-          <para>Es wird eine Datei <filename>sample_head.pdf</filename> mit
-          ausgeliefert, diese wird nach <filename>letter_head.pdf</filename>
-          verlinkt. Damit gibt es schon mal eine funktionsfähige Vorlage.
-          Schau Dir nach Abschluss der Installation die Datei
-          <filename>sample_head.pdf</filename> an und erstelle ein
-          entsprechendes PDF passend zum Briefkopf Deiner Firma, diese dann im
-          Template Verzeichniss ablegen und statt
-          <filename>sample_head.pdf</filename> nach
-          <filename>letter_head.pdf</filename> verlinken.</para>
-
-          <para>Letzlich muss <filename>letter_head.pdf</filename> auf das
-          passende Hintergrund-PDF verweisen, welches gewünschten Briefkopf
-          enthält.</para>
-
-          <para>Es wird eine Datei <filename>mydata.tex.example</filename>
-          ausgeliefert, die nach <filename>mytdata.tex</filename> verlinkt
-          ist. Bei verwendetem Hintergrund-PDF wird nur der Eintrag für das
-          Land verwendet. Die Datei muss also nicht angefasst werden. Die
-          anderen Werte sind für das Modul 'lp' (Label Print in erp - zur Zeit
-          nicht im öffentlichen Zweig).</para>
-
-          <para>Alle Anpassungen zum Briefkopf, Fusszeilen, Firmenlogos, etc.
-          sollten über die Hintergrund-PDF-Datei oder die
-          <filename>*.lco</filename>-Datei erfolgen.</para>
-        </sect3>
-
-        <sect3 id="f-tex-Funktionsübersicht">
-          <title>f-tex Funktionsübersicht</title>
-
-          <para>Das Konzept von kivitendo sieht vor, für jedes Dokument
-          (Auftragsbestätigung, Lieferschein, Rechnung, etc.) eine
-          LaTeX-Vorlage vorzuhalten, dies ist sehr wartungsunfreundlich. Auch
-          das Einlesen einer einheitlichen Quelle für den Briefkopf bringt nur
-          bedingte Vorteile, da hier leicht die Pflege der Artikel-Tabellen
-          aus dem Ruder läuft. Bei dem vorliegenden Ansatz wird für alle
-          briefartigen Dokumente mit Artikel-Tabellen eine einheitliche
-          LaTeX-Vorlage verwendet, welche über Codeweichen die Besonderheiten
-          der jeweiligen Dokumente berücksichtigt:</para>
-
-          <itemizedlist>
-            <listitem>
-              <para>Tabellen mit oder ohne Preis</para>
-            </listitem>
-
-            <listitem>
-              <para>Sprache der Tabellenüberschriften etc.</para>
-            </listitem>
-
-            <listitem>
-              <para>Anpassung der Bezugs-Zeile (z.B. Rechnungsnummer versus
-              Angebotsnummer)</para>
-            </listitem>
-
-            <listitem>
-              <para>Darstellung von Brutto oder Netto-Preisen in der
-              Auflistung (Endverbraucher versus gewerblicher Kunde)</para>
-            </listitem>
-          </itemizedlist>
-
-          <para>Nachteil:</para>
-
-          <para>LaTeX hat ohnehin eine sehr steile Lehrnkurve. Die Datei
-          <filename>letter.tex</filename> ist sehr komplex und verstärkt damit
-          diesen Effekt noch einmal erheblich. Wer LaTeX-Erfahrung hat, oder
-          geübt ist Scriptsparachen nachzuvollziehen kann natürlich auch
-          innerhalb der Tabellendarstellung gut persönliche Anpassungen
-          vornehmen. Aber man kann sich hier bei Veränderungen sehr schnell
-          heftig in den Fuss schiessen.</para>
-
-          <para>Wer nicht so tief in die Materie einsteigen will oder leicht
-          zu frustrieren ist, sollte sein Hintergrund-PDF auf Basis der
-          mitglieferten Datei <filename>sample_head.pdf</filename> erstellen,
-          und sich an der Form der dargestellten Tabellen, wie sie
-          ausgeliefert werden, erfreuen.</para>
-
-          <para>Kleiner Tipp: Nicht zu viel auf einmal wollen, lieber kleine,
-          kontinuierliche Schritte gehen.</para>
-        </sect3>
-
-        <sect3 id="f-tex-Bruttopreise">
-          <title>Bruttopreise für Endverbraucher</title>
-
-          <para>Der auszuweisende Bruttopreis wird innerhalb der
-          LaTeX-Umgebung berechnet. Es gibt zwar ein Feld, um bei Aufträgen
-          "alle Preise Brutto" auszuwählen, aber:</para>
-
-          <itemizedlist>
-            <listitem>
-              <para>hierfür müssen die Preise auch in Brutto in der Datenbank
-              stehen (ja - das lässt sich über die Preisgruppen und die
-              Zuordung einer Default-Preisgruppe handhaben)</para>
-            </listitem>
-
-            <listitem>
-              <para>man darf beim Anlegen des Vorgangs nicht vergessen, dieses
-              Häkchen zu setzen. (Das ist in der Praxis, wenn man sowohl
-              Endverbraucher als auch Gewerbekunden beliefert, der eigentliche
-              Knackpunkt)</para>
-            </listitem>
-          </itemizedlist>
-
-          <para>Es gibt mit f-tex eine weitere Alternative. Die Information ob
-          Brutto oder Nettorechnung wird mit den Zahlarten verknüpft.
-          Zahlarten bei denen Rechnungen, Angebote, etc, in Brutto ausgegeben
-          werden sollen, enden mit "_E" (für Endverbraucher). Falls identische
-          Zahlarten für Gewerbekunden und Endverbraucher vorhanden sind, legt
-          man diese einfach doppelt an (einmal mit der Namensendung "_E").
-          Gewinn:</para>
-
-          <itemizedlist>
-            <listitem>
-              <para>Die Entscheidung, ob Nettopreise ausgewiesen werden, ist
-              nicht mehr fix mit einer Preisliste verbunden.</para>
-            </listitem>
-
-            <listitem>
-              <para>Die Default-Zahlart kann im Kundendatensatz hinterlegt
-              werden, und man muss nicht mehr daran denken, "alle Preise
-              Netto" auszuwählen.</para>
-            </listitem>
-
-            <listitem>
-              <para>Die Entscheidung, ob Netto- oder Bruttopreise ausgewiesen
-              werden, kann direkt beim Drucken revidiert werden, ohne dass
-              sich der Auftragswert ändert.</para>
-            </listitem>
-          </itemizedlist>
-        </sect3>
-
-        <sect3 id="f-tex-lieferadressen">
-          <title>Lieferadressen</title>
-
-          <para>In Lieferscheinen kommen <varname>shipto*</varname>-Variablen
-          im Adressfeld zum Einsatz. Wenn die
-          <varname>shipto*</varname>-Variable leer ist, wird die entsprechende
-          Adressvariable eingesetzt. Wenn also die Lieferadresse in Straße,
-          Hausnummer und Ort abweicht, müssen auch nur diese Felder in der
-          Lieferadresse ausgefüllt werden. Für den Firmenname wird der Wert
-          der Hauptadresse angezeigt.</para>
-        </sect3>
-      </sect2>
-
-      <sect2 id="Vorlagen-rev-odt">
+     <sect2 id="Vorlagen-rev-odt">
         <title>Der Druckvorlagensatz rev-odt</title>
 
         <para>Hierbei handelt es sich um einen Dokumentensatz der mit
@@ -3655,6 +3667,11 @@ systemctl enable kivitendo-task-server.service</programlisting>
         bis zu welchem Monat und Jahr die aktuelle Abrechnungsperiode dauert:
         <literal>Abrechnungszeitrum: &lt;%period_start_date FORMAT=%m/%Y%&gt;
         bis &lt;%period_end_date FORMAT=%m/%Y%&gt;</literal></para>
+
+        <para>Beim automatischen Versand der Rechnugen via E-Mail können neben diesen speziellen Variablen auch einige Eigenschaften der
+        Rechnung selber als Variablen im Betreff &amp; dem Text der E-Mails genutzt werden. Beispiele sind
+        <varname>&lt;%invnumber%&gt;</varname> für die Rechnungsnummber oder <varname>&lt;transaction_description%&gt;</varname> für die
+        Vorgangsbezeichnung. Diese Variablen stehen beim Erzeugen der Rechnung logischerweise noch nicht zur Verfügung.</para>
       </sect2>
 
       <sect2 id="features.periodic-invoices.reports">
@@ -3671,7 +3688,7 @@ systemctl enable kivitendo-task-server.service</programlisting>
 
         <para>Die zeitliche und periodische Überprüfung, ob eine
         wiederkehrende Rechnung automatisch erstellt werden soll, geschieht
-        durch den <link linkend="config.task-server">Taskserver</link>, einen
+        durch den <link linkend="config.task-server">Task-Server</link>, einen
         externen Dienst, der automatisch beim Start des Servers gestartet
         werden sollte.</para>
       </sect2>
@@ -3681,7 +3698,7 @@ systemctl enable kivitendo-task-server.service</programlisting>
 
         <para>Will man im laufenden Monat eine monatlich wiederkehrende
         Rechnung inkl. des laufenden Monats starten, stellt man das Startdatum
-        auf den Monatsanfang und wartet ein paar Minuten, bis der Taskserver
+        auf den Monatsanfang und wartet ein paar Minuten, bis der Task-Server
         den neu konfigurieren Auftrag erkennt und daraus eine Rechnung
         generiert hat. Alternativ setzt man das Startdatum auf den
         Monatsersten des Folgemonats und erstellt die erste Rechnung direkt
@@ -4379,6 +4396,15 @@ systemctl enable kivitendo-task-server.service</programlisting>
 
               <listitem>
                 <para>Firmenname</para>
+              </listitem>
+            </varlistentry>
+
+            <varlistentry>
+              <term><varname>natural_person</varname></term>
+
+              <listitem>
+                <para>Flag "natürliche Person"; Siehe auch
+                <xref linkend="dokumentenvorlagen-und-variablen.anrede"/></para>
               </listitem>
             </varlistentry>
 
@@ -5162,7 +5188,7 @@ systemctl enable kivitendo-task-server.service</programlisting>
               <term><varname>longdescription</varname></term>
 
               <listitem>
-                <para>Langtext</para>
+                <para>Langtext, vorbelegt mit dem Feld Bemerkungen der entsprechenden Ware</para>
               </listitem>
             </varlistentry>
 
@@ -6281,6 +6307,21 @@ Beschreibung: &lt;%description%&gt;
         <para>Der Befehl <command>&lt;bullet&gt;</command> funktioniert
         momentan auch nur in Latex-Vorlagen.</para>
       </sect2>
+
+      <sect2 id="dokumentenvorlagen-und-variablen.anrede"
+             xreflabel="Hinweise zur Anrede">
+        <title>Hinweise zur Anrede</title>
+
+        <para>Das Flag "natürliche Person"
+        (<varname>natural_person</varname>) aus den Kunden- oder
+        Lieferantenstammdaten kann in den Druckvorlagen zusammen mit
+        dem Feld "Anrede" (<varname>greeting</varname>) z.B. dafür
+        verwendet werden, die Anrede zwischen einer allgemeinen und
+        einer persönlichen Anrede zu unterscheiden.
+        <programlisting>&lt;%if natural_person%&gt;&lt;%greeting%&gt; &lt;%name%&gt;&lt;%else%&gt;Sehr geehrte Damen und Herren&lt;%end if%&gt;</programlisting>
+        </para>
+      </sect2>
+
     </sect1>
 
     <sect1 id="excel-templates">
@@ -7088,6 +7129,148 @@ document_path = /var/local/kivi_documents
         url="https://developers.shopware.com/developers-guide/rest-api/">https://developers.shopware.com/developers-guide/rest-api/</ulink></para>
       </sect2>
     </sect1>
+	<sect1 id="features.zugferd">
+		<title>ZUGFeRD Rechnungen</title>
+		<sect2 id="features.zugferd.preamble">
+			<title>Vorbedingung</title>
+         <para>
+          Für die Erstellung von ZUGFeRD PDFs wird TexLive2018 oder höher benötigt.
+         </para>
+        <note>
+         <para>
+          Wer kein TexLive2018 oder höher installieren kann, kann eine lokale Umgebung nur für kivitendo wie folgt erzeugen:
+         </para>
+        <programlisting>
+        1. Download des offiziellen Installers von https://www.tug.org/texlive/quickinstall.html
+
+        2. Installer ausführen, Standard-Ort für Installation belassen, evtl. ein paar Pakete abwählen, installieren lassen
+
+        3. Ein kleine Script »run_pdflatex.sh« anlegen, das den PATH auf das  Installationsverezichnis setzt und pdflatex ausführt:
+
+        ------------------------------------------------------------
+        #!/bin/bash
+
+        export PATH=/usr/local/texlive/2020/bin/x86_64-linux:$PATH
+        hash -r
+
+        exec pdflatex &quot;$@&quot;
+        ------------------------------------------------------------
+
+        4. In config/kivitendo.conf den Parameter »latex« auf den Pfad zu »run_pdflatex.sh« setzen
+
+        5. Webserver neu starten
+        </programlisting>
+      </note>
+    </sect2>
+		<sect2 id="features.zugferd.summary">
+			<title>Übersicht</title>
+
+			<para>Mit der Version 3.5.6 bietet kivitendo die Möglichkeit ZUGFeRD
+			Rechnungen zu erstellen, sowie auch  ZUGFeRD Rechnungen direkt in
+			kivitendo einzulesen. </para>
+
+			<para>Bei  ZUGFeRD Rechnungen handelt es sich um eine PDF Datei in
+			der eine XML-Datei eingebettet ist. Der Aufbau der XML-Datei ist
+			standardisiert und ermöglicht so den Austausch zwischen
+			den verschiedenen Softwareprodukten. Kivitendo setzt mit der
+			Version 3.5.6 den ZUGFeRD 2.1 Standard um.</para>
+
+			<para>Weiter Details zu ZUGFeRD sind unter diesem Link zu finden:
+			<ulink>https://www.ferd-net.de/standards/was-ist-zugferd/index.html</ulink>
+      </para>
+		</sect2>
+
+		<sect2 id="features.zugferd.create_zugferd_bills">
+
+			<title>Erstellen von ZUGFeRD Rechnungen in Kivitendo</title>
+			<para>Für die Erstellung von ZUGFeRD Rechnungen bedarf es in
+			kivitendo zwei Dinge:</para>
+
+			<orderedlist>
+
+				<listitem>
+					<para>Die Erstellung muss in der Mandantenkonfiguration
+					aktiviert sein</para>
+				</listitem>
+
+				<listitem>
+					<para>Beim mindestens einem Bankkonto muss die Option
+					„Nutzung von ZUGFeRD“ aktiviert sein</para>
+				</listitem>
+
+			</orderedlist>
+			<sect3>
+				<title>Mandantenkonfiguration</title>
+
+				<para>Die Einstellung für die Erstellung von ZUGFeRD Rechnungen
+				erfolgt unter „System“ → „Mandatenkonfiguration“ → „Features“.
+				Im Abschnitt „Einkauf und Verkauf“ finden Sie die Einstellung
+				„Verkaufsrechnungen mit ZUGFeRD-Daten erzeugen“.
+				Hier besteht die Auswahl zwischen:</para>
+
+				<itemizedlist>
+					<listitem>
+						<para>ZUGFeRD-Rechnungen erzeugen</para>
+					</listitem>
+
+					<listitem>
+						<para>ZUGFeRD-Rechnungen im Testmodus erzeugen</para>
+					</listitem>
+
+					<listitem>
+						<para>Keine ZUGFeRD Rechnungen erzeugen</para>
+					</listitem>
+
+				</itemizedlist>
+
+				<para>Rechnungen die als PDF erzeugt werden, werden je nach
+				Einstellung nun im ZUGFeRD Format ausgegeben.</para>
+
+			</sect3>
+
+			<sect3>
+				<title>Konfiguration der Bankkonten</title>
+
+				<para>Unter „System → Bankkonten“ muss bei mindestens einem
+				Bankkonto die Option „Nutzung mit ZUGFeRD“ auf „Ja“ gestellt
+				werden.</para>
+			</sect3>
+
+		</sect2>
+
+		<sect2 id="features.zugferd.read_zugferd_bills">
+
+			<title>Einlesen von ZUGFeRD Rechnungen in Kivitendo</title>
+
+			<para>Es lassen sich auch Rechnungen von Kreditoren, die im
+			ZUGFeRD Format erstellt wurden, nach Kivitendo importieren.
+			Hierfür müssen auch zwei Voraussetzungen erfüllt werden:
+			</para>
+
+			<orderedlist>
+
+				<listitem>
+					<para>Beim Lieferanten muss die Umsatzsteuer-ID und das
+					Bankkonto hinterlegt sein</para>
+				</listitem>
+
+				<listitem>
+					<para>Für den Kreditoren muss eine Buchungsvorlage existieren.</para>
+				</listitem>
+
+			</orderedlist>
+
+			<para>Wenn diese Voraussetzungen erfüllt sind, kann die Rechnung
+			über „Finanzbuchhaltung“ → „Factur-X-/ZUGFeRD-Import“ über die „Durchsuchen“
+			Schaltfläche ausgewählt werden und über die Schaltfläche „Import“
+			eingeladen werden. Es öffnet sich daraufhin die Kreditorenbuchung.
+			Die auslesbaren Daten aus dem eingebetteten XML der PDF Datei
+			werden in der Kreditorenbuchung ergänzt.</para>
+
+		</sect2>
+
+	</sect1>
+
   </chapter>
 
   <chapter>
@@ -7765,6 +7948,89 @@ file_name = /tmp/kivitendo-debug.log</programlisting>
       </sect2>
     </sect1>
 
+    <sect1 id="dev-programmatic-api-calls" xreflabel="Programmatische API-Aufrufe">
+      <title>Programmatische API-Aufrufe</title>
+
+      <sect2 id="dev-programmatic-api-calls.introduction" xreflabel="Einführung in programmatische API-Aufrufe">
+        <title>Einführung</title>
+
+        <para>
+         Es ist möglich, Funktionen in kivitendo programmatisch aus anderen Programmen aufzurufen. Dazu ist nötig, dass
+         Authentifizierungsinformationen in jedem Aufruf mitgegeben werden. Dafür gibt es zwei Methoden: die HTTP-»Basic«-Authentifizierung
+         oder die Übergabe als spziell benannte GET-Parameter. Neben den Authentifizierungsinformationen muss auch der zu verwendende Mandant
+         übergeben werden.
+        </para>
+      </sect2>
+
+      <sect2 id="dev-programmatic-api-calls.client_selection" xreflabel="Mandantenauswahl bei programmatischen API-Aufrufen">
+        <title>Wahl des Mandanten</title>
+
+        <para>
+         Der zu verwendende Mandant kann als Parameter <varname>{AUTH}client_id</varname> mit jedem Request mitgeschickt werden. Der Wert
+         muss dabei die Datenbank-ID des Mandanten sein. kivitendo prüft, ob der Account, der über die Authentifizierungsinformationen
+         übergeben wurde, Zugriff auf den angegebenen Mandanten hat.
+        </para>
+
+        <para>
+         Wird in einem Request kein Mandant mitgegeben, so wird derjenige Mandant genommen, wer als Standardmandant markiert wurde. Gibt es
+         keinen solchen, kommt es zu einer Fehlermeldung.
+        </para>
+      </sect2>
+
+      <sect2 id="dev-programmatic-api-calls.http_basic_authentication" xreflabel="Programmatische API-Aufrufe mit HTTP-»Basic« authentifizieren">
+        <title>HTTP-»Basic«-Authentifizierung</title>
+
+        <para>
+         Für diese Methode muss jedem Request der bekannte HTTP-Header <constant>Authorization</constant> mitgeschickt werden (siehe <ulink
+         url="https://tools.ietf.org/html/rfc7617">RFC 7617</ulink>). Unterstützt wird ausschließlich die »Basic«-Methode. Loginname und
+         Passwort werden bei dieser Methode durch einen Doppelpunkt getrennt und Base64-encodiert im genannten HTTP-Header übertragen.
+        </para>
+
+        <para>
+         Diese Informationen müssen einen vorhandenen Account benennen. kivitendo prüft genau wie bei Benutzung über den Webbrowser, ob
+         dieser Account Zugriff auf den Mandanten sowie auf die angeforderte Funktion hat.
+        </para>
+
+        <para>
+         Da die Logininformationen im Klartext im Request stehen, sollte der Zugriff auf kivitendo ausschließlich über HTTPS verschlüsselt
+         erfolgen.
+        </para>
+      </sect2>
+
+      <sect2 id="dev-programmatic-api-calls.authentication_via_parameters" xreflabel="Programmatische API-Aufrufe mit Parametern authentifizieren">
+        <title>Authentifizierung mit Parametern</title>
+
+        <para>
+         Für diese Methode müssen jedem Request zwei Parameter mitgegeben werden: <varname>{AUTH}login</varname> und
+         <varname>{AUTH}password</varname>. Diese Informationen müssen einen vorhandenen Account benennen. kivitendo prüft genau wie bei
+         Benutzung über den Webbrowser, ob dieser Account Zugriff auf den Mandanten sowie auf die angeforderte Funktion hat.
+        </para>
+
+        <para>
+         Da die Logininformationen im Klartext im Request stehen, sollte der Zugriff auf kivitendo ausschließlich über HTTPS verschlüsselt
+         erfolgen.
+        </para>
+
+        <note>
+         <para>
+          Die Verwendung dieser Methode ist veraltet. Statt dessen sollte die oben erwähnte HTTP-»Basic«-Authentifizierung verwendet werden.
+         </para>
+        </note>
+      </sect2>
+
+      <sect2 id="dev-programmatic-api-calls.examples">
+        <title>Beispiele</title>
+
+        <para>
+         Das folgende Beispiel nutzt das Kommandozeilenprogramm »curl« und ruft die Funktion auf, die eine vorhandene Telefonnummer in den
+         Ansprechpersonen sucht und dazu Informationen zurückliefert. Dabei wird die HTTP-»Basic«-Authentifizierung genutzt.
+        </para>
+
+        <programlisting>$ curl --silent --user 'jdoe:SecretPassword!' \
+  'https://…/controller.pl?action=PhoneNumber/look_up&amp;number=053147110815'</programlisting>
+      </sect2>
+    </sect1>
+
     <sect1 id="db-upgrade-files" xreflabel="Datenbank-Upgradedateien">
       <title>SQL-Upgradedateien</title>
 
@@ -8193,7 +8459,7 @@ Template/LaTeX
 Template/OpenDocument
 filenames</programlisting>
 
-              <para>The last of which is very machine dependant. Remember that
+              <para>The last of which is very machine dependent. Remember that
               a lot of characters are forbidden by some filesystems, for
               example MS Windows doesn't like ':' in its files where Linux
               doesn't mind that. If you want the files created with your

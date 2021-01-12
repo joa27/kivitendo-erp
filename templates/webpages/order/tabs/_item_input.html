@@ -1,9 +1,10 @@
-[%- USE T8 %][%- USE HTML %][%- USE LxERP %][%- USE L %]
+[%- USE T8 %][%- USE HTML %][%- USE LxERP %][%- USE L %][%- USE P %]
 
  <div>
   <table id="input_row_table_id">
     <thead>
       <tr class="listheading">
+        <th class="listheading" nowrap >[%- 'position'     | $T8 %] </th>
         <th class="listheading" nowrap >[%- 'Part'         | $T8 %] </th>
         <th class="listheading" nowrap >[%- 'Description'  | $T8 %] </th>
         <th class="listheading" nowrap width="5" >[%- 'Qty'          | $T8 %] </th>
@@ -14,7 +15,11 @@
     </thead>
     <tbody>
       <tr valign="top" class="listrow">
-        <td>[% L.part_picker('add_item.parts_id', '', fat_set_item=1, style='width: 300px', class="add_item_input") %]</td>
+        <td>[% L.input_tag('add_item.position', '', size = 5, class="add_item_input numeric") %]</td>
+        <td>
+          [%- SET PARAM_KEY = SELF.cv == "customer" ? 'with_customer_partnumber' : 'with_makemodel' -%]
+          [%- SET PARAM_VAL = SELF.search_cvpartnumber -%]
+          [% P.part.picker('add_item.parts_id', '', fat_set_item=1, style='width: 300px', class="add_item_input", $PARAM_KEY=PARAM_VAL) %]</td>
         <td>[% L.input_tag('add_item.description', '', class="add_item_input") %]</td>
         <td>
           [% L.input_tag('add_item.qty_as_number', '', size = 5, class="add_item_input numeric") %]

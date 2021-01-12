@@ -1,17 +1,29 @@
 package SL::DB::Helper::AccountingPeriod;
 
 use strict;
+use SL::Locale::String qw(t8);
 
 use parent qw(Exporter);
 use SL::DBUtils;
-our @EXPORT = qw(get_balance_starting_date);
+our @EXPORT = qw(get_balance_starting_date get_balance_startdate_method_options);
 
 use Carp;
 
-sub get_balance_starting_date {
-  my ($self,$asofdate) = @_;
+sub get_balance_startdate_method_options {
+  [
+    { title => t8("After closed period"),                       value => "closed_to"                   },
+    { title => t8("Start of year"),                             value => "start_of_year"               },
+    { title => t8("All transactions"),                          value => "all_transactions"            },
+    { title => t8("Last opening balance or all transactions"),  value => "last_ob_or_all_transactions" },
+    { title => t8("Last opening balance or start of year"),     value => "last_ob_or_start_of_year"    },
+  ]
+}
 
-  $asofdate ||= DateTime->today_local;
+sub get_balance_starting_date {
+  my ($self, $asofdate, $startdate_method) = @_;
+
+  $asofdate         ||= DateTime->today_local;
+  $startdate_method ||= $::instance_conf->get_balance_startdate_method;
 
   unless ( ref $asofdate eq 'DateTime' ) {
     $asofdate = $::locale->parse_date_to_object($asofdate);
@@ -19,7 +31,6 @@ sub get_balance_starting_date {
 
   my $dbh = $::form->get_standard_dbh;
 
-  my $startdate_method = $::instance_conf->get_balance_startdate_method;
 
   # We could use the following objects to determine the starting date for
   # calculating the balance from asofdate (the reference date for the balance):
@@ -106,7 +117,12 @@ SL::DB::Helper::AccountingPeriod - Helper functions for calculating dates relati
 
 =over 4
 
-=item C<get_balance_starting_date $date>
+=item C<get_balance_startdate_method_options>
+
+Returns an arrayref of translated options for determining the startdate of a
+balance period or the yearend period. To be used as the options for a dropdown.
+
+=item C<get_balance_starting_date $date $startdate_method>
 
 Given a date this method calculates and returns the starting date of the
 financial period relative to that date, according to the configured
@@ -117,6 +133,8 @@ If $date isn't a DateTime object a date string is assumed, which then gets
 date-parsed.
 
 If no argument is passed the current day is assumed as default.
+
+If no startdate method is passed, the default method from defaults is used.
 
 =back
 

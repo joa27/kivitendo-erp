@@ -35,6 +35,7 @@ my %supported_types = (
       { method => 'bank',                                      title => t8('Bank'), },
       { method => 'bank_code',                                 title => t8('Bank code'), },
       { method => 'bic',                                       title => t8('BIC'), },
+      {                                                        title => t8('Use for Factur-X/ZUGFeRD'), formatter => sub { $_[0]->use_for_zugferd ? t8('yes') : t8('no') } },
       { method => 'reconciliation_starting_date_as_date',      title => t8('Date'),    align => 'right' },
       { method => 'reconciliation_starting_balance_as_number', title => t8('Balance'), align => 'right' },
     ],
@@ -55,12 +56,42 @@ my %supported_types = (
     ],
   },
 
+  contact_department => {
+    class  => 'ContactDepartment',
+    auth   => 'config',
+    titles => {
+      list => t8('Contact Departments'),
+      add  => t8('Add department'),
+      edit => t8('Edit department'),
+    },
+  },
+
+  contact_title => {
+    class  => 'ContactTitle',
+    auth   => 'config',
+    titles => {
+      list => t8('Contact Titles'),
+      add  => t8('Add title'),
+      edit => t8('Edit title'),
+    },
+  },
+
   department => {
     class  => 'Department',
     titles => {
       list => t8('Departments'),
       add  => t8('Add department'),
       edit => t8('Edit department'),
+    },
+  },
+
+  greeting => {
+    class  => 'Greeting',
+    auth   => 'config',
+    titles => {
+      list => t8('Greetings'),
+      add  => t8('Add greeting'),
+      edit => t8('Edit greeting'),
     },
   },
 

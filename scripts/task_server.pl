@@ -9,7 +9,6 @@ BEGIN {
 
   unshift(@INC, $FindBin::Bin . '/../modules/override'); # Use our own versions of various modules (e.g. YAML).
   push   (@INC, $FindBin::Bin . '/..');                  # '.' will be removed from @INC soon.
-  push   (@INC, $FindBin::Bin . '/../modules/fallback'); # Only use our own versions of modules if there's no system version.
 }
 
 use CGI qw( -no_xhtml);
@@ -21,11 +20,12 @@ use English qw(-no_match_vars);
 use File::Spec;
 use List::MoreUtils qw(any);
 use List::Util qw(first);
-use POSIX qw(setuid setgid);
+use POSIX qw(setlocale setuid setgid);
 use SL::Auth;
 use SL::DBUpgrade2;
 use SL::DB::AuthClient;
 use SL::DB::BackgroundJob;
+use SL::System::Process;
 use SL::BackgroundJob::ALL;
 use SL::Form;
 use SL::Helper::DateTime;
@@ -39,6 +39,7 @@ use SL::System::TaskServer;
 use Template;
 
 our %lx_office_conf;
+our $run_single_job;
 
 sub debug {
   return if !$lx_office_conf{task_server}->{debug};
@@ -186,6 +187,11 @@ sub notify_on_failure {
 sub gd_preconfig {
   my $self = shift;
 
+  # Initialize character type locale to be UTF-8 instead of C:
+  foreach my $locale (qw(de_DE.UTF-8 en_US.UTF-8)) {
+    last if setlocale('LC_CTYPE', $locale);
+  }
+
   SL::LxOfficeConf->read($self->{configfile});
 
   die "Missing section [task_server] in config file" unless $lx_office_conf{task_server};
@@ -220,6 +226,51 @@ EOT
   return ();
 }
 
+sub run_single_job_for_all_clients {
+  initialize_kivitendo();
+
+  my $clients = enabled_clients();
+
+  foreach my $client (@{ $clients }) {
+    debug("Running single job ID $run_single_job for client ID " . $client->id . " (" . $client->name . ")");
+
+    my $ok = eval {
+      initialize_kivitendo($client);
+
+      my $job = SL::DB::Manager::BackgroundJob->find_by(id => $run_single_job);
+
+      if ($job) {
+        debug(" Executing the following job: " . $job->package_name);
+      } else {
+        debug(" No jobs to execute found");
+        next;
+      }
+
+      # Provide fresh global variables in case legacy code modifies
+      # them somehow.
+      initialize_kivitendo($client);
+
+      my $history = $job->run;
+
+      debug("   Executed job " . $job->package_name .
+            "; result: " . (!$history ? "no return value" : $history->has_failed ? "failed" : "succeeded") .
+            ($history && $history->has_failed ? "; error: " . $history->error_col : ""));
+
+      notify_on_failure(history => $history) if $history && $history->has_failed;
+
+      1;
+    };
+
+    if (!$ok) {
+      my $error = $EVAL_ERROR;
+      $::lxdebug->message(LXDebug::WARN(), "Exception during execution: ${error}");
+      notify_on_failure(exception => $error);
+    }
+
+    cleanup_kivitendo();
+  }
+}
+
 sub run_once_for_all_clients {
   initialize_kivitendo();
 
@@ -246,6 +297,10 @@ sub run_once_for_all_clients {
 
         my $history = $job->run;
 
+        debug("   Executed job " . $job->package_name .
+              "; result: " . (!$history ? "no return value" : $history->has_failed ? "failed" : "succeeded") .
+              ($history && $history->has_failed ? "; error: " . $history->error_col : ""));
+
         notify_on_failure(history => $history) if $history && $history->has_failed;
       }
 
@@ -254,7 +309,7 @@ sub run_once_for_all_clients {
 
     if (!$ok) {
       my $error = $EVAL_ERROR;
-      debug("Exception during execution: ${error}");
+      $::lxdebug->message(LXDebug::WARN(), "Exception during execution: ${error}");
       notify_on_failure(exception => $error);
     }
 
@@ -263,6 +318,12 @@ sub run_once_for_all_clients {
 }
 
 sub gd_run {
+  if ($run_single_job) {
+    run_single_job_for_all_clients();
+    return;
+  }
+  $::lxdebug->message(LXDebug::INFO(), "The task server for node " . SL::System::TaskServer::node_id() . " is up and running.");
+
   while (1) {
     $SIG{'ALRM'} = 'IGNORE';
 
@@ -271,6 +332,11 @@ sub gd_run {
     debug("Sleeping");
 
     clean_before_sleeping();
+
+    if (SL::System::Process::memory_usage_is_too_high()) {
+      debug("Memory usage too high - exiting.");
+      return;
+    }
 
     my $seconds = 60 - (localtime)[0];
     if (!eval {
@@ -287,6 +353,12 @@ sub gd_run {
   }
 }
 
+sub gd_flags_more {
+  return (
+    '--run-job=<id>' => 'Run the single job with the database ID <id> no matter if it is active or when its next execution is supposed to be; the daemon will exit afterwards',
+  );
+}
+
 $exe_dir = SL::System::Process->exe_dir;
 chdir($exe_dir) || die "Cannot change directory to ${exe_dir}\n";
 
@@ -301,6 +373,9 @@ $file = File::Spec->abs2rel(Cwd::abs_path($file), Cwd::abs_path($exe_dir));
 newdaemon(configfile => $file,
           progname   => 'kivitendo-background-jobs',
           pidbase    => SL::System::TaskServer::PID_BASE() . '/',
+          options    => {
+            'run-job=i' => \$run_single_job,
+          },
           );
 
 1;

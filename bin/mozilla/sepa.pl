@@ -102,10 +102,11 @@ sub bank_transfer_create {
   my $arap_id        = $vc eq 'customer' ? 'ar_id' : 'ap_id';
   my $invoices       = SL::SEPA->retrieve_open_invoices(vc => $vc);
 
-  # load all open invoices (again), but grep out the ones that were selected with checkboxes beforehand ($_->selected). At this stage we again have all the invoice information, including dropdown with payment_type options
-  # all the information from retrieve_open_invoices is then ADDED to what was passed via @{ $form->{bank_transfers} }
-  # parse amount from the entry in the form, but take skonto_amount from PT again
-  # the map inserts the values of invoice_map directly into the array of hashes
+  # Load all open invoices (again), but grep out the ones that were selected with checkboxes beforehand ($_->selected).
+  # At this stage we again have all the invoice information, including dropdown with payment_type options.
+  # All the information from retrieve_open_invoices is then ADDED to what was passed via @{ $form->{bank_transfers} }.
+  # Parse amount from the entry in the form, but take skonto_amount from PT again.
+  # The map inserts the values of invoice_map directly into the array of hashes.
   my %selected_ids   = map { ($_ => 1) } @{ $form->{ids} || [] };
   my %invoices_map   = map { $_->{id} => $_ } @{ $invoices };
   my @bank_transfers =
@@ -116,7 +117,21 @@ sub bank_transfer_create {
 
   # override default payment_type selection and set it to the one chosen by the user
   # in the previous step, so that we don't need the logic in the template
+  my $subtract_days   = $::instance_conf->get_sepa_set_skonto_date_buffer_in_days;
+  my $set_skonto_date = $::instance_conf->get_sepa_set_skonto_date_as_default_exec_date;
+  my $set_duedate     = $::instance_conf->get_sepa_set_duedate_as_default_exec_date;
   foreach my $bt (@bank_transfers) {
+    # add a good recommended exec date
+    # set to skonto date if exists or to duedate
+    # in both cases subtract the same buffer (if configured, default 0)
+    $bt->{recommended_execution_date} =
+      $set_skonto_date && $bt->{payment_type} eq 'with_skonto_pt' ?
+                   DateTime->from_kivitendo($bt->{skonto_date})->subtract(days => $subtract_days)->to_kivitendo
+   :  $set_duedate && $bt->{duedate}                              ?
+                   DateTime->from_kivitendo($bt->{duedate}    )->subtract(days => $subtract_days)->to_kivitendo
+   :  undef;
+
+
     foreach my $type ( @{$bt->{payment_select_options}} ) {
       if ( $type->{payment_type} eq $bt->{payment_type} ) {
         $type->{selected} = 1;
@@ -734,7 +749,7 @@ sub setup_sepa_edit_transfer_action_bar {
         accesskey => 'enter',
         tooltip   => t8('Post payments for selected invoices'),
         checks    => [ [ 'kivi.check_if_entries_selected', '[name="ids[]"]' ] ],
-        only_if   => $params{show_post_payments_button},
+        disabled  => $params{show_post_payments_button} ? undef : t8('All payments have already been posted.'),
       ],
       action => [
         t8('Payment list'),
@@ -742,7 +757,7 @@ sub setup_sepa_edit_transfer_action_bar {
         accesskey => 'enter',
         tooltip   => t8('Download list of payments as PDF'),
         checks    => [ [ 'kivi.check_if_entries_selected', '[name="ids[]"]' ] ],
-        not_if    => $params{show_post_payments_button},
+        disabled  => $params{show_post_payments_button} ? t8('All payments must be posted before the payment list can be downloaded.') : undef,
       ],
     );
   }

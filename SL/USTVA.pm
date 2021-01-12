@@ -26,12 +26,15 @@
 
 package USTVA;
 
+use Carp;
+use Data::Dumper;
 use List::Util qw(first);
 
 use SL::DB;
 use SL::DBUtils;
 use SL::DB::Default;
 use SL::DB::Finanzamt;
+use SL::Locale::String qw(t8);
 
 use utf8;
 use strict;
@@ -419,89 +422,6 @@ sub info {
   $main::lxdebug->leave_sub();
 }
 
-# 20.10.2009 sschoeling: this sub seems to be orphaned.
-sub stichtag {
-  $main::lxdebug->enter_sub();
-
-  # noch nicht fertig
-  # soll mal eine Erinnerungsfunktion für USTVA Abgaben werden, die automatisch
-  # den Termin der nächsten USTVA anzeigt.
-  #
-  #
-  my ($today, $FA_dauerfrist, $FA_voranmeld) = @_;
-
-  #$today zerlegen:
-
-  #$today =today * 1;
-  $today =~ /(\d\d\d\d)(\d\d)(\d\d)/;
-  my $year     = $1;
-  my $month    = $2;
-  my $day      = $3;
-  my $yy       = $year;
-  my $mm       = $month;
-  my $yymmdd   = "$year$month$day" * 1;
-  my $mmdd     = "$month$day" * 1;
-  my $stichtag = '';
-
-  #$tage_bis = '1234';
-  #$ical = '...vcal format';
-
-  #if ($FA_voranmeld eq 'month'){
-
-  my %liste = (
-    "0110" => 'December',
-    "0210" => 'January',
-    "0310" => 'February',
-    "0410" => 'March',
-    "0510" => 'April',
-    "0610" => 'May',
-    "0710" => 'June',
-    "0810" => 'July',
-    "0910" => 'August',
-    "1010" => 'September',
-    "1110" => 'October',
-    "1210" => 'November',
-  );
-
-  #$mm += $dauerfrist
-  #$month *= 1;
-  $month += 1 if ($day > 10);
-  $month    = sprintf("%02d", $month);
-  $stichtag = $year . $month . "10";
-  my $ust_va   = $month . "10";
-
-  foreach my $date (%liste) {
-    $ust_va = $liste{$date} if ($date eq $stichtag);
-  }
-
-  #} elsif ($FA_voranmeld eq 'quarter'){
-  #1;
-
-  #}
-
-  #@stichtag = ('10.04.2004', '10.05.2004');
-
-  #@liste = ['0110', '0210', '0310', '0410', '0510', '0610', '0710', '0810', '0910',
-  #          '1010', '1110', '1210', ];
-  #
-  #foreach $key (@liste){
-  #  #if ($ddmm < ('0110' * 1));
-  #  if ($ddmm ){}
-  #  $stichtag = $liste[$key - 1] if ($ddmm > $key);
-  #
-  #}
-  #
-  #$stichtag =~ /([\d]\d)(\d\d)$/
-  #$stichtag = "$1.$2.$yy"
-  #$stichtag=$1;
-  our $description; # most probably not existent.
-  our $tage_bis;    # most probably not existent.
-  our $ical;        # most probably not existent.
-
-  $main::lxdebug->leave_sub();
-  return ($stichtag, $description, $tage_bis, $ical);
-}
-
 sub query_finanzamt {
   $main::lxdebug->enter_sub();
 
@@ -543,10 +463,7 @@ sub query_finanzamt {
 sub process_query {
   $main::lxdebug->enter_sub();
 
-  # Copyright D. Simander -> SL::Form under Gnu GPL.
   my ($form, $dbh, $filename) = @_;
-
-  #  return unless (-f $filename);
 
   open my $FH, "<", "$filename" or $form->error("$filename : $!\n");
   my $query = "";
@@ -609,6 +526,9 @@ sub ustva {
 
   $form->{coa} = $::instance_conf->get_coa;
 
+  unless ($form->{coa} eq 'Germany-DATEV-SKR03EU' or $form->{coa} eq 'Germany-DATEV-SKR04EU') {
+    croak t8("Advance turnover tax return only valid for SKR03 or SKR04");
+  }
   my @category_cent = USTVA->report_variables({
       myconfig    => $myconfig,
       form        => $form,
@@ -616,7 +536,7 @@ sub ustva {
       attribute   => 'position',
       dec_places  => '2',
   });
-
+  push @category_cent, ("pos_ustva_811b_kivi", "pos_ustva_861b_kivi");
   if ( $form->{coa} eq 'Germany-DATEV-SKR03EU' or $form->{coa} eq 'Germany-DATEV-SKR04EU') {
       push @category_cent, qw(Z43  Z45  Z53  Z54  Z62  Z65  Z67);
   }
@@ -627,7 +547,7 @@ sub ustva {
       attribute   => 'position',
       dec_places  => '0',
   });
-
+  push @category_euro, ("pos_ustva_81b_kivi", "pos_ustva_86b_kivi");
   @{$form->{category_cent}} = @category_cent;
   @{$form->{category_euro}} = @category_euro;
   $form->{decimalplaces} *= 1;
@@ -654,7 +574,7 @@ sub ustva {
 
   # Germany
 
-  if ( $form->{coa} eq 'Germany-DATEV-SKR03EU' or $form->{coa} eq 'Germany-DATEV-SKR04EU'){
+  if ( $form->{coa} eq 'Germany-DATEV-SKR03EU' or $form->{coa} eq 'Germany-DATEV-SKR04EU') {
 
     # 16%/19% Umstellung
     # Umordnen der Kennziffern
@@ -677,7 +597,7 @@ sub ustva {
 
   # Fixme: Wird auch noch für Oesterreich gebraucht,
   # weil kein eigenes Ausgabeformular
-  # sotte aber aus der allgeméinen Steuerberechnung verschwinden
+  # sollte aber aus der allgemeinen Steuerberechnung verschwinden
   #
   # Berechnung der USTVA Formularfelder laut Bogen 207
   #
@@ -781,16 +701,16 @@ sub get_accounts_ustva {
               1=1
               $ARwhere
               AND acc.trans_id = ac.trans_id
-              )
-           /
+              )           /
            (
             SELECT amount FROM ar WHERE id = ac.trans_id
            )
          ) AS amount,
-         tk.pos_ustva
+         tk.pos_ustva,  t.rate, c.accno
        FROM acc_trans ac
        LEFT JOIN chart c ON (c.id  = ac.chart_id)
        LEFT JOIN ar      ON (ar.id = ac.trans_id)
+       LEFT JOIN tax t   ON (t.id = ac.tax_id)
        LEFT JOIN taxkeys tk ON (
          tk.id = (
            SELECT id FROM taxkeys
@@ -802,7 +722,7 @@ sub get_accounts_ustva {
        )
        WHERE
        $acc_trans_where
-       GROUP BY tk.pos_ustva
+       GROUP BY tk.pos_ustva, t.rate, c.accno
     |;
 
   } elsif ($form->{accounting_method} eq 'accrual') {
@@ -814,10 +734,11 @@ sub get_accounts_ustva {
        -- Alle Einnahmen AR und pos_ustva erfassen
        SELECT
          - sum(ac.amount) AS amount,
-         tk.pos_ustva
+         tk.pos_ustva, t.rate, c.accno
        FROM acc_trans ac
        JOIN chart c ON (c.id = ac.chart_id)
        JOIN ar ON (ar.id = ac.trans_id)
+       JOIN tax t ON (t.id = ac.tax_id)
        JOIN taxkeys tk ON (
          tk.id = (
            SELECT id FROM taxkeys
@@ -829,7 +750,7 @@ sub get_accounts_ustva {
        $dpt_join
        WHERE 1 = 1
        $where
-       GROUP BY tk.pos_ustva
+       GROUP BY tk.pos_ustva, t.rate, c.accno
   |;
 
   } else {
@@ -847,10 +768,11 @@ sub get_accounts_ustva {
 
        SELECT
          sum(ac.amount) AS amount,
-         tk.pos_ustva
+         tk.pos_ustva, t.rate, c.accno
        FROM acc_trans ac
        JOIN ap ON (ap.id = ac.trans_id )
        JOIN chart c ON (c.id = ac.chart_id)
+       JOIN tax t ON (t.id = ac.tax_id)
        LEFT JOIN taxkeys tk ON (
            tk.id = (
              SELECT id FROM taxkeys
@@ -864,16 +786,17 @@ sub get_accounts_ustva {
        WHERE
        1=1
        $where
-       GROUP BY tk.pos_ustva
+       GROUP BY tk.pos_ustva, t.rate, c.accno
 
      UNION -- Einnahmen direkter gl Buchungen erfassen
 
        SELECT sum
          ( - ac.amount) AS amount,
-         tk.pos_ustva
+         tk.pos_ustva, t.rate, c.accno
        FROM acc_trans ac
        JOIN chart c ON (c.id = ac.chart_id)
        JOIN gl a ON (a.id = ac.trans_id)
+       JOIN tax t ON (t.id = ac.tax_id)
        LEFT JOIN taxkeys tk ON (
          tk.id = (
            SELECT id FROM taxkeys
@@ -887,17 +810,18 @@ sub get_accounts_ustva {
        $dpt_join
        WHERE 1 = 1
        $where
-       GROUP BY tk.pos_ustva
+       GROUP BY tk.pos_ustva, t.rate, c.accno
 
 
      UNION -- Ausgaben direkter gl Buchungen erfassen
 
        SELECT sum
          (ac.amount) AS amount,
-         tk.pos_ustva
+         tk.pos_ustva, t.rate, c.accno
        FROM acc_trans ac
        JOIN chart c ON (c.id = ac.chart_id)
        JOIN gl a ON (a.id = ac.trans_id)
+       JOIN tax t ON (t.id = ac.tax_id)
        LEFT JOIN taxkeys tk ON (
          tk.id = (
            SELECT id FROM taxkeys
@@ -911,13 +835,9 @@ sub get_accounts_ustva {
        $dpt_join
        WHERE 1 = 1
        $where
-       GROUP BY tk.pos_ustva
+       GROUP BY tk.pos_ustva, t.rate, c.accno
 
   |;
-
-  my @accno;
-  my $accno;
-  my $ref;
 
   # Show all $query in Debuglevel LXDebug::QUERY
   my $callingdetails = (caller (0))[3];
@@ -926,11 +846,53 @@ sub get_accounts_ustva {
   my $sth = $dbh->prepare($query);
 
   $sth->execute || $form->dberror($query);
+  # ugly, but we need to use static accnos
+  my ($accno_five, $accno_sixteen, $corr);
+
+  if ($form->{coa} eq 'Germany-DATEV-SKR03EU') {
+    $accno_five     = 1773;
+    $accno_sixteen  = 1775;
+  } elsif (($form->{coa} eq 'Germany-DATEV-SKR04EU')) {
+    $accno_five     = 3803; # SKR04
+    $accno_sixteen  = 3805; # SKR04
+  } else {die "wrong call"; }
 
   while (my $ref = $sth->fetchrow_hashref("NAME_lc")) {
-    # Bug 365 solved?!
+    next unless $ref->{$category};
+    $corr = 0;
     $ref->{amount} *= -1;
-    $form->{ $ref->{$category} } += $ref->{amount};
+    # USTVA Pos 35
+    if ($ref->{pos_ustva} eq '35') {
+      if ($ref->{rate} == 0.16) {
+        $form->{"pos_ustva_81b_kivi"} += $ref->{amount};
+      } elsif ($ref->{rate} == 0.05) {
+        $form->{"pos_ustva_86b_kivi"} += $ref->{amount};
+      } elsif ($ref->{rate} == 0.19) {
+        # pos_ustva says 16, but rate says 19
+        # (pos_ustva should be tax dependent and not taxkeys dependent)
+        # correction hotfix for this case:
+        # bookings exists with 19% ->
+        # move 19% bookings to the 19% position
+        # Dont rely on dates of taxkeys
+        $corr = 1;
+        $form->{"81"} += $ref->{amount};
+      }  elsif ($ref->{rate} == 0.07) {
+        # pos_ustva says 5, but rate says 7
+        # see comment above:
+        # Dont rely on dates of taxkeys
+        $corr = 1;
+        $form->{"86"} += $ref->{amount};
+      } else {die ("No valid tax rate for pos 35" . Dumper($ref)); }
+    }
+    # USTVA Pos 36 (Steuerkonten)
+    if ($ref->{pos_ustva} eq '36') {
+      if ($ref->{accno} =~ /^$accno_sixteen/) {
+        $form->{"pos_ustva_811b_kivi"} += $ref->{amount};
+      } elsif ($ref->{accno} =~ /^$accno_five/) {
+        $form->{"pos_ustva_861b_kivi"} += $ref->{amount};
+      } else { die ("No valid accno for pos 36" . Dumper($ref)); }
+    }
+  $form->{ $ref->{$category} } += $ref->{amount} unless $corr;
   }
 
   $sth->finish;

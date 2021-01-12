@@ -42,6 +42,7 @@ use SL::AM;
 use SL::CA;
 use SL::Form;
 use SL::Helper::Flash;
+use SL::Helper::UserPreferences;
 use SL::User;
 use SL::USTVA;
 use SL::Iconv;
@@ -573,6 +574,7 @@ sub config {
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
   my $locale   = $main::locale;
+  my $defaults = SL::DB::Default->get;
 
   _build_cfg_options('dateformat', qw(mm/dd/yy dd/mm/yy dd.mm.yy yyyy-mm-dd));
   _build_cfg_options('timeformat', qw(hh:mm hh:mm:ss));
@@ -643,14 +645,34 @@ sub config {
     };
   }
 
+  my $user_prefs = SL::Helper::UserPreferences->new(
+    namespace         => 'TopQuickSearch',
+  );
+  my $prefs_val;
+  my @quick_search_modules;
+  if ($user_prefs) {
+    $prefs_val            = $user_prefs->get('quick_search_modules');
+    @quick_search_modules = split ',', $prefs_val;
+  }
+
+  my $enabled_quick_search = [ SL::Controller::TopQuickSearch->new->available_modules ];
+  $form->{enabled_quick_searchmodules} = \@{$enabled_quick_search};
+  $form->{default_quick_searchmodules} = \@quick_search_modules;
+
+  $form->{displayable_name_specs_by_module} = AM->displayable_name_specs_by_module();
+  $form->{positions_scrollbar_height}       = AM->positions_scrollbar_height();
+  $form->{purchase_search_makemodel}        = AM->purchase_search_makemodel();
+  $form->{sales_search_customer_partnumber} = AM->sales_search_customer_partnumber();
+  $form->{positions_show_update_button}     = AM->positions_show_update_button();
+
   $myconfig{show_form_details} = 1 unless (defined($myconfig{show_form_details}));
   $form->{CAN_CHANGE_PASSWORD} = $main::auth->can_change_password();
   $form->{todo_cfg}            = { TODO->get_user_config('login' => $::myconfig{login}) };
 
+  $::request->{layout}->use_javascript("jquery.multiselect2side.js");
   $form->{title}               = $locale->text('Edit Preferences for #1', $::myconfig{login});
 
   setup_am_config_action_bar();
-
   $form->header();
 
   $form->{full_signature} = $form->create_email_signature();
@@ -671,6 +693,11 @@ sub save_preferences {
 
   TODO->save_user_config('login' => $::myconfig{login}, %{ $form->{todo_cfg} || { } });
 
+  if ($form->{quick_search_modules}) {
+    my $user_prefs = SL::Helper::UserPreferences->new( namespace => 'TopQuickSearch',);
+    my $quick_search_modules = join ',', @{$form->{quick_search_modules}};
+    $user_prefs->store('quick_search_modules', $quick_search_modules);
+  }
   if (AM->save_preferences($form)) {
     if ($::auth->can_change_password()
         && defined $form->{new_password}
@@ -1198,7 +1225,9 @@ sub save_tax {
   $form->{translations} = { map { $_ =~ '^translation_(\d+)'; $1 => $form->{$_} } @translation_keys };
 
   AM->save_tax(\%myconfig, \%$form);
-  $form->redirect($locale->text('Tax saved!'));
+  flash_later('info', $locale->text("Tax saved!"));
+
+  print $form->redirect_header('am.pl?action=list_tax');
 
   $main::lxdebug->leave_sub();
 }

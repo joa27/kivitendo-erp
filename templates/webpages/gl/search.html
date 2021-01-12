@@ -43,12 +43,6 @@
     <td colspan=3>[% L.select_tag('employee_id', ALL_EMPLOYEES, title_key = 'safe_name', with_empty = 1) %]</td>
   </tr>
   <tr>
-    <th align=right style="color:red;">[% 'Attention!' | $T8 %]</th>
-    <td colspan=3 style="color:red;">
-    [% 'Since kivitendo version 3.5 new notations, see documentation 2.14' | $T8 %]
-    </td>
-  </tr>
-  <tr>
     <th align=right>[% 'Filter date by' | $T8 %]</th>
     <td colspan=3>
     <input name=datesort class=radio type=radio value=transdate checked> [% 'Transdate' | $T8 %]
@@ -99,14 +93,20 @@
                     <td>[% 'Source' | $T8 %]</td>
                     <td align=right><input name="l_accno" class=checkbox type=checkbox value=Y checked></td>
                     <td>[% 'Account' | $T8 %]</td>
+                    [%- IF ALL_DEPARTMENTS %]
+                      <td align=right><input name="l_department" class=checkbox type=checkbox value=Y></td>
+                      <td>[% 'Department' | $T8 %]</td>
+                    [%- END %]
                   </tr>
                   <tr>
-                    <td align=right><input name="l_subtotal" class=checkbox type=checkbox value=Y></td>
-                    <td>[% 'Subtotal' | $T8 %]</td>
                     <td align=right><input name="l_projectnumbers" class=checkbox type=checkbox value=Y></td>
                     <td>[% 'Project Number' | $T8 %]</td>
                     <td align=right><input name="l_employee" class=checkbox type=checkbox value=Y></td>
                     <td>[% 'Employee' | $T8 %]</td>
+                  </tr>
+                  <tr>
+                    <td align=right><input name="l_subtotal" class=checkbox type=checkbox value=Y></td>
+                    <td>[% 'Subtotal' | $T8 %]</td>
                   </tr>
                 </table>
               </tr>

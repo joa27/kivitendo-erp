@@ -1,4 +1,4 @@
-use Test::More tests => 138;
+use Test::More tests => 291;
 
 use strict;
 
@@ -10,9 +10,12 @@ use Support::TestSetup;
 use Test::Exception;
 use List::Util qw(sum);
 
+use SL::DB::AccTransaction;
+use SL::DB::BankTransactionAccTrans;
 use SL::DB::Buchungsgruppe;
 use SL::DB::Currency;
 use SL::DB::Customer;
+use SL::DB::Default;
 use SL::DB::Vendor;
 use SL::DB::Invoice;
 use SL::DB::Unit;
@@ -23,16 +26,19 @@ use SL::DB::PaymentTerm;
 use SL::DB::PurchaseInvoice;
 use SL::DB::BankTransaction;
 use SL::Controller::BankTransaction;
+use SL::Controller::Reconciliation;
 use SL::Dev::ALL qw(:ALL);
 use Data::Dumper;
 
-my ($customer, $vendor, $currency_id, $unit, $tax, $tax7, $tax_9, $payment_terms, $bank_account);
-my ($transdate1, $transdate2, $currency);
+my ($customer, $vendor, $currency_id, $unit, $tax, $tax0, $tax7, $tax_9, $payment_terms, $bank_account);
+my ($currency);
 my ($ar_chart,$bank,$ar_amount_chart, $ap_chart, $ap_amount_chart);
 my ($ar_transaction, $ap_transaction);
+my ($dt, $dt_5, $dt_10, $year);
 
 sub clear_up {
 
+  SL::DB::Manager::BankTransactionAccTrans->delete_all(all => 1);
   SL::DB::Manager::BankTransaction->delete_all(all => 1);
   SL::DB::Manager::InvoiceItem->delete_all(all => 1);
   SL::DB::Manager::InvoiceItem->delete_all(all => 1);
@@ -46,14 +52,17 @@ sub clear_up {
   SL::DB::Manager::BankAccount->delete_all(all => 1);
   SL::DB::Manager::PaymentTerm->delete_all(all => 1);
   SL::DB::Manager::Currency->delete_all(where => [ name => 'CUR' ]);
+  # SL::DB::Manager::Default->delete_all(all => 1);
 };
+
+my $bt_controller;
 
 sub save_btcontroller_to_string {
   my $output;
   open(my $outputFH, '>', \$output) or die;
   my $oldFH = select $outputFH;
 
-  my $bt_controller = SL::Controller::BankTransaction->new;
+  $bt_controller = SL::Controller::BankTransaction->new;
   $bt_controller->action_save_invoices;
 
   select $oldFH;
@@ -71,6 +80,7 @@ test1();
 
 test_overpayment_with_partialpayment();
 test_overpayment();
+reset_state();
 test_skonto_exact();
 test_two_invoices();
 test_partial_payment();
@@ -81,11 +91,19 @@ test_neg_ap_transaction(invoice => 1);
 test_ap_payment_transaction();
 test_ap_payment_part_transaction();
 test_neg_sales_invoice();
-
-test_bt_rule1();
+test_two_neg_ap_transaction();
+test_one_inv_and_two_invoices_with_skonto_exact();
+test_bt_error();
+test_full_workflow_ar_multiple_inv_skonto_reconciliate_and_undo();
+reset_state();
 test_sepa_export();
 
+reset_state();
+test_bt_rule1();
+reset_state();
+test_two_banktransactions();
 # remove all created data at end of test
+test_closedto();
 clear_up();
 
 done_testing();
@@ -99,12 +117,16 @@ sub reset_state {
 
   clear_up();
 
-  $transdate1 = DateTime->today;
-  $transdate2 = DateTime->today->add(days => 5);
+  $year  = DateTime->today_local->year;
+  $year  = 2019 if $year == 2020; # use year 2019 in 2020, because of tax rate change in Germany
+  $dt    = DateTime->new(year => $year, month => 1, day => 12);
+  $dt_5  = $dt->clone->add(days => 5);
+  $dt_10 = $dt->clone->add(days => 10);
 
   $tax             = SL::DB::Manager::Tax->find_by(taxkey => 3, rate => 0.19, %{ $params{tax} }) || croak "No tax";
   $tax7            = SL::DB::Manager::Tax->find_by(taxkey => 2, rate => 0.07)                    || croak "No tax for 7\%";
-  $tax_9           = SL::DB::Manager::Tax->find_by(taxkey => 9, rate => 0.19, %{ $params{tax} }) || croak "No tax";
+  $tax_9           = SL::DB::Manager::Tax->find_by(taxkey => 9, rate => 0.19, %{ $params{tax} }) || croak "No tax for 19\%";
+  $tax0            = SL::DB::Manager::Tax->find_by(taxkey => 0, rate => 0.0)                     || croak "No tax for 0\%";
 
   $currency_id     = $::instance_conf->get_currency_id;
 
@@ -123,7 +145,7 @@ sub reset_state {
     iban                      => 'DE12500105170648489890',
     bic                       => 'TESTBIC',
     account_number            => '648489890',
-    mandate_date_of_signature => $transdate1,
+    mandate_date_of_signature => $dt,
     mandator_id               => 'foobar',
     bank                      => 'Geizkasse',
     bank_code                 => 'G1235',
@@ -155,15 +177,15 @@ sub reset_state {
 
 sub test_ar_transaction {
   my (%params) = @_;
-  my $netamount = 100;
-  my $amount    = $params{amount} || $::form->round_amount(100 * 1.19,2);
+  my $netamount = $params{amount} || 100;
+  my $amount    = $::form->round_amount($netamount * 1.19,2);
   my $invoice   = SL::DB::Invoice->new(
       invoice      => 0,
       invnumber    => $params{invnumber} || undef, # let it use its own invnumber
       amount       => $amount,
       netamount    => $netamount,
-      transdate    => $transdate1,
-      taxincluded  => 0,
+      transdate    => $dt,
+      taxincluded  => $params{taxincluded } || 0,
       customer_id  => $customer->id,
       taxzone_id   => $customer->taxzone_id,
       currency_id  => $currency_id,
@@ -174,20 +196,21 @@ sub test_ar_transaction {
   $invoice->add_ar_amount_row(
     amount => $invoice->netamount,
     chart  => $ar_amount_chart,
-    tax_id => $tax->id,
+    tax_id => $params{tax_id} || $tax->id,
   );
 
   $invoice->create_ar_row(chart => $ar_chart);
   $invoice->save;
 
   is($invoice->currency_id , $currency_id , 'currency_id has been saved');
-  is($invoice->netamount   , 100          , 'ar amount has been converted');
-  is($invoice->amount      , 119          , 'ar amount has been converted');
+  is($invoice->netamount   , $netamount   , 'ar amount has been converted');
+  is($invoice->amount      , $amount      , 'ar amount has been converted');
   is($invoice->taxincluded , 0            , 'ar transaction doesn\'t have taxincluded');
 
-  is(SL::DB::Manager::AccTransaction->find_by(chart_id => $ar_amount_chart->id , trans_id => $invoice->id)->amount , '100.00000'  , $ar_amount_chart->accno . ': has been converted for currency');
-  is(SL::DB::Manager::AccTransaction->find_by(chart_id => $ar_chart->id        , trans_id => $invoice->id)->amount , '-119.00000' , $ar_chart->accno . ': has been converted for currency');
-
+  if ( $netamount == 100 ) {
+    is(SL::DB::Manager::AccTransaction->find_by(chart_id => $ar_amount_chart->id , trans_id => $invoice->id)->amount , '100.00000'  , $ar_amount_chart->accno . ': has been converted for currency');
+    is(SL::DB::Manager::AccTransaction->find_by(chart_id => $ar_chart->id        , trans_id => $invoice->id)->amount , '-119.00000' , $ar_chart->accno . ': has been converted for currency');
+  }
   return $invoice;
 };
 
@@ -202,7 +225,7 @@ sub test_ap_transaction {
     invnumber    => $params{invnumber} || $testname,
     amount       => $amount,
     netamount    => $netamount,
-    transdate    => $transdate1,
+    transdate    => $dt,
     taxincluded  => 0,
     vendor_id    => $vendor->id,
     taxzone_id   => $vendor->taxzone_id,
@@ -213,7 +236,7 @@ sub test_ap_transaction {
   $invoice->add_ap_amount_row(
     amount     => $invoice->netamount,
     chart      => $ap_amount_chart,
-    tax_id     => $tax_9->id,
+    tax_id     => $params{tax_id} || $tax_9->id,
   );
 
   $invoice->create_ap_row(chart => $ap_chart);
@@ -238,7 +261,9 @@ sub test1 {
 
   $ar_transaction = test_ar_transaction(invnumber => 'salesinv1');
 
-  my $bt = create_bank_transaction(record => $ar_transaction) or die "Couldn't create bank_transaction";
+  my $bt = create_bank_transaction(record      => $ar_transaction,
+                                   transdate   => $dt,
+                                   valutadate  => $dt) or die "Couldn't create bank_transaction";
 
   $::form->{invoice_ids} = {
     $bt->id => [ $ar_transaction->id ]
@@ -264,6 +289,8 @@ sub test_skonto_exact {
 
   my $bt = create_bank_transaction(record        => $ar_transaction,
                                    bank_chart_id => $bank->id,
+                                   transdate     => $dt,
+                                   valutadate    => $dt,
                                    amount        => $ar_transaction->amount_less_skonto
                                   ) or die "Couldn't create bank_transaction";
 
@@ -284,6 +311,52 @@ sub test_skonto_exact {
 
 };
 
+sub test_bt_error {
+
+  my $testname = 'test_rollback_error';
+  # without type with_free_skonto the helper function (Payment.pm) looks ugly but not
+  # breakable
+
+  $ar_transaction = test_ar_transaction(invnumber   => 'salesinv skonto',
+                                        payment_id  => $payment_terms->id,
+                                        taxincluded => 0,
+                                        amount      => 168.58 / 1.19,
+                                       );
+
+  my $bt = create_bank_transaction(record        => $ar_transaction,
+                                   bank_chart_id => $bank->id,
+                                   transdate   => $dt,
+                                   valutadate  => $dt,
+                                   amount        => 160.15,
+                                  ) or die "Couldn't create bank_transaction";
+  $::form->{invoice_ids} = {
+    $bt->id => [ $ar_transaction->id ]
+  };
+  $::form->{invoice_skontos} = {
+    $bt->id => [ 'with_skonto_pt' ]
+  };
+
+  is($ar_transaction->paid   , '0' , "$testname: salesinv is not paid");
+
+  # generate an error for testing rollback mechanism
+  my $saved_skonto_sales_chart_id = $tax->skonto_sales_chart_id;
+  $tax->skonto_sales_chart_id(undef);
+  $tax->save;
+
+  save_btcontroller_to_string();
+  my @bt_errors = @{ $bt_controller->problems };
+  is(substr($bt_errors[0]->{message},0,38), 'Kein Skontokonto für Steuerschlüssel 3', "$testname: Fehlermeldung ok");
+  # set original value
+  $tax->skonto_sales_chart_id($saved_skonto_sales_chart_id);
+  $tax->save;
+
+  $ar_transaction->load;
+  $bt->load;
+  is($ar_transaction->paid   , '0.00000' , "$testname: salesinv was not paid");
+  is($bt->invoice_amount     , '0.00000' , "$testname: bt invoice amount was not assigned");
+
+};
+
 sub test_two_invoices {
 
   my $testname = 'test_two_invoices';
@@ -294,6 +367,8 @@ sub test_two_invoices {
   my $bt = create_bank_transaction(record        => $ar_transaction_1,
                                    amount        => ($ar_transaction_1->amount + $ar_transaction_2->amount),
                                    purpose       => "Rechnungen " . $ar_transaction_1->invnumber . " und " . $ar_transaction_2->invnumber,
+                                   transdate     => $dt,
+                                   valutadate    => $dt,
                                    bank_chart_id => $bank->id,
                                   ) or die "Couldn't create bank_transaction";
 
@@ -310,13 +385,61 @@ sub test_two_invoices {
   $ar_transaction_2->load;
   $bt->load;
 
-  is($ar_transaction_1->paid   , '119.00000' , "$testname: salesinv_1 was paid");
+  is($ar_transaction_1->paid   , '119.00000' , "$testname: salesinv_1 wcsv_import_reportsas paid");
   is($ar_transaction_1->closed , 1           , "$testname: salesinv_1 is closed");
   is($ar_transaction_2->paid   , '119.00000' , "$testname: salesinv_2 was paid");
   is($ar_transaction_2->closed , 1           , "$testname: salesinv_2 is closed");
   is($bt->invoice_amount       , '238.00000' , "$testname: bt invoice amount was assigned");
 
-};
+}
+
+sub test_one_inv_and_two_invoices_with_skonto_exact {
+
+  my $testname = 'test_two_invoices_with_skonto_exact';
+
+  my $ar_transaction_1 = test_ar_transaction(invnumber => 'salesinv 1 skonto',
+                                             payment_id => $payment_terms->id,
+                                            );
+  my $ar_transaction_2 = test_ar_transaction(invnumber => 'salesinv 2 skonto',
+                                             payment_id => $payment_terms->id,
+                                            );
+  my $ar_transaction_3 = test_ar_transaction(invnumber => 'salesinv 3 no skonto');
+
+
+
+  my $bt = create_bank_transaction(record        => $ar_transaction_1,
+                                   bank_chart_id => $bank->id,
+                                   transdate     => $dt,
+                                   valutadate    => $dt,
+                                   amount        => $ar_transaction_1->amount_less_skonto * 2 + $ar_transaction_3->amount
+                                  ) or die "Couldn't create bank_transaction";
+
+  $::form->{invoice_ids} = {
+    $bt->id => [ $ar_transaction_1->id, $ar_transaction_3->id, $ar_transaction_2->id]
+  };
+  $::form->{invoice_skontos} = {
+    $bt->id => [ 'with_skonto_pt', 'without_skonto', 'with_skonto_pt' ]
+  };
+
+  save_btcontroller_to_string();
+
+  $ar_transaction_1->load;
+  $ar_transaction_2->load;
+  $ar_transaction_3->load;
+  my $skonto_1 = SL::DB::Manager::AccTransaction->find_by(trans_id => $ar_transaction_1->id, chart_id => 162);
+  my $skonto_2 = SL::DB::Manager::AccTransaction->find_by(trans_id => $ar_transaction_2->id, chart_id => 162);
+  $bt->load;
+  is($skonto_1->amount   , '-5.95000' , "$testname: salesinv 1 skonto was booked");
+  is($skonto_2->amount   , '-5.95000' , "$testname: salesinv 2 skonto was booked");
+  is($ar_transaction_1->paid   , '119.00000' , "$testname: salesinv 1 was paid");
+  is($ar_transaction_2->paid   , '119.00000' , "$testname: salesinv 2 was paid");
+  is($ar_transaction_3->paid   , '119.00000' , "$testname: salesinv 3 was paid");
+  is($ar_transaction_1->closed , 1           , "$testname: salesinv 1 skonto is closed");
+  is($ar_transaction_2->closed , 1           , "$testname: salesinv 2 skonto is closed");
+  is($ar_transaction_3->closed , 1           , "$testname: salesinv 2 skonto is closed");
+  is($bt->invoice_amount     , '345.10000' , "$testname: bt invoice amount was assigned");
+
+}
 
 sub test_overpayment {
 
@@ -327,6 +450,8 @@ sub test_overpayment {
   # amount 135 > 119
   my $bt = create_bank_transaction(record        => $ar_transaction,
                                    bank_chart_id => $bank->id,
+                                   transdate   => $dt,
+                                   valutadate  => $dt,
                                    amount        => 135
                                   ) or die "Couldn't create bank_transaction";
 
@@ -339,29 +464,33 @@ sub test_overpayment {
   $ar_transaction->load;
   $bt->load;
 
-  is($ar_transaction->paid                     , '135.00000' , "$testname: 'salesinv overpaid' was overpaid");
-  is($bt->invoice_amount                       , '135.00000' , "$testname: bt invoice amount was assigned overpaid amount");
+  is($ar_transaction->paid                     , '119.00000' , "$testname: 'salesinv overpaid' was not overpaid");
+  is($bt->invoice_amount                       , '119.00000' , "$testname: bt invoice amount was not fully assigned with the overpaid amount");
 { local $TODO = 'this currently fails because closed ignores over-payments, see commit d90966c7';
   is($ar_transaction->closed                   , 0           , "$testname: 'salesinv overpaid' is open (via 'closed' method')");
 }
-  is($ar_transaction->open_amount == 0 ? 1 : 0 , 0           , "$testname: 'salesinv overpaid is open (via amount-paid)");
+  is($ar_transaction->open_amount == 0 ? 1 : 0 , 1           , "$testname: 'salesinv overpaid is closed (via amount-paid)");
 
 };
 
 sub test_overpayment_with_partialpayment {
 
-  # two payments on different days, 10 and 119. If there is only one invoice we want it be overpaid.
+  # two payments on different days, 10 and 119. If there is only one invoice we
+  # don't want it to be overpaid.
   my $testname = 'test_overpayment_with_partialpayment';
 
   $ar_transaction = test_ar_transaction(invnumber => 'salesinv overpaid partial');
 
   my $bt_1 = create_bank_transaction(record        => $ar_transaction,
                                      bank_chart_id => $bank->id,
+                                     transdate   => $dt,
+                                     valutadate  => $dt,
                                      amount        =>  10
                                     ) or die "Couldn't create bank_transaction";
   my $bt_2 = create_bank_transaction(record        => $ar_transaction,
                                      amount        => 119,
-                                     transdate     => DateTime->today->add(days => 5),
+                                     transdate     => $dt_5,
+                                     valutadate    => $dt_5,
                                      bank_chart_id => $bank->id,
                                     ) or die "Couldn't create bank_transaction";
 
@@ -370,18 +499,19 @@ sub test_overpayment_with_partialpayment {
   };
   save_btcontroller_to_string();
 
+  $bt_1->load;
+  is($bt_1->invoice_amount ,  '10.00000' , "$testname: bt_1 invoice amount was fully assigned");
   $::form->{invoice_ids} = {
     $bt_2->id => [ $ar_transaction->id ]
   };
   save_btcontroller_to_string();
 
   $ar_transaction->load;
-  $bt_1->load;
   $bt_2->load;
 
-  is($ar_transaction->paid , '129.00000' , "$testname: 'salesinv overpaid partial' was overpaid");
-  is($bt_1->invoice_amount ,  '10.00000' , "$testname: bt_1 invoice amount was assigned overpaid amount");
-  is($bt_2->invoice_amount , '119.00000' , "$testname: bt_2 invoice amount was assigned overpaid amount");
+  is($bt_1->invoice_amount ,  '10.00000' , "$testname: bt_1 invoice amount was fully assigned");
+  is($ar_transaction->paid , '119.00000' , "$testname: 'salesinv overpaid partial' was not overpaid");
+  is($bt_2->invoice_amount , '109.00000' , "$testname: bt_2 invoice amount was partly assigned");
 
 };
 
@@ -394,6 +524,8 @@ sub test_partial_payment {
   # amount 100 < 119
   my $bt = create_bank_transaction(record        => $ar_transaction,
                                    bank_chart_id => $bank->id,
+                                   transdate     => $dt,
+                                   valutadate    => $dt,
                                    amount        => 100
                                   ) or die "Couldn't create bank_transaction";
 
@@ -409,7 +541,165 @@ sub test_partial_payment {
   is($ar_transaction->paid , '100.00000' , "$testname: 'salesinv partial payment' was partially paid");
   is($bt->invoice_amount   , '100.00000' , "$testname: bt invoice amount was assigned partially paid amount");
 
+  # addon test partial payment full point match
+  my $bt2 = create_bank_transaction(record        => $ar_transaction,
+                                    bank_chart_id => $bank->id,
+                                    transdate     => $dt,
+                                    valutadate    => $dt,
+                                    amount        => 19
+                                   ) or die "Couldn't create bank_transaction";
+
+  my ($agreement, $rule_matches) = $bt2->get_agreement_with_invoice($ar_transaction);
+  is($agreement, 15, "points for exact partial payment ok");
+  is($rule_matches, 'remote_account_number(3) exact_open_amount(4) depositor_matches(2) remote_name(2) payment_within_30_days(1) datebonus0(3) ', "rules_matches for exact partial payment ok");
 };
+
+sub test_full_workflow_ar_multiple_inv_skonto_reconciliate_and_undo {
+
+  my $testname = 'test_partial_payment';
+
+  $ar_transaction = test_ar_transaction(invnumber => 'salesinv partial payment two');
+  my $ar_transaction_2 = test_ar_transaction(invnumber => 'salesinv 2 22d2', amount => 22);
+
+  # amount 299.29 > 119
+  my $bt = create_bank_transaction(record        => $ar_transaction,
+                                   bank_chart_id => $bank->id,
+                                   amount        => 299.29
+                                  ) or die "Couldn't create bank_transaction";
+
+  $::form->{invoice_ids} = {
+    $bt->id => [ $ar_transaction->id ]
+  };
+
+  save_btcontroller_to_string();
+
+  $ar_transaction->load;
+  $bt->load;
+
+  is($ar_transaction->paid , '119.00000' , "$testname: 'salesinv partial payment' was fully paid");
+  is($bt->invoice_amount   , '119.00000' , "$testname: bt invoice amount was assigned partially paid amount");
+  is($bt->amount           , '299.29000' , "$testname: bt amount is stil there");
+  # next invoice, same bank transaction
+  $::form->{invoice_ids} = {
+    $bt->id => [ $ar_transaction_2->id ]
+  };
+
+  save_btcontroller_to_string();
+
+  $ar_transaction_2->load;
+  $bt->load;
+  is($ar_transaction_2->paid , '26.18000' , "$testname: 'salesinv partial payment' was fully paid");
+  is($bt->invoice_amount   , '145.18000' , "$testname: bt invoice amount was assigned partially paid amount");
+  is($bt->amount           , '299.29000' , "$testname: bt amount is stil there");
+  is(scalar @{ SL::DB::Manager::BankTransactionAccTrans->get_all(where => [bank_transaction_id => $bt->id ] )}, 4, "$testname 4 acc_trans entries created");
+
+  #  now check all 4 entries done so far and save paid acc_trans_ids for later use with reconcile
+  foreach my $acc_trans_id_entry (@{ SL::DB::Manager::BankTransactionAccTrans->get_all(where => [bank_transaction_id => $bt->id ] )}) {
+    isnt($acc_trans_id_entry->ar_id, undef, "$testname: bt linked with acc_trans and trans_id set");
+    my $rl = SL::DB::Manager::RecordLink->get_all(where => [ from_id => $bt->id, from_table => 'bank_transactions', to_id => $acc_trans_id_entry->ar_id ]);
+    is (ref $rl->[0], 'SL::DB::RecordLink', "$testname record link created");
+    my $acc_trans = SL::DB::Manager::AccTransaction->get_all(where => [acc_trans_id => $acc_trans_id_entry->acc_trans_id]);
+    foreach my $entry (@{ $acc_trans }) {
+      like(abs($entry->amount), qr/(119|26.18)/, "$testname: abs amount correct");
+      like($entry->chart_link, qr/(paid|AR)/, "$testname chart_link correct");
+      push @{ $::form->{bb_ids} }, $entry->acc_trans_id if $entry->chart_link =~ m/paid/;
+    }
+  }
+  # great we need one last booking to clear the whole bank transaction - we include skonto
+  my $ar_transaction_skonto = test_ar_transaction(invnumber  => 'salesinv skonto last case',
+                                                  payment_id => $payment_terms->id,
+                                                  amount     => 136.32,
+                                                 );
+
+  $::form->{invoice_ids} = {
+    $bt->id => [ $ar_transaction_skonto->id ]
+  };
+  $::form->{invoice_skontos} = {
+    $bt->id => [ 'with_skonto_pt' ]
+  };
+
+  save_btcontroller_to_string();
+
+  $ar_transaction_skonto->load;
+  $bt->load;
+  is($ar_transaction_skonto->paid , '162.22000' , "$testname: 'salesinv skonto fully paid");
+  is($bt->invoice_amount   , '299.29000' , "$testname: bt invoice amount was assigned partially paid amount");
+  is($bt->amount           , '299.29000' , "$testname: bt amount is stil there");
+  is(scalar @{ SL::DB::Manager::BankTransactionAccTrans->get_all(where => [bank_transaction_id => $bt->id ] )},
+       7, "$testname 7 acc_trans entries created");
+
+  # same loop as above, but only for the 3rd ar_id
+  foreach my $acc_trans_id_entry (@{ SL::DB::Manager::BankTransactionAccTrans->get_all(where => [ar_id => $ar_transaction_skonto->id ] )}) {
+    isnt($acc_trans_id_entry->ar_id, '', "$testname: bt linked with acc_trans and trans_id set");
+    my $rl = SL::DB::Manager::RecordLink->get_all(where => [ from_id => $bt->id, from_table => 'bank_transactions', to_id => $acc_trans_id_entry->ar_id ]);
+    is (ref $rl->[0], 'SL::DB::RecordLink', "$testname record link created");
+    my $acc_trans = SL::DB::Manager::AccTransaction->get_all(where => [acc_trans_id => $acc_trans_id_entry->acc_trans_id]);
+    foreach my $entry (@{ $acc_trans }) {
+      like($entry->chart_link, qr/(paid|AR)/, "$testname chart_link correct");
+      is ($entry->amount, '162.22000', "$testname full amont") if $entry->chart_link eq 'AR'; # full amount
+      like(abs($entry->amount), qr/(154.11|8.11)/, "$testname: abs amount correct") if $entry->chart_link =~ m/paid/;
+      push @{ $::form->{bb_ids} }, $entry->acc_trans_id if ($entry->chart_link =~ m/paid/ && $entry->amount == -154.11);
+    }
+  }
+  # done, now reconciliate all bookings
+  $::form->{bt_ids} = [ $bt->id ];
+  my $rec_controller = SL::Controller::Reconciliation->new;
+  my @errors = $rec_controller->_get_elements_and_validate;
+
+  is (scalar @errors, 0, "$testname unsuccesfull reconciliation with error: " . Dumper(@errors));
+  $rec_controller->_reconcile;
+  $bt->load;
+
+  # and check the cleared state of bt and the acc_transactions
+  is($bt->cleared, '1' , "$testname: bt cleared");
+  foreach (@{ $::form->{bb_ids} }) {
+    my $acc_trans = SL::DB::Manager::AccTransaction->find_by(acc_trans_id => $_);
+    is($acc_trans->cleared, '1' , "$testname: acc_trans entry cleared");
+  }
+  # now, this was a really bad idea and in general a major mistake. better undo and redo the whole bank transactions
+
+  $::form->{ids} = [ $bt->id ];
+  $bt_controller = SL::Controller::BankTransaction->new;
+  $bt_controller->action_unlink_bank_transaction('testcase' => 1);
+
+  $bt->load;
+
+  # and check the cleared state of bt and the acc_transactions
+  is($bt->cleared, '0' , "$testname: bt undo cleared");
+  is($bt->invoice_amount, '0.00000' , "$testname: bt undo invoice amount");
+  foreach (@{ $::form->{bb_ids} }) {
+    my $acc_trans = SL::DB::Manager::AccTransaction->find_by(acc_trans_id => $_);
+    is($acc_trans, undef , "$testname: cleared acc_trans entry completely removed");
+  }
+  # this was for data integrity for reconcile, now all the other options
+  is(scalar @{ SL::DB::Manager::BankTransactionAccTrans->get_all(where => [bank_transaction_id => $bt->id ] )},
+       0, "$testname 7 acc_trans entries deleted");
+  my $rl = SL::DB::Manager::RecordLink->get_all(where => [ from_id => $bt->id, from_table => 'bank_transactions' ]);
+  is (ref $rl->[0], '', "$testname record link removed");
+  # double safety and check ar.paid
+  # load all three invoices and check for paid-link via acc_trans and paid in general
+
+  $ar_transaction->load;
+  $ar_transaction_2->load;
+  $ar_transaction_skonto->load;
+
+  is(scalar @{ SL::DB::Manager::AccTransaction->get_all(
+     where => [ trans_id => $ar_transaction->id, chart_link => { like => '%paid%' } ])},
+     0, "$testname no more paid entries in acc_trans for ar_transaction");
+  is(scalar @{ SL::DB::Manager::AccTransaction->get_all(
+     where => [ trans_id => $ar_transaction_2->id, chart_link => { like => '%paid%' } ])},
+     0, "$testname no more paid entries in acc_trans for ar_transaction_2");
+  is(scalar @{ SL::DB::Manager::AccTransaction->get_all(
+     where => [ trans_id => $ar_transaction_skonto->id, chart_link => { like => '%paid%' } ])},
+     0, "$testname no more paid entries in acc_trans for ar_transaction_skonto");
+
+  is($ar_transaction->paid , '0.00000' , "$testname: 'salesinv fully unpaid");
+  is($ar_transaction_2->paid , '0.00000' , "$testname: 'salesinv 2 fully unpaid");
+  is($ar_transaction_skonto->paid , '0.00000' , "$testname: 'salesinv skonto fully unpaid");
+
+  # whew. w(h)a(n)t a whole lotta test
+}
+
 
 sub test_credit_note {
 
@@ -420,6 +710,7 @@ sub test_credit_note {
   my $credit_note = create_credit_note(
     invnumber    => 'cn 1',
     customer     => $customer,
+    transdate    => $dt,
     taxincluded  => 0,
     invoiceitems => [ create_invoice_item(part => $part1, qty =>  3, sellprice => 70),
                       create_invoice_item(part => $part2, qty => 10, sellprice => 50),
@@ -428,11 +719,11 @@ sub test_credit_note {
   my $bt            = create_bank_transaction(record        => $credit_note,
                                                                 amount        => $credit_note->amount,
                                                                 bank_chart_id => $bank->id,
-                                                                transdate     => DateTime->today->add(days => 10),
+                                                                transdate     => $dt_10,
                                                                );
   my ($agreement, $rule_matches) = $bt->get_agreement_with_invoice($credit_note);
-  is($agreement, 13, "points for credit note ok");
-  is($rule_matches, 'remote_account_number(3) exact_amount(4) wrong_sign(-1) depositor_matches(2) remote_name(2) payment_within_30_days(1) datebonus14(2) ', "rules_matches for credit note ok");
+  is($agreement, 14, "points for credit note ok");
+  is($rule_matches, 'remote_account_number(3) exact_amount(4) depositor_matches(2) remote_name(2) payment_within_30_days(1) datebonus14(2) ', "rules_matches for credit note ok");
 
   $::form->{invoice_ids} = {
     $bt->id => [ $credit_note->id ]
@@ -457,7 +748,7 @@ sub test_neg_ap_transaction {
     invnumber    => $params{invnumber} || 'test_neg_ap_transaction',
     amount       => $amount,
     netamount    => $netamount,
-    transdate    => $transdate1,
+    transdate    => $dt,
     taxincluded  => 0,
     vendor_id    => $vendor->id,
     taxzone_id   => $vendor->taxzone_id,
@@ -480,10 +771,11 @@ sub test_neg_ap_transaction {
   my $bt            = create_bank_transaction(record        => $invoice,
                                               amount        => $invoice->amount,
                                               bank_chart_id => $bank->id,
-                                              transdate     => DateTime->today->add(days => 10),
+                                              transdate     => $dt_10,
                                                                );
+
   my ($agreement, $rule_matches) = $bt->get_agreement_with_invoice($invoice);
-  is($agreement, 15, "points for negative ap transaction ok");
+  is($agreement, 16, "points for negative ap transaction ok");
 
   $::form->{invoice_ids} = {
     $bt->id => [ $invoice->id ]
@@ -498,8 +790,95 @@ sub test_neg_ap_transaction {
   is($invoice->netamount, '-20.00000', "$testname: netamount ok");
   is($invoice->paid     , '-23.80000', "$testname: paid ok");
   is($bt->invoice_amount, '23.80000', "$testname: bt invoice amount for ap was assigned");
+  is($bt->amount,         '23.80000', "$testname: bt  amount for ap was assigned");
 
   return $invoice;
+};
+sub test_two_neg_ap_transaction {
+  my $testname='test_two_neg_ap_transaction';
+  my $netamount = -20;
+  my $amount    = $::form->round_amount($netamount * 1.19,2);
+  my $invoice   = SL::DB::PurchaseInvoice->new(
+    invoice      =>  0,
+    invnumber    => 'test_neg_ap_transaction',
+    amount       => $amount,
+    netamount    => $netamount,
+    transdate    => $dt,
+    taxincluded  => 0,
+    vendor_id    => $vendor->id,
+    taxzone_id   => $vendor->taxzone_id,
+    currency_id  => $currency_id,
+    transactions => [],
+    notes        => 'test_neg_ap_transaction',
+  );
+  $invoice->add_ap_amount_row(
+    amount     => $invoice->netamount,
+    chart      => $ap_amount_chart,
+    tax_id     => $tax_9->id,
+  );
+
+  $invoice->create_ap_row(chart => $ap_chart);
+  $invoice->save;
+
+  is($invoice->netamount, -20  , "$testname: netamount ok");
+  is($invoice->amount   , -23.8, "$testname: amount ok");
+
+  my $netamount_two = -1.14;
+  my $amount_two    = $::form->round_amount($netamount_two * 1.19,2);
+  my $invoice_two   = SL::DB::PurchaseInvoice->new(
+    invoice      => 0,
+    invnumber    => 'test_neg_ap_transaction_two',
+    amount       => $amount_two,
+    netamount    => $netamount_two,
+    transdate    => $dt,
+    taxincluded  => 0,
+    vendor_id    => $vendor->id,
+    taxzone_id   => $vendor->taxzone_id,
+    currency_id  => $currency_id,
+    transactions => [],
+    notes        => 'test_neg_ap_transaction_two',
+  );
+  $invoice_two->add_ap_amount_row(
+    amount     => $invoice_two->netamount,
+    chart      => $ap_amount_chart,
+    tax_id     => $tax_9->id,
+  );
+
+  $invoice_two->create_ap_row(chart => $ap_chart);
+  $invoice_two->save;
+
+  is($invoice_two->netamount, -1.14  , "$testname: netamount ok");
+  is($invoice_two->amount   , -1.36, "$testname: amount ok");
+
+
+  my $bt            = create_bank_transaction(record        => $invoice_two,
+                                              amount        => $invoice_two->amount + $invoice->amount,
+                                              bank_chart_id => $bank->id,
+                                              transdate     => $dt_10,
+                                                               );
+  # my ($agreement, $rule_matches) = $bt->get_agreement_with_invoice($invoice_two);
+  # is($agreement, 15, "points for negative ap transaction ok");
+
+  $::form->{invoice_ids} = {
+    $bt->id => [ $invoice->id, $invoice_two->id ]
+  };
+
+  save_btcontroller_to_string();
+
+  $invoice->load;
+  $invoice_two->load;
+  $bt->load;
+
+  is($invoice->amount   , '-23.80000', "$testname: first inv amount ok");
+  is($invoice->netamount, '-20.00000', "$testname: first inv netamount ok");
+  is($invoice->paid     , '-23.80000', "$testname: first inv paid ok");
+  is($invoice_two->amount   , '-1.36000', "$testname: second inv amount ok");
+  is($invoice_two->netamount, '-1.14000', "$testname: second inv netamount ok");
+  is($invoice_two->paid     , '-1.36000', "$testname: second inv paid ok");
+  is($bt->invoice_amount, '25.16000', "$testname: bt invoice amount for both invoices were assigned");
+
+
+  return ($invoice, $invoice_two);
 };
 
 sub test_ap_payment_transaction {
@@ -512,7 +891,7 @@ sub test_ap_payment_transaction {
     invnumber    => $params{invnumber} || $testname,
     amount       => $amount,
     netamount    => $netamount,
-    transdate    => $transdate1,
+    transdate    => $dt,
     taxincluded  => 0,
     vendor_id    => $vendor->id,
     taxzone_id   => $vendor->taxzone_id,
@@ -535,7 +914,7 @@ sub test_ap_payment_transaction {
   my $bt            = create_bank_transaction(record        => $invoice,
                                               amount        => $invoice->amount,
                                               bank_chart_id => $bank->id,
-                                              transdate     => DateTime->today->add(days => 10),
+                                              transdate     => $dt_10,
                                              );
   $::form->{invoice_ids} = {
     $bt->id => [ $invoice->id ]
@@ -548,7 +927,7 @@ sub test_ap_payment_transaction {
 
   is($invoice->amount   , '136.85000', "$testname: amount ok");
   is($invoice->netamount, '115.00000', "$testname: netamount ok");
-  is($bt->amount, '-136.85000', "$testname: bt amount ok");
+  is($bt->amount,         '-136.85000', "$testname: bt amount ok");
   is($invoice->paid     , '136.85000', "$testname: paid ok");
   is($bt->invoice_amount, '-136.85000', "$testname: bt invoice amount for ap was assigned");
 
@@ -565,7 +944,7 @@ sub test_ap_payment_part_transaction {
     invnumber    => $params{invnumber} || $testname,
     amount       => $amount,
     netamount    => $netamount,
-    transdate    => $transdate1,
+    transdate    => $dt,
     taxincluded  => 0,
     vendor_id    => $vendor->id,
     taxzone_id   => $vendor->taxzone_id,
@@ -588,7 +967,7 @@ sub test_ap_payment_part_transaction {
   my $bt            = create_bank_transaction(record        => $invoice,
                                               amount        => $invoice->amount-100,
                                               bank_chart_id => $bank->id,
-                                              transdate     => DateTime->today->add(days => 10),
+                                              transdate     => $dt_10,
                                              );
   $::form->{invoice_ids} = {
     $bt->id => [ $invoice->id ]
@@ -608,7 +987,7 @@ sub test_ap_payment_part_transaction {
   my $bt2           = create_bank_transaction(record        => $invoice,
                                               amount        => 100,
                                               bank_chart_id => $bank->id,
-                                              transdate     => DateTime->today->add(days => 10),
+                                              transdate     => $dt_10,
                                              );
   $::form->{invoice_ids} = {
     $bt2->id => [ $invoice->id ]
@@ -638,6 +1017,7 @@ sub test_neg_sales_invoice {
     invnumber    => '20172201',
     customer     => $customer,
     taxincluded  => 0,
+    transdate     => $dt,
     invoiceitems => [ create_invoice_item(part => $part1, qty =>  3, sellprice => 70),
                       create_invoice_item(part => $part2, qty => 10, sellprice => -50),
                     ]
@@ -645,7 +1025,8 @@ sub test_neg_sales_invoice {
   my $bt            = create_bank_transaction(record        => $neg_sales_inv,
                                                                 amount        => $neg_sales_inv->amount,
                                                                 bank_chart_id => $bank->id,
-                                                                transdate     => DateTime->today,
+                                                                transdate     => $dt,
+                                                                valutadate    => $dt,
                                                                );
   $::form->{invoice_ids} = {
     $bt->id => [ $neg_sales_inv->id ]
@@ -666,9 +1047,9 @@ sub test_bt_rule1 {
 
   my $testname = 'test_bt_rule1';
 
-  $ar_transaction = test_ar_transaction(invnumber => 'bt_rule1');
+  $ar_transaction = test_ar_transaction(invnumber => 'bt_rule1', transdate => $dt);
 
-  my $bt = create_bank_transaction(record => $ar_transaction) or die "Couldn't create bank_transaction";
+  my $bt = create_bank_transaction(record => $ar_transaction, transdate => $dt) or die "Couldn't create bank_transaction";
 
   $ar_transaction->load;
   $bt->load;
@@ -676,16 +1057,14 @@ sub test_bt_rule1 {
   is($bt->invoice_amount     , '0.00000' , "$testname: bt invoice amount was not assigned");
 
   my $bt_controller = SL::Controller::BankTransaction->new;
-  $::form->{dont_render_for_test} = 1;
-  $::form->{filter}{bank_account} = $bank_account->id;
-  my $bt_transactions = $bt_controller->action_list;
+  my ( $bt_transactions, $proposals ) = $bt_controller->gather_bank_transactions_and_proposals(bank_account => $bank_account);
 
   is(scalar(@$bt_transactions)         , 1  , "$testname: one bank_transaction");
   is($bt_transactions->[0]->{agreement}, 20 , "$testname: agreement == 20");
   my $match = join ( ' ',@{$bt_transactions->[0]->{rule_matches}});
   #print "rule_matches='".$match."'\n";
   is($match,
-     "remote_account_number(3) exact_amount(4) own_invnumber_in_purpose(5) depositor_matches(2) remote_name(2) payment_within_30_days(1) datebonus0(3) ",
+     "remote_account_number(3) exact_amount(4) own_invoice_in_purpose(5) depositor_matches(2) remote_name(2) payment_within_30_days(1) datebonus0(3) ",
      "$testname: rule_matches ok");
   $bt->invoice_amount($bt->amount);
   $bt->save;
@@ -696,9 +1075,9 @@ sub test_sepa_export {
 
   my $testname = 'test_sepa_export';
 
-  $ar_transaction = test_ar_transaction(invnumber => 'sepa1');
+  $ar_transaction = test_ar_transaction(invnumber => 'sepa1', transdate => $dt);
 
-  my $bt  = create_bank_transaction(record => $ar_transaction) or die "Couldn't create bank_transaction";
+  my $bt  = create_bank_transaction(record => $ar_transaction, transdate => $dt) or die "Couldn't create bank_transaction";
   my $se  = create_sepa_export();
   my $sei = create_sepa_export_item(
     chart_id       => $bank->id,
@@ -729,17 +1108,166 @@ sub test_sepa_export {
   is($sei->amount            , '119.00000' , "$testname: sepa export amount ok");
 
   my $bt_controller = SL::Controller::BankTransaction->new;
-  $::form->{dont_render_for_test} = 1;
-  $::form->{filter}{bank_account} = $bank_account->id;
-  my $bt_transactions = $bt_controller->action_list;
+  my ( $bt_transactions, $proposals ) = $bt_controller->gather_bank_transactions_and_proposals(bank_account => $bank_account);
 
   is(scalar(@$bt_transactions)         , 1  , "$testname: one bank_transaction");
   is($bt_transactions->[0]->{agreement}, 25 , "$testname: agreement == 25");
   my $match = join ( ' ',@{$bt_transactions->[0]->{rule_matches}});
   is($match,
-     "remote_account_number(3) exact_amount(4) own_invnumber_in_purpose(5) depositor_matches(2) remote_name(2) payment_within_30_days(1) datebonus0(3) sepa_export_item(5) ",
+     "remote_account_number(3) exact_amount(4) own_invoice_in_purpose(5) depositor_matches(2) remote_name(2) payment_within_30_days(1) datebonus0(3) sepa_export_item(5) ",
      "$testname: rule_matches ok");
 };
 
+sub test_two_banktransactions {
+
+  my $testname = 'two_banktransactions';
+
+  my $ar_transaction_1 = test_ar_transaction(invnumber => 'salesinv10000' , amount => 2912.00 );
+  my $bt1 = create_bank_transaction(record        => $ar_transaction_1,
+                                    amount        => $ar_transaction_1->amount,
+                                    purpose       => "Rechnung10000 beinahe",
+                                    transdate     => $dt,
+                                    bank_chart_id => $bank->id,
+                                  ) or die "Couldn't create bank_transaction";
+
+  my $bt2 = create_bank_transaction(record        => $ar_transaction_1,
+                                    amount        => $ar_transaction_1->amount + 0.01,
+                                    purpose       => "sicher salesinv20000 vielleicht",
+                                    transdate     => $dt,
+                                    bank_chart_id => $bank->id,
+                                  ) or die "Couldn't create bank_transaction";
+
+  my ($agreement1, $rule_matches1) = $bt1->get_agreement_with_invoice($ar_transaction_1);
+  is($agreement1, 19, "bt1 19 points for ar_transaction_1 in $testname ok");
+  #print "rule_matches1=".$rule_matches1."\n";
+  is($rule_matches1,
+     "remote_account_number(3) exact_amount(4) own_invnumber_in_purpose(4) depositor_matches(2) remote_name(2) payment_within_30_days(1) datebonus0(3) ",
+     "$testname: rule_matches ok");
+  my ($agreement2, $rule_matches2) = $bt2->get_agreement_with_invoice($ar_transaction_1);
+  is($agreement2, 11, "bt2 11 points for ar_transaction_1 in $testname ok");
+  is($rule_matches2,
+     "remote_account_number(3) depositor_matches(2) remote_name(2) payment_within_30_days(1) datebonus0(3) ",
+     "$testname: rule_matches ok");
+
+  my $ar_transaction_2 = test_ar_transaction(invnumber => 'salesinv20000' , amount => 2912.01 );
+  my $ar_transaction_3 = test_ar_transaction(invnumber => 'zweitemit10000', amount => 2912.00 );
+     ($agreement1, $rule_matches1) = $bt1->get_agreement_with_invoice($ar_transaction_2);
+
+  is($agreement1, 11, "bt1 11 points for ar_transaction_2 in $testname ok");
+
+     ($agreement2, $rule_matches2) = $bt2->get_agreement_with_invoice($ar_transaction_2);
+  is($agreement2, 20, "bt2 20 points for ar_transaction_2 in $testname ok");
+
+     ($agreement2, $rule_matches2) = $bt2->get_agreement_with_invoice($ar_transaction_1);
+  is($agreement2, 11, "bt2 11 points for ar_transaction_1 in $testname ok");
+
+  my $bt3 = create_bank_transaction(record        => $ar_transaction_3,
+                                    amount        => $ar_transaction_3->amount,
+                                    purpose       => "sicher Rechnung10000 vielleicht",
+                                    transdate     => $dt,
+                                    bank_chart_id => $bank->id,
+                                  ) or die "Couldn't create bank_transaction";
+
+  my ($agreement3, $rule_matches3) = $bt3->get_agreement_with_invoice($ar_transaction_3);
+  is($agreement3, 19, "bt3 19 points for ar_transaction_3 in $testname ok");
+
+  $bt2->delete;
+  $ar_transaction_2->delete;
+
+  #nun sollten zwei gleichwertige Rechnungen $ar_transaction_1 und $ar_transaction_3 für $bt1 gefunden werden
+  #aber es darf keine Proposals geben mit mehreren Rechnungen
+  my $bt_controller = SL::Controller::BankTransaction->new;
+  my ( $bt_transactions, $proposals ) = $bt_controller->gather_bank_transactions_and_proposals(bank_account => $bank_account);
+
+  is(scalar(@$bt_transactions)   , 2  , "$testname: two bank_transaction");
+  is(scalar(@$proposals)         , 0  , "$testname: no proposals");
+
+  $ar_transaction_3->delete;
+
+  # Jetzt gibt es zwei Kontobewegungen mit gleichen Punkten für eine Rechnung.
+  # hier darf es auch keine Proposals geben
+
+  ( $bt_transactions, $proposals ) = $bt_controller->gather_bank_transactions_and_proposals(bank_account => $bank_account);
+
+  is(scalar(@$bt_transactions)   , 2  , "$testname: two bank_transaction");
+  # odyn testfall - anforderungen so (noch) nicht in kivi
+  # is(scalar(@$proposals)         , 0  , "$testname: no proposals");
+
+  # Jetzt gibt es zwei Kontobewegungen für eine Rechnung.
+  # eine Bewegung bekommt mehr Punkte
+  # hier darf es auch keine Proposals geben
+  $bt3->update_attributes( purpose => "fuer Rechnung salesinv10000");
+
+  ( $bt_transactions, $proposals ) = $bt_controller->gather_bank_transactions_and_proposals(bank_account => $bank_account);
+
+  is(scalar(@$bt_transactions)   , 2  , "$testname: two bank_transaction");
+  # odyn testfall - anforderungen so (noch) nicht in kivi
+  # is(scalar(@$proposals)         , 1  , "$testname: one proposal");
+
+};
+sub test_closedto {
+
+  my $testname = 'closedto';
+
+  my $ar_transaction_1 = test_ar_transaction(invnumber => 'salesinv10000' , amount => 2912.00 );
+  my $bt1 = create_bank_transaction(record        => $ar_transaction_1,
+                                    amount        => $ar_transaction_1->amount,
+                                    purpose       => "Rechnung10000 beinahe",
+                                    bank_chart_id => $bank->id,
+                                  ) or die "Couldn't create bank_transaction";
+
+  $bt1->valutadate(DateTime->new(year => 2019, month => 12, day => 30));
+  $bt1->save();
+
+  is($bt1->closed_period, 0, "$testname undefined closedto");
+
+  my $defaults = SL::DB::Manager::Default->get_all(limit => 1)->[0];
+  $defaults->closedto(DateTime->new(year => 2019, month => 12, day => 31));
+  $defaults->save();
+  $::instance_conf->reload->data;
+  $bt1->load();
+  is($bt1->closed_period, 1, "$testname defined and next date closedto");
+
+  $bt1->valutadate(DateTime->new(year => 2020, month => 1, day => 1));
+  $bt1->save();
+  $bt1->load();
+
+  is($bt1->closed_period, 0, "$testname defined closedto and next date valuta");
+  $defaults->closedto(undef);
+  $defaults->save();
+
+}
+
+sub test_skonto_exact_ap_transaction {
+
+  my $testname = 'test_skonto_exact_ap_transaction';
+
+  $ap_transaction = test_ap_transaction(invnumber => 'ap transaction skonto',
+                                        payment_id => $payment_terms->id,
+                                       );
+
+  my $bt = create_bank_transaction(record        => $ap_transaction,
+                                   bank_chart_id => $bank->id,
+                                   transdate     => $dt,
+                                   valutadate    => $dt,
+                                   amount        => $ap_transaction->amount_less_skonto
+                                  ) or die "Couldn't create bank_transaction";
+
+  $::form->{invoice_ids} = {
+    $bt->id => [ $ap_transaction->id ]
+  };
+  $::form->{invoice_skontos} = {
+    $bt->id => [ 'with_skonto_pt' ]
+  };
+
+  save_btcontroller_to_string();
+
+  $ap_transaction->load;
+  $bt->load;
+  is($ap_transaction->paid   , '119.00000' , "$testname: ap transaction skonto was paid");
+  is($ap_transaction->closed , 1           , "$testname: ap transaction skonto is closed");
+  is($bt->invoice_amount     , '113.05000' , "$testname: bt invoice amount was assigned");
+
+};
 
 1;

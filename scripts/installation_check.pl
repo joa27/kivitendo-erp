@@ -6,7 +6,6 @@ BEGIN {
 
   unshift(@INC, $FindBin::Bin . '/../modules/override'); # Use our own versions of various modules (e.g. YAML).
   push   (@INC, $FindBin::Bin . '/..');                  # '.' will be removed from @INC soon.
-  push   (@INC, $FindBin::Bin . '/../modules/fallback'); # Only use our own versions of modules if there's no system version.
 
   # this is a default dir. may be wrong in your installation, change it then
   $master_templates = $FindBin::Bin . '/../templates/print/';
@@ -14,6 +13,7 @@ BEGIN {
 
 use strict;
 use Getopt::Long;
+use List::MoreUtils qw(uniq);
 use Pod::Usage;
 use Term::ANSIColor;
 use Text::Wrap;
@@ -82,7 +82,7 @@ if ($check{a}) {
 $| = 1;
 
 if (!SL::LxOfficeConf->read(undef, 'may fail')) {
-  print_header('Could not load the config file. If you have dependancies from any features enabled in the configuration these will still show up as optional because of this. Please rerun this script after installing the dependancies needed to load the configuration.')
+  print_header('Could not load the config file. If you have dependencies from any features enabled in the configuration these will still show up as optional because of this. Please rerun this script after installing the dependencies needed to load the configuration.')
 } else {
   SL::InstallationCheck::check_for_conditional_dependencies();
 }
@@ -95,7 +95,6 @@ if ($check{r}) {
 if ($check{o}) {
   print_header('Checking Optional Modules');
   check_module($_, optional => 1) for @SL::InstallationCheck::optional_modules;
-  check_aqbanking();
 }
 if ($check{d}) {
   print_header('Checking Developer Modules');
@@ -122,7 +121,7 @@ EOL
 
 Standard check done, everything is OK and up to date. Have a look at the --help
 section of this script to see some more advanced checks for developer and
-optional dependancies, as well as LaTeX packages you might need.
+optional dependencies, as well as LaTeX packages you might need.
 EOL
   }
 }
@@ -146,9 +145,28 @@ exit !!@missing_modules;
 sub check_latex {
   my ($res) = check_kpsewhich();
   print_result("Looking for LaTeX kpsewhich", $res);
+
+  # no pdfx -> no zugferd possible
+  my $ret = kpsewhich('template/print/', 'sty', 'pdfx');
+  die "Cannot use pdfx. Please install this package first (debian: apt install texlive-latex-extra)"  if $ret;
+  # check version 2018
+  my $latex = $::lx_office_conf{applications}->{latex} || 'pdflatex';
+  my $pdfx = (system ${latex} . ' --interaction=batchmode "\documentclass{minimal} \RequirePackage{pdfx} \csname @ifpackagelater\endcsname{pdfx}{2018/12/22}{}{\show\relax} \begin{document} \end{document}"');
+
+  print_result ("Looking for pdfx version 2018 or higher", !$pdfx);
+  push @missing_modules, \(name => 'pdfx') if $pdfx;
+
   if ($res) {
     check_template_dir($_) for SL::InstallationCheck::template_dirs($master_templates);
   }
+  print STDERR <<EOL if $pdfx;
++------------------------------------------------------------------------------+
+  Your pdfx version is too old. You cannot use ZuGFeRD or modern (2018+)
+  templates. Please consider using a more recent LaTeX environment.
+  Verify with:
+  pdflatex --interaction=batchmode "\RequirePackage{pdfx}[2018/12/22]"
++------------------------------------------------------------------------------+
+EOL
 }
 
 sub check_template_dir {
@@ -157,7 +175,12 @@ sub check_template_dir {
 
   print_header("Checking LaTeX Dependencies for Master Templates '$dir'");
   kpsewhich($path, 'cls', $_) for SL::InstallationCheck::classes_from_latex($path, '\documentclass');
-  kpsewhich($path, 'sty', $_) for SL::InstallationCheck::classes_from_latex($path, '\usepackage');
+
+  my @sty = sort { $a cmp $b } uniq (
+    SL::InstallationCheck::classes_from_latex($path, '\usepackage'),
+    qw(textcomp ulem embedfile)
+  );
+  kpsewhich($path, 'sty', $_) for @sty;
 }
 
 our $mastertemplate_path = './templates/print/';
@@ -179,10 +202,10 @@ sub kpsewhich {
   $package =~ s/[^-_0-9A-Za-z]//g;
   my $type_desc = $type eq 'cls' ? 'document class' : 'package';
 
-  eval { use String::ShellQuote; 1 } or warn "can't load String::ShellQuote" && return;
-     $dw         = shell_quote $dw;
-  my $e_package  = shell_quote $package;
-  my $e_type     = shell_quote $type;
+  eval { require String::ShellQuote; 1 } or warn "can't load String::ShellQuote" && return;
+     $dw         = String::ShellQuote::shell_quote $dw;
+  my $e_package  = String::ShellQuote::shell_quote $package;
+  my $e_type     = String::ShellQuote::shell_quote $type;
 
   my $exit = system(qq|TEXINPUTS=".:$dw:" kpsewhich $e_package.$e_type > /dev/null|);
   my $res  = $exit > 0 ? 0 : 1;
@@ -218,26 +241,6 @@ sub check_pdfinfo {
   }
 }
 
-sub check_aqbanking {
-  my $aqbin = $::lx_office_conf{applications}->{aqbanking};
-  if ( !$aqbin ) {
-    print_line('Looking for aqbanking executable', 'not configured','red');
-  }
-  else {
-    my $line = "Looking for aqbanking executable '".$aqbin."'";
-    my $shell_out = `$aqbin versions 2>&1 | grep AqBanking-CLI 2> /dev/null`;
-    my ($label,$version)  = split /:/,$shell_out;
-    if ( $label && $label eq ' AqBanking-CLI' ) {
-      chop $version;
-      print_line($line, $version, 'green');
-    } else {
-      print_line($line, 'not installed','red');
-      my %modinfo = ( name => 'aqbanking' );
-      push @missing_modules, \%modinfo;
-    }
-  }
-}
-
 sub check_module {
   my ($module, %role) = @_;
 
@@ -260,7 +263,7 @@ sub check_module {
       $role{optional} ? 'It is OPTIONAL for kivitendo but RECOMMENDED for improved functionality.'
     : $role{required} ? 'It is NEEDED by kivitendo and must be installed.'
     : $role{devel}    ? 'It is OPTIONAL for kivitendo and only useful for developers.'
-    :                   'It is not listed as a dependancy yet. Please tell this the developers.';
+    :                   'It is not listed as a dependency yet. Please tell this the developers.';
 
   my @source_texts = module_source_texts($module);
   local $" = $/;
@@ -330,7 +333,7 @@ __END__
 
 =head1 NAME
 
-scripts/installation_check.pl - check kivitendo dependancies
+scripts/installation_check.pl - check kivitendo dependencies
 
 =head1 SYNOPSIS
 
@@ -362,11 +365,11 @@ No color output. Helpful to avoid terminal escape problems.
 
 =item C<-d, --devel>
 
-Probe for perl developer dependancies. (Used for console  and tags file)
+Probe for perl developer dependencies. (Used for console  and tags file)
 
 =item C<--no-devel>
 
-Don't probe for perl developer dependancies. (Useful in combination with --all)
+Don't probe for perl developer dependencies. (Useful in combination with --all)
 
 =item C<-h, --help>
 
@@ -398,7 +401,7 @@ Don't probe for LaTeX document classes and packages in master templates. (Useful
 
 =item C<-v. --verbose>
 
-Print additional info for missing dependancies
+Print additional info for missing dependencies
 
 =item C<-i, --install-command>
 

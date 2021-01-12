@@ -1,5 +1,6 @@
 [%- USE T8 %]
 [%- USE L %]
+[%- USE P %]
 [%- USE HTML %]
 [%- USE LxERP %]
 
@@ -12,7 +13,7 @@
  <table>
   <tr>
    <th align="right" nowrap>[% 'Part' | $T8 %]</th>
-   <td>[% L.part_picker('part_id', SELF.part) %]</td>
+   <td>[% P.part.picker('part_id', SELF.part) %]</td>
   </tr>
 
   <tr>
@@ -38,11 +39,6 @@
    <td>[% L.date_tag('bestbefore', FORM.bestbefore) %]</td>
   </tr>
 [%- END %]
-
-  <tr>
-   <th align="right" nowrap>[% 'EAN' | $T8 %]</th>
-   <td>[% L.input_tag('ean', FORM.ean, size=30) %]</td>
-  </tr>
 
   <tr>
    <th align="right" nowrap>[% 'Quantity' | $T8 %]</th>

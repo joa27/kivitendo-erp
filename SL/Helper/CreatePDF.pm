@@ -11,14 +11,17 @@ use File::Temp  ();
 use File::Copy qw(move);
 use List::MoreUtils qw(uniq);
 use List::Util qw(first);
+use Scalar::Util qw(blessed);
 use String::ShellQuote ();
 
 use SL::Common;
 use SL::DB::Language;
 use SL::DB::Printer;
 use SL::MoreCommon;
+use SL::System::Process;
 use SL::Template;
 use SL::Template::LaTeX;
+use SL::X;
 
 use Exporter 'import';
 our @EXPORT_OK = qw(create_pdf merge_pdfs find_template);
@@ -39,15 +42,22 @@ sub create_pdf {
 sub create_parsed_file {
   my ($class, %params) = @_;
 
-  my $userspath      = $::lx_office_conf{paths}->{userspath};
+  my $keep_temp_files = $::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files};
+  my $userspath       = SL::System::Process::exe_dir() . "/" . $::lx_office_conf{paths}->{userspath};
+  my $temp_dir        = File::Temp->newdir(
+    "kivitendo-print-XXXXXX",
+    DIR     => $userspath,
+    CLEANUP => !$keep_temp_files,
+  );
+
   my $vars           = $params{variables} || {};
   my $form           = Form->new('');
   $form->{$_}        = $vars->{$_} for keys %{$vars};
   $form->{format}    = lc($params{format} || 'pdf');
-  $form->{cwd}       = getcwd();
+  $form->{cwd}       = SL::System::Process::exe_dir();
   $form->{templates} = $::instance_conf->get_templates;
   $form->{IN}        = $params{template};
-  $form->{tmpdir}    = $form->{cwd} . '/' . $userspath;
+  $form->{tmpdir}    = $temp_dir->dirname;
   my $tmpdir         = $form->{tmpdir};
   my ($suffix)       = $params{template} =~ m{\.(.+)};
 
@@ -55,11 +65,21 @@ sub create_parsed_file {
     'kivitendo-printXXXXXX',
     SUFFIX => ".${suffix}",
     DIR    => $form->{tmpdir},
-    UNLINK => $::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files},
+    UNLINK => !$keep_temp_files,
   );
 
   $form->{tmpfile} = $tmpfile;
   (undef, undef, $form->{template_meta}{tmpfile}) = File::Spec->splitpath($tmpfile);
+
+  my %driver_options;
+  eval {
+    %driver_options = _maybe_attach_zugferd_data($params{record});
+  };
+
+  if (my $e = SL::X::ZUGFeRDValidation->caught) {
+    $form->cleanup;
+    die $e->message;
+  }
 
   my $parser               = SL::Template::create(
     type                   => ($params{template_type} || 'LaTeX'),
@@ -68,6 +88,7 @@ sub create_parsed_file {
     myconfig               => \%::myconfig,
     userspath              => $tmpdir,
     variable_content_types => $params{variable_content_types},
+    %driver_options,
   );
 
   my $result = $parser->parse($temp_fh);
@@ -87,7 +108,7 @@ sub create_parsed_file {
   my ($volume, $directory, $file_name) = File::Spec->splitpath($form->{tmpfile});
   my $full_file_name                   = File::Spec->catfile($tmpdir, $file_name);
   if (($params{return} || 'content') eq 'file_name') {
-    my $new_name = File::Spec->catfile($tmpdir, 'keep-' . $form->{tmpfile});
+    my $new_name = File::Spec->catfile($userspath, 'keep-' . $form->{tmpfile});
     rename $full_file_name, $new_name;
 
     $form->cleanup;
@@ -144,7 +165,7 @@ sub merge_pdfs {
     'kivitendo-printXXXXXX',
     SUFFIX => '.pdf',
     DIR    => $::lx_office_conf{paths}->{userspath},
-    UNLINK => $::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files},
+    UNLINK => ($::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files})? 0 : 1,
   );
   close $temp_fh;
 
@@ -163,7 +184,7 @@ sub merge_pdfs {
       'kivitendo-contentXXXXXX',
       SUFFIX => '.pdf',
       DIR    => $::lx_office_conf{paths}->{userspath},
-      UNLINK => $::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files},
+      UNLINK => ($::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files})? 0 : 1,
     );
     binmode $temp_fh;
     print $temp_fh $params{inp_content};
@@ -240,6 +261,35 @@ sub find_template {
   my $template = first { -f ($path . "/$_") } @template_files;
 
   return wantarray ? ($template, @template_files) : $template;
+}
+
+sub _maybe_attach_zugferd_data {
+  my ($record) = @_;
+
+  return if !blessed($record)
+    || !$record->can('customer')
+    || !$record->customer
+    || !$record->can('create_pdf_a_print_options')
+    || !$record->can('create_zugferd_data')
+    || !$record->customer->create_zugferd_invoices_for_this_customer;
+
+  my $xmlfile = File::Temp->new;
+  $xmlfile->print($record->create_zugferd_data);
+  $xmlfile->close;
+
+  my %driver_options = (
+    pdf_a           => $record->create_pdf_a_print_options(zugferd_xmp_data => $record->create_zugferd_xmp_data),
+    pdf_attachments => [
+      { source       => $xmlfile,
+        name         => 'factur-x.xml',
+        description  => $::locale->text('Factur-X/ZUGFeRD invoice'),
+        relationship => '/Alternative',
+        mime_type    => 'text/xml',
+      }
+    ],
+  );
+
+  return %driver_options;
 }
 
 1;

@@ -44,9 +44,12 @@ use SL::IR;
 use SL::IS;
 use SL::MoreCommon qw(ary_diff restore_form save_form);
 use SL::ReportGenerator;
+use SL::YAML;
 use List::MoreUtils qw(uniq any none);
 use List::Util qw(min max reduce sum);
 use Data::Dumper;
+
+use SL::Controller::Order;
 
 use SL::DB::Customer;
 use SL::DB::TaxZone;
@@ -184,6 +187,14 @@ sub edit {
 
   # editing without stuff to edit? try adding it first
   if ($form->{rowcount} && !$form->{print_and_save}) {
+    if ($::instance_conf->get_feature_experimental_order) {
+      my $c = SL::Controller::Order->new;
+      $c->action_edit_collective();
+
+      $main::lxdebug->leave_sub();
+      $::dispatcher->end_request;
+    }
+
     my $id;
     map { $id++ if $form->{"multi_id_$_"} } (1 .. $form->{rowcount});
     if (!$id) {
@@ -297,14 +308,14 @@ sub setup_oe_action_bar {
   my $form   = $::form;
 
   my $has_active_periodic_invoice;
-  if ($params{obj}) {
+  if ($params{oe_obj}) {
     $has_active_periodic_invoice =
-         $params{obj}->is_type('sales_order')
-      && $params{obj}->periodic_invoices_config
-      && $params{obj}->periodic_invoices_config->active
-      && (   !$params{obj}->periodic_invoices_config->end_date
-          || ($params{obj}->periodic_invoices_config->end_date > DateTime->today_local))
-      && $params{obj}->periodic_invoices_config->get_previous_billed_period_start_date;
+         $params{oe_obj}->is_type('sales_order')
+      && $params{oe_obj}->periodic_invoices_config
+      && $params{oe_obj}->periodic_invoices_config->active
+      && (   !$params{oe_obj}->periodic_invoices_config->end_date
+          || ($params{oe_obj}->periodic_invoices_config->end_date > DateTime->today_local))
+      && $params{oe_obj}->periodic_invoices_config->get_previous_billed_period_start_date;
   }
 
   my $allow_invoice      = $params{is_req_quo}
@@ -320,7 +331,6 @@ sub setup_oe_action_bar {
         t8('Update'),
         submit    => [ '#form', { action => "update" } ],
         id        => 'update_button',
-        checks   => [ 'kivi.validate_form' ],
         accesskey => 'enter',
       ],
 
@@ -409,8 +419,9 @@ sub setup_oe_action_bar {
         ],
         action => [
           t8('E Mail'),
-          call   => [ 'kivi.SalesPurchase.show_email_dialog' ],
-          checks => [ 'kivi.validate_form' ],
+          call     => [ 'kivi.SalesPurchase.show_email_dialog' ],
+          checks   => [ 'kivi.validate_form' ],
+          disabled => !$form->{id} ? t8('This record has not been saved yet.') : undef,
         ],
         action => [
           t8('Download attachments of all parts'),
@@ -514,7 +525,8 @@ sub form_header {
                    "price_factors" => "ALL_PRICE_FACTORS");
   $form->{ALL_PAYMENTS} = SL::DB::Manager::PaymentTerm->get_all( where => [ or => [ obsolete => 0, id => $form->{payment_id} || undef ] ]);
 
-  $form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all;
+  $form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
+  $form->{ALL_LANGUAGES}   = SL::DB::Manager::Language->get_all_sorted;
 
   # Projects
   my @old_project_ids = uniq grep { $_ } map { $_ * 1 } ($form->{"globalproject_id"}, map { $form->{"project_id_$_"} } 1..$form->{"rowcount"});
@@ -604,7 +616,7 @@ sub form_header {
       $form->{periodic_invoices_status} = $locale->text('not configured');
 
     } else {
-      my $config                        = YAML::Load($form->{periodic_invoices_config});
+      my $config                        = SL::YAML::Load($form->{periodic_invoices_config});
       $form->{periodic_invoices_status} = $config->{active} ? $locale->text('active') : $locale->text('inactive');
     }
   }
@@ -622,14 +634,16 @@ sub form_header {
     is_pur_ord   => scalar($form->{type} =~ /purchase_order$/),
   );
 
-  setup_oe_action_bar(%type_check_vars);
+  setup_oe_action_bar(
+    %type_check_vars,
+    oe_obj => $TMPL_VAR->{oe_obj},
+    vc_obj => $TMPL_VAR->{vc_obj},
+  );
 
   $form->header;
   if ($form->{CFDD_shipto} && $form->{CFDD_shipto_id} ) {
       $form->{shipto_id} = $form->{CFDD_shipto_id};
   }
-
-  push @custom_hiddens, map { "shiptocvar_" . $_->name } @{ SL::DB::Manager::CustomVariableConfig->get_all(where => [ module => 'ShipTo' ]) };
 
   $TMPL_VAR->{HIDDENS} = [ map { name => $_, value => $form->{$_} },
      qw(id type vc proforma queued printed emailed
@@ -639,7 +653,7 @@ sub form_header {
         taxpart taxservice taxaccounts cursor_fokus
         show_details useasnew),
         @custom_hiddens,
-        map { $_.'_rate', $_.'_description', $_.'_taxnumber' } split / /, $form->{taxaccounts} ];  # deleted: discount
+        map { $_.'_rate', $_.'_description', $_.'_taxnumber', $_.'_tax_id' } split / /, $form->{taxaccounts} ];  # deleted: discount
 
   $TMPL_VAR->{$_} = $type_check_vars{$_} for keys %type_check_vars;
 
@@ -668,12 +682,7 @@ sub form_footer {
 
   $form->{invtotal} = $form->{invsubtotal};
 
-  my $introws = max 5, $form->numtextrows($form->{intnotes}, 35, 8);
-
   my $TMPL_VAR = $::request->cache('tmpl_var', {});
-
-  $TMPL_VAR->{notes}    = qq|<textarea name="notes" class="texteditor" wrap="soft" style="width: 350px; height: 150px">| . H($form->{notes}) . qq|</textarea>|;
-  $TMPL_VAR->{intnotes} = qq|<textarea name=intnotes rows="$introws" cols="35">| . H($form->{intnotes}) . qq|</textarea>|;
 
   if( $form->{customer_id} && !$form->{taxincluded_changed_by_user} ) {
     my $customer = SL::DB::Customer->new(id => $form->{customer_id})->load();
@@ -727,6 +736,12 @@ sub form_footer {
 
   my $print_options_html = setup_sales_purchase_print_options();
 
+  my $shipto_cvars       = SL::DB::Shipto->new->cvars_by_config;
+  foreach my $var (@{ $shipto_cvars }) {
+    my $name = "shiptocvar_" . $var->config->name;
+    $var->value($form->{$name}) if exists $form->{$name};
+  }
+
   print $form->parse_html_template("oe/form_footer", {
      %$TMPL_VAR,
      print_options   => $print_options_html,
@@ -736,6 +751,7 @@ sub form_footer {
      is_req_quo      => scalar ($form->{type} =~ /request_quotation$/),
      is_sales_ord    => scalar ($form->{type} =~ /sales_order$/),
      is_pur_ord      => scalar ($form->{type} =~ /purchase_order$/),
+     shipto_cvars    => $shipto_cvars,
   });
 
   $main::lxdebug->leave_sub();
@@ -1004,7 +1020,7 @@ sub orders {
 
   my @columns = (
     "transdate",               "reqdate",
-    "id",                      $ordnumber,             "edit_exp",
+    "id",                      $ordnumber,
     "cusordnumber",            "customernumber",
     "name",                    "netamount",
     "tax",                     "amount",
@@ -1012,14 +1028,14 @@ sub orders {
     "curr",                    "employee",
     "salesman",
     "shipvia",                 "globalprojectnumber",
-    "transaction_description", "open",
+    "transaction_description", "department",            "open",
     "delivered",               "periodic_invoices",
     "marge_total",             "marge_percent",
     "vcnumber",                "ustid",
     "country",                 "shippingpoint",
     "taxzone",                 "insertdate",
     "order_probability",       "expected_billing_date", "expected_netamount",
-    "payment_terms",
+    "payment_terms",           "intnotes",
   );
 
   # only show checkboxes if gotten here via sales_order form.
@@ -1031,7 +1047,6 @@ sub orders {
   $form->{l_open}              = $form->{l_closed} = "Y" if ($form->{open}      && $form->{closed});
   $form->{l_delivered}         = "Y"                     if ($form->{delivered} && $form->{notdelivered});
   $form->{l_periodic_invoices} = "Y"                     if ($form->{periodic_invoices_active} && $form->{periodic_invoices_inactive});
-  $form->{l_edit_exp}          = "Y"                     if $::instance_conf->get_feature_experimental && (any { $form->{type} eq $_ } qw(sales_order purchase_order));
   map { $form->{"l_${_}"} = 'Y' } qw(order_probability expected_billing_date expected_netamount) if $form->{l_order_probability_expected_billing_date};
 
   my $attachment_basename;
@@ -1069,7 +1084,7 @@ sub orders {
                                                         reqdatefrom reqdateto projectnumber project_id periodic_invoices_active periodic_invoices_inactive
                                                         business_id shippingpoint taxzone_id reqdate_unset_or_old insertdatefrom insertdateto
                                                         order_probability_op order_probability_value expected_billing_date_from expected_billing_date_to
-                                                        parts_partnumber parts_description all department_id);
+                                                        parts_partnumber parts_description all department_id intnotes);
   push @hidden_variables, map { "cvar_$_->{name}" } @ct_searchable_custom_variables;
 
   my   @keys_for_url = grep { $form->{$_} } @hidden_variables;
@@ -1098,6 +1113,7 @@ sub orders {
     'shipvia'                 => { 'text' => $locale->text('Ship via'), },
     'globalprojectnumber'     => { 'text' => $locale->text('Project Number'), },
     'transaction_description' => { 'text' => $locale->text('Transaction description'), },
+    'department'              => { 'text' => $locale->text('Department'), },
     'open'                    => { 'text' => $locale->text('Open'), },
     'delivered'               => { 'text' => $locale->text('Delivery Order created'), },
     'marge_total'             => { 'text' => $locale->text('Ertrag'), },
@@ -1113,11 +1129,11 @@ sub orders {
     'expected_billing_date'   => { 'text' => $locale->text('Exp. bill. date'), },
     'expected_netamount'      => { 'text' => $locale->text('Exp. netamount'), },
     'payment_terms'           => { 'text' => $locale->text('Payment Terms'), },
-    'edit_exp'                => { 'text' => $locale->text('Edit (experimental)'), },
+    'intnotes'                => { 'text' => $locale->text('Internal Notes'), },
     %column_defs_cvars,
   );
 
-  foreach my $name (qw(id transdate reqdate quonumber ordnumber cusordnumber name employee salesman shipvia transaction_description shippingpoint taxzone insertdate payment_terms)) {
+  foreach my $name (qw(id transdate reqdate quonumber ordnumber cusordnumber name employee salesman shipvia transaction_description shippingpoint taxzone insertdate payment_terms department intnotes)) {
     my $sortdir                 = $form->{sort} eq $name ? 1 - $form->{sortdir} : $form->{sortdir};
     $column_defs{$name}->{link} = $href . "&sort=$name&sortdir=$sortdir";
   }
@@ -1148,6 +1164,7 @@ sub orders {
   push @options, $locale->text('Order Number')            . " : $form->{ordnumber}"                       if $form->{ordnumber};
   push @options, $locale->text('Customer Order Number')   . " : $form->{cusordnumber}"                    if $form->{cusordnumber};
   push @options, $locale->text('Notes')                   . " : $form->{notes}"                           if $form->{notes};
+  push @options, $locale->text('Internal Notes')          . " : $form->{intnotes}"                        if $form->{intnotes};
   push @options, $locale->text('Transaction description') . " : $form->{transaction_description}"         if $form->{transaction_description};
   push @options, $locale->text('Quick Search')            . " : $form->{all}"                             if $form->{all};
   push @options, $locale->text('Shipping Point')          . " : $form->{shippingpoint}"                   if $form->{shippingpoint};
@@ -1221,7 +1238,9 @@ sub orders {
 
   my $idx = 1;
 
-  my $edit_url = build_std_url('action=edit', 'type', 'vc');
+  my $edit_url = ($::instance_conf->get_feature_experimental_order)
+               ? build_std_url('script=controller.pl', 'action=Order/edit', 'type')
+               : build_std_url('action=edit', 'type', 'vc');
 
   foreach my $oe (@{ $form->{OE} }) {
     map { $oe->{$_} *= $oe->{exchangerate} } @subtotal_columns;
@@ -1245,7 +1264,6 @@ sub orders {
 
     foreach my $column (@columns) {
       next if ($column eq 'ids');
-      next if ($column eq 'edit_exp');
       $row->{$column} = {
         'data'  => $oe->{$column},
         'align' => $column_alignment{$column},
@@ -1260,9 +1278,6 @@ sub orders {
     };
 
     $row->{$ordnumber}->{link} = $edit_url . "&id=" . E($oe->{id}) . "&callback=${callback}";
-
-    $row->{edit_exp}->{data}   = $oe->{ordnumber};
-    $row->{edit_exp}->{link}   = build_std_url('script=controller.pl', 'action=Order/edit', "type=$form->{type}", 'id=' . E($oe->{id}));
 
     my $row_set = [ $row ];
 
@@ -1764,7 +1779,8 @@ sub save_as_new {
   if ( $form->{reqdate} && $form->{id} ) {
     my $saved_order = OE->retrieve_simple(id => $form->{id});
     if ( $saved_order && $saved_order->{reqdate} eq $form->{reqdate} && $saved_order->{transdate} eq $form->{transdate} ) {
-      my $extra_days     = $form->{type} eq 'sales_quotation' ? $::instance_conf->get_reqdate_interval : 1;
+      my $extra_days = $form->{type} eq 'sales_quotation' ? $::instance_conf->get_reqdate_interval       :
+                       $form->{type} eq 'sales_order'     ? $::instance_conf->get_delivery_date_interval : 1;
       $form->{reqdate}   = DateTime->today_local->next_workday(extra_days => $extra_days)->to_kivitendo;
       $form->{transdate} = DateTime->today_local->to_kivitendo;
     }
@@ -1937,7 +1953,8 @@ sub poso {
   $form->{old_salesman_id}     = $form->{salesman_id};
 
   # reset
-  map { delete $form->{$_} } qw(id subject message cc bcc printed emailed queued customer vendor creditlimit creditremaining discount tradediscount oldinvtotal delivered ordnumber);
+  map { delete $form->{$_} } qw(id subject message cc bcc printed emailed queued customer vendor creditlimit creditremaining discount tradediscount oldinvtotal delivered ordnumber
+                                taxzone_id currency);
   # this converted variable is also used for sales_order to purchase order and vice versa
   $form->{"converted_from_orderitems_id_$_"} = delete $form->{"orderitems_id_$_"} for 1 .. $form->{"rowcount"};
 
@@ -2035,17 +2052,33 @@ sub delivery_order {
   $main::lxdebug->leave_sub();
 }
 
-sub oe_delivery_order_from_order {
-
+sub oe_prepare_xyz_from_order {
   return if !$::form->{id};
 
   my $order = SL::DB::Order->new(id => $::form->{id})->load;
   $order->flatten_to_form($::form, format_amounts => 1);
 
+  # hack: add partsgroup for first row if it does not exists,
+  # because _remove_billed_or_delivered_rows and _remove_full_delivered_rows
+  # determine fields to handled by existing fields for the first row. If partsgroup
+  # is missing there, for deleted rows the partsgroup_field is not emptied and in
+  # update_delivery_order it will not considered an empty row ...
+  $::form->{partsgroup_1} = '' if !exists $::form->{partsgroup_1};
+
   # fake last empty row
   $::form->{rowcount}++;
 
+  _update_ship();
+}
+
+sub oe_delivery_order_from_order {
+  oe_prepare_xyz_from_order();
   delivery_order();
+}
+
+sub oe_invoice_from_order {
+  oe_prepare_xyz_from_order();
+  invoice();
 }
 
 sub yes {
@@ -2104,7 +2137,9 @@ sub report_for_todo_list {
   my $content;
 
   if (@{ $quotations }) {
-    my $edit_url = build_std_url('script=oe.pl', 'action=edit');
+    my $edit_url = ($::instance_conf->get_feature_experimental_order)
+                 ? build_std_url('script=controller.pl', 'action=Order/edit')
+                 : build_std_url('script=oe.pl', 'action=edit');
 
     $content     = $form->parse_html_template('oe/report_for_todo_list', { 'QUOTATIONS' => $quotations,
                                                                            'edit_url'   => $edit_url });
@@ -2123,21 +2158,23 @@ sub edit_periodic_invoices_config {
   check_oe_access();
 
   my $config;
-  $config = YAML::Load($::form->{periodic_invoices_config}) if $::form->{periodic_invoices_config};
+  $config = SL::YAML::Load($::form->{periodic_invoices_config}) if $::form->{periodic_invoices_config};
 
   if ('HASH' ne ref $config) {
-    my $lang_id = $::form->{language_id};
     $config =  { periodicity             => 'm',
                  order_value_periodicity => 'p', # = same as periodicity
                  start_date_as_date      => $::form->{transdate} || $::form->current_date,
                  extend_automatically_by => 12,
                  active                  => 1,
-                 email_subject           => GenericTranslations->get(language_id => $lang_id,
-                                              translation_type =>"preset_text_periodic_invoices_email_subject"),
-                 email_body              => GenericTranslations->get(language_id => $lang_id,
-                                              translation_type =>"preset_text_periodic_invoices_email_body"),
                };
   }
+  # for older configs, replace email preset text if not yet set.
+  $config->{email_subject} ||= GenericTranslations->get(language_id => $::form->{lanuage_id}, translation_type => "preset_text_periodic_invoices_email_subject");
+  $config->{email_body}    ||= GenericTranslations->get(language_id => $::form->{lanuage_id}, translation_type => "salutation_general")
+                             . GenericTranslations->get(language_id => $::form->{lanuage_id}, translation_type => "salutation_punctuation_mark")
+                             . "\n\n"
+                             . GenericTranslations->get(language_id => $::form->{lanuage_id}, translation_type => "preset_text_periodic_invoices_email_body");
+  $config->{email_body}      =~ s{\A[ \n\r]+|[ \n\r]+\Z}{}g;
 
   $config->{periodicity}             = 'm' if none { $_ eq $config->{periodicity}             }       @SL::DB::PeriodicInvoicesConfig::PERIODICITIES;
   $config->{order_value_periodicity} = 'p' if none { $_ eq $config->{order_value_periodicity} } ('p', @SL::DB::PeriodicInvoicesConfig::ORDER_VALUE_PERIODICITIES);
@@ -2151,10 +2188,11 @@ sub edit_periodic_invoices_config {
 
   if ($::form->{customer_id}) {
     $::form->{ALL_CONTACTS} = SL::DB::Manager::Contact->get_all_sorted(where => [ cp_cv_id => $::form->{customer_id} ]);
+    $::form->{email_recipient_invoice_address} = SL::DB::Manager::Customer->find_by(id => $::form->{customer_id})->invoice_mail;
   }
 
   $::form->header(no_layout => 1);
-  print $::form->parse_html_template('oe/edit_periodic_invoices_config', $config);
+  print $::form->parse_html_template('oe/edit_periodic_invoices_config', {config => $config});
 
   $::lxdebug->leave_sub();
 }
@@ -2189,7 +2227,7 @@ sub save_periodic_invoices_config {
                  email_body                 => $::form->{email_body},
                };
 
-  $::form->{periodic_invoices_config} = YAML::Dump($config);
+  $::form->{periodic_invoices_config} = SL::YAML::Dump($config);
 
   $::form->{title} = $::locale->text('Edit the configuration for periodic invoices');
   $::form->header;
@@ -2210,7 +2248,7 @@ sub _remove_full_delivered_rows {
     next unless $::form->{"id_$row"};
     my $base_factor = SL::DB::Manager::Unit->find_by(name => $::form->{"unit_$row"})->base_factor;
     my $base_qty = $::form->parse_amount(\%::myconfig, $::form->{"qty_$row"}) *  $base_factor;
-    my $ship_qty = $::form->parse_amount(\%::myconfig, $::form->{"ship_$row"}) *  $base_factor;
+    my $ship_qty = $::form->{"ship_$row"} *  $base_factor;
     #$main::lxdebug->message(LXDebug->DEBUG2(),"shipto=".$ship_qty." qty=".$base_qty);
 
     if (!$ship_qty || ($ship_qty < $base_qty)) {

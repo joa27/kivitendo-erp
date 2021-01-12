@@ -19,6 +19,7 @@
           <option value="business">[% 'Customer type' | $T8 %]</option>
           <option value="salesman" selected="selected">[% 'Salesman' | $T8 %]</option>
           <option value="month">[% 'Month' | $T8 %]</option>
+          <option value="shipvia">[% 'Ship via' | $T8 %]</option>
         </select>
       </td>
       <td align=left><input name="l_headers_mainsort" class=checkbox type=checkbox value=Y checked> [% 'Heading' | $T8 %]</td>
@@ -81,7 +82,7 @@
       </td>
 
       <th align="right">[% 'Project Number' | $T8 %]</th>
-      <td>[% P.project_picker("project_id", "", style=style) %]</td>
+      <td>[% P.project.picker("project_id", "", style=style) %]</td>
     </tr>
 
     <tr>
@@ -218,7 +219,9 @@
             <td align=left><input name="l_country" class=checkbox type=checkbox value=Y>[% 'Country' | $T8 %]</td>
             <td align=left><input name="l_business" class=checkbox type=checkbox value=Y>[% 'Customer type' | $T8 %]</td>
           </tr>
-
+          <tr>
+            <td align=left><input name="l_shipvia" class=checkbox type=checkbox value=Y>[% 'Ship via' | $T8 %]</td>
+          </tr>
           <tr>
             <th colspan="4" align="left">
               [% 'Customer variables' | $T8 %] ([% 'Only shown in item mode' | $T8 %])

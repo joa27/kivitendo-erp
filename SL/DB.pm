@@ -6,12 +6,12 @@ use Carp;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use Rose::DB;
-use Rose::DBx::Cache::Anywhere;
+use SL::DB::Helper::Cache;
 use Scalar::Util qw(blessed);
 
 use base qw(Rose::DB);
 
-__PACKAGE__->db_cache_class('Rose::DBx::Cache::Anywhere');
+__PACKAGE__->db_cache_class('SL::DB::Helper::Cache');
 __PACKAGE__->use_private_registry;
 
 my (%_db_registered);
@@ -93,7 +93,7 @@ sub _register_db {
   my %flattened_settings = _flatten_settings(%connect_settings);
 
   $domain                = 'KIVITENDO' if $type =~ m/^KIVITENDO/;
-  $type                 .= join($SUBSCRIPT_SEPARATOR, map { ($_, $flattened_settings{$_} || '') } sort grep { $_ ne 'dbpasswd' } keys %flattened_settings);
+  $type                 .= join($SUBSCRIPT_SEPARATOR, map { ($_, $flattened_settings{$_} || '') } sort grep { $_ ne 'password' } keys %flattened_settings);
   my $idx                = "${domain}::${type}";
 
   if (!$_db_registered{$idx}) {
@@ -205,7 +205,7 @@ within another C<with_transaction>, whereas L<Rose::DB/do_transaction> can not.
 =item Return values
 
 C<with_transaction> adopts the behaviour of C<eval> in that it returns the
-result of the inner block, and C<undef> if an error occured. This way you can
+result of the inner block, and C<undef> if an error occurred. This way you can
 use the same pattern you would normally use with C<eval> for
 C<with_transaction>:
 
@@ -222,19 +222,19 @@ or you can use it to safely calulate things.
 
 =item Error handling
 
-The original L<Rose::DB/do_transaction> gobbles up all execptions and expects
-the caller to manually check return value and error, and then to process all
-exceptions as strings. This is very fragile and generally a step backwards from
-proper exception handling.
+The original L<Rose::DB/do_transaction> gobbles up all exceptions and expects
+the caller to manually check the return value and error, and then to process
+all exceptions as strings. This is very fragile and generally a step backwards
+from proper exception handling.
 
-C<with_transaction> only gobbles up exception that are used to signal an
+C<with_transaction> only gobbles up exceptions that are used to signal an
 error in the transaction, and returns undef on those. All other exceptions
-bubble out of the transaction like normal, so that it is transparent to typoes,
+bubble out of the transaction like normal, so that it is transparent to typos,
 runtime exceptions and other generally wanted things.
 
 If you just use the snippet above, your code will catch everything related to
 the transaction aborting, but will not catch other errors that might have been
-thrown. The transaction will be rollbacked in both cases.
+thrown. The transaction will be rolled back in both cases.
 
 If you want to play nice in case your transaction is embedded in another
 transaction, just rethrow the error:

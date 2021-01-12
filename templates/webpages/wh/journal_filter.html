@@ -68,7 +68,6 @@
 
  <form method="post" name="Form" action="wh.pl" id="form">
 
-  <p>
    <table>
     <tr>
      <th class="listheading" align="left" valign="top" colspan="6" nowrap>[% 'Filter' | $T8 %]</th>
@@ -94,11 +93,11 @@
        </tr>
        <tr>
         <th align="right" nowrap>[% 'Part Number' | $T8 %]:</th>
-        <td><input name="partnumber" id="partnumber" size=20></td>
+        <td><input name="partnumber" id="partnumber" size=20 value="[% partnumber %]"></td>
        </tr>
        <tr>
         <th align="right" nowrap>[% 'Parts Classification' | $T8 %]:</th>
-        <td>[% P.select_classification('classification_id') %]</td>
+        <td>[% P.part.select_classification('classification_id') %]</td>
        </tr>
        <tr>
         <th align="right" nowrap>[% 'Part Description' | $T8 %]:</th>
@@ -204,5 +203,4 @@
      </td>
     </tr>
    </table>
-  </p>
  </form>

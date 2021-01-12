@@ -40,7 +40,7 @@
 use Carp;
 use CGI;
 use List::MoreUtils qw(any uniq apply);
-use List::Util qw(min max first);
+use List::Util qw(sum min max first);
 use List::UtilsBy qw(sort_by uniq_by);
 
 use SL::ClientJS;
@@ -53,8 +53,10 @@ use SL::IC;
 use SL::IO;
 use SL::File;
 use SL::PriceSource;
+use SL::Presenter::Part;
 
 use SL::DB::Contact;
+use SL::DB::Currency;
 use SL::DB::Customer;
 use SL::DB::Default;
 use SL::DB::Language;
@@ -125,8 +127,6 @@ sub _check_io_auth {
 sub display_row {
   $main::lxdebug->enter_sub();
 
-  _check_io_auth();
-
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
   my $locale   = $main::locale;
@@ -141,7 +141,6 @@ sub display_row {
   $form->{weightunit} = $defaults->{weightunit};
 
   my $is_purchase        = (first { $_ eq $form->{type} } qw(request_quotation purchase_order purchase_delivery_order)) || ($form->{script} eq 'ir.pl');
-  my $show_min_order_qty =  first { $_ eq $form->{type} } qw(request_quotation purchase_order);
   my $is_delivery_order  = $form->{type} =~ /_delivery_order$/;
   my $is_quotation       = $form->{type} =~ /_quotation$/;
   my $is_invoice         = $form->{type} =~ /invoice/;
@@ -308,8 +307,8 @@ sub display_row {
 
 
     $column_data{partnumber}    = $cgi->textfield(-name => "partnumber_$i",    -id => "partnumber_$i",    -size => 12, -value => $form->{"partnumber_$i"});
-    $column_data{type_and_classific} = $::request->presenter->type_abbreviation($form->{"part_type_$i"}).
-                                       $::request->presenter->classification_abbreviation($form->{"classification_id_$i"}) if $form->{"id_$i"};
+    $column_data{type_and_classific} = SL::Presenter::Part::type_abbreviation($form->{"part_type_$i"}).
+                                       SL::Presenter::Part::classification_abbreviation($form->{"classification_id_$i"}) if $form->{"id_$i"};
     $column_data{description} = (($rows > 1) # if description is too large, use a textbox instead
                                 ? $cgi->textarea( -name => "description_$i", -id => "description_$i", -default => $form->{"description_$i"}, -rows => $rows, -columns => 30)
                                 : $cgi->textfield(-name => "description_$i", -id => "description_$i",   -value => $form->{"description_$i"}, -size => 30))
@@ -317,9 +316,9 @@ sub display_row {
 
     my $qty_dec = ($form->{"qty_$i"} =~ /\.(\d+)/) ? length $1 : 2;
 
-    $column_data{qty}  = $cgi->textfield(-name => "qty_$i", -size => 5, -"data-validate" => "number", -class => "numeric", -value => $form->format_amount(\%myconfig, $form->{"qty_$i"}, $qty_dec));
-    $column_data{qty} .= $cgi->button(-onclick => "calculate_qty_selection_window('qty_$i','alu_$i', 'formel_$i', $i)", -value => $locale->text('*/'))
-                       . $cgi->hidden(-name => "formel_$i", -value => $form->{"formel_$i"}) . $cgi->hidden("-name" => "alu_$i", "-value" => $form->{"alu_$i"})
+    $column_data{qty}  = $cgi->textfield(-name => "qty_$i", -size => 5, -class => "numeric", -value => $form->format_amount(\%myconfig, $form->{"qty_$i"}, $qty_dec));
+    $column_data{qty} .= $cgi->button(-onclick => "calculate_qty_selection_dialog('qty_$i', '', 'formel_$i', '')", -value => $locale->text('*/'))
+                       . $cgi->hidden(-name => "formel_$i", -value => $form->{"formel_$i"})
       if $form->{"formel_$i"};
 
     $column_data{ship} = '';
@@ -329,7 +328,7 @@ sub display_row {
       $ship_qty          /= ( $all_units->{$form->{"unit_$i"}}->{factor} || 1 );
 
       $column_data{ship}  = $form->format_amount(\%myconfig, $form->round_amount($ship_qty, 2) * 1) . ' ' . $form->{"unit_$i"}
-      . $cgi->hidden(-name => "ship_$i", -value => $form->format_amount(\%myconfig, $form->{"ship_$i"}, $qty_dec));
+      . $cgi->hidden(-name => "ship_$i", -value => $form->{"ship_$i"}, $qty_dec);
 
       my $ship_missing_qty    = $form->{"qty_$i"} - $ship_qty;
       my $ship_missing_amount = $form->round_amount($ship_missing_qty * $form->{"sellprice_$i"} * (100 - $form->{"discount_$i"}) / 100 / $price_factor, 2);
@@ -373,11 +372,12 @@ sub display_row {
       }
     }
 
-    my $edit_prices     = $main::auth->assert('edit_prices', 1) && (!$::form->{"active_price_source_$i"} || !$price || $price->editable);
-    my $edit_discounts  = $main::auth->assert('edit_prices', 1) && !$::form->{"active_discount_source_$i"};
+    my $right_to_edit_prices  = (!$is_purchase && $main::auth->assert('sales_edit_prices', 1)) || ($is_purchase && $main::auth->assert('purchase_edit_prices', 1));
+    my $edit_prices           = $right_to_edit_prices && (!$::form->{"active_price_source_$i"} || !$price || $price->editable);
+    my $edit_discounts        = $right_to_edit_prices && !$::form->{"active_discount_source_$i"};
     $column_data{sellprice}   = (!$edit_prices)
                                 ? $cgi->hidden(   -name => "sellprice_$i", -id => "sellprice_$i", -value => $sellprice_value) . $sellprice_value
-                                : $cgi->textfield(-name => "sellprice_$i", -id => "sellprice_$i", -size => 10, -"data-validate" => "number", -class => "numeric", -value => $sellprice_value);
+                                : $cgi->textfield(-name => "sellprice_$i", -id => "sellprice_$i", -size => 10, -class => "numeric", -value => $sellprice_value);
     $column_data{discount}    = (!$edit_discounts)
                                   ? $cgi->hidden(   -name => "discount_$i", -id => "discount_$i", -value => $discount_value) . $discount_value . ' %'
                                   : $cgi->textfield(-name => "discount_$i", -id => "discount_$i", -size => 3, -"data-validate" => "number", -class => "numeric", -value => $discount_value);
@@ -908,6 +908,55 @@ sub validate_items {
 sub order {
   $main::lxdebug->enter_sub();
 
+  _order();
+
+  if ($::instance_conf->get_feature_experimental_order) {
+
+    # At this point, the record is saved and the exchangerate contains
+    # an unformatted value. _make_record uses RDBO attributes (i.e. _as_number)
+    # to assign values and thus expects an formatted value.
+    $::form->{exchangerate} = $::form->format_amount(\%::myconfig, $::form->{exchangerate});
+
+    my $order = _make_record();
+
+    $order->currency(SL::DB::Currency->new(name => $::form->{currency})->load) if $::form->{currency};
+    $order->globalproject_id(undef)                                            if !$order->globalproject_id;
+    $order->payment_id(undef)                                                  if !$order->payment_id;
+
+    my $row = 1;
+    foreach my $item (@{$order->items_sorted}) {
+      $item->custom_variables([]);
+
+      $item->price_factor_id(undef) if !$item->price_factor_id;
+      $item->project_id(undef)      if !$item->project_id;
+
+      # autovivify all cvars that are not in the form (cvars_by_config can do it).
+      # workaround to pre-parse number-cvars (parse_custom_variable_values does not parse number values).
+       foreach my $var (@{ $item->cvars_by_config }) {
+        my $key = 'ic_cvar_' . $var->config->name . '_' . $row;
+        $var->unparsed_value($::form->{$key});
+        $var->unparsed_value($::form->parse_amount(\%::myconfig, $var->{__unparsed_value})) if ($var->config->type eq 'number' && exists($var->{__unparsed_value}));
+      }
+      $item->parse_custom_variable_values;
+
+      $row++;
+    }
+
+    require SL::Controller::Order;
+    my $c = SL::Controller::Order->new(order => $order);
+    $c->setup_custom_shipto_from_form($order, $::form);
+    $c->action_edit();
+
+    $main::lxdebug->leave_sub();
+    $::dispatcher->end_request;
+  }
+
+  &display_form;
+
+  $main::lxdebug->leave_sub();
+}
+
+sub _order {
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
   my $locale   = $main::locale;
@@ -981,9 +1030,6 @@ sub order {
   }
 
   &prepare_order;
-  &display_form;
-
-  $main::lxdebug->leave_sub();
 }
 
 sub quotation {
@@ -1003,7 +1049,7 @@ sub quotation {
   if ($form->{second_run}) {
     $form->{print_and_post} = 0;
   }
-  delete $form->{$_} foreach (qw(id printed emailed queued));
+  delete $form->{$_} foreach (qw(id printed emailed queued quonumber transaction_description));
 
   my $buysell;
   if ($form->{script} eq 'ir.pl' || $form->{type} eq 'purchase_order') {
@@ -1252,6 +1298,10 @@ sub print_form {
     $form->{TEMPLATE_DRIVER_OPTIONS}->{variable_content_types} = $form->get_variable_content_types();
   }
 
+  if ($form->{format} =~ m{pdf}) {
+    _maybe_attach_zugferd_data($form);
+  }
+
   $form->isblank("email", $locale->text('E-mail address missing!'))
     if ($form->{media} eq 'email');
   $form->isblank("${inv}date",
@@ -1359,7 +1409,7 @@ sub print_form {
 
   # Format dates.
   format_dates($output_dateformat, $output_longdates,
-               qw(invdate orddate quodate pldate duedate reqdate transdate
+               qw(invdate orddate quodate pldate duedate reqdate transdate tax_point
                   shippingdate deliverydate validitydate paymentdate
                   datepaid transdate_oe transdate_do transdate_quo deliverydate_oe dodate
                   employee_startdate employee_enddate
@@ -1618,12 +1668,10 @@ sub relink_accounts {
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
 
-  _check_io_auth();
-
   $form->{"taxaccounts"} =~ s/\s*$//;
   $form->{"taxaccounts"} =~ s/^\s*//;
   foreach my $accno (split(/\s*/, $form->{"taxaccounts"})) {
-    map({ delete($form->{"${accno}_${_}"}); } qw(rate description taxnumber));
+    map({ delete($form->{"${accno}_${_}"}); } qw(rate description taxnumber tax_id)); # add tax_id ?
   }
   $form->{"taxaccounts"} = "";
 
@@ -1814,7 +1862,7 @@ sub _remove_billed_or_delivered_rows {
 # TODO: both of these are makeshift so that price sources can operate on rdbo objects. if
 # this ever gets rewritten in controller style, throw this out
 sub _make_record_item {
-  my ($row) = @_;
+  my ($row, %params) = @_;
 
   my $class = {
     sales_order             => 'OrderItem',
@@ -1862,12 +1910,19 @@ sub _make_record_item {
       if ($obj->meta->column($method)->isa('Rose::DB::Object::Metadata::Column::Date')) {
         $obj->${\"$method\_as_date"}($value);
       } elsif ((ref $obj->meta->column($method)) =~ /^Rose::DB::Object::Metadata::Column::(?:Numeric|Float|DoublePrecsion)$/) {
-        $obj->${\"$method\_as_number"}($value);
+        $obj->${\"$method\_as_number"}(($value // '') eq '' ? undef : $value);
       } elsif ((ref $obj->meta->column($method)) =~ /^Rose::DB::Object::Metadata::Column::Boolean$/) {
         $obj->$method(!!$value);
+      } elsif ((ref $obj->meta->column($method)) =~ /^Rose::DB::Object::Metadata::Column::(?:Big)?(?:Int(?:eger)?|Serial)$/) {
+        $obj->$method(($value // '') eq '' ? undef : $value * 1);
       } else {
         $obj->$method($value);
       }
+
+      if ($method eq 'discount') {
+        $obj->discount($obj->discount / 100.0);
+      }
+
     } else {
       $obj->{__additional_form_attributes}{$method} = $value;
     }
@@ -1875,6 +1930,11 @@ sub _make_record_item {
 
   if ($::form->{"id_$row"}) {
     $obj->part(SL::DB::Part->load_cached($::form->{"id_$row"}));
+  }
+
+  if ($obj->can('qty')) {
+    $obj->qty(     $obj->qty      * $params{factor});
+    $obj->base_qty($obj->base_qty * $params{factor});
   }
 
   return $obj;
@@ -1896,6 +1956,8 @@ sub _make_record {
            : do { die 'unknown invoice type' };
   }
 
+  my $factor = $::form->{type} =~ m{credit_note} ? -1 : 1;
+
   return unless $class;
 
   $class = 'SL::DB::' . $class;
@@ -1913,9 +1975,11 @@ sub _make_record {
     if ($obj->meta->column($method)->isa('Rose::DB::Object::Metadata::Column::Date')) {
       $obj->${\"$method\_as_date"}($::form->{$method});
     } elsif ((ref $obj->meta->column($method)) =~ /^Rose::DB::Object::Metadata::Column::(?:Numeric|Float|DoublePrecsion)$/) {
-      $obj->${\"$method\_as_number"}($::form->{$method});
+      $obj->${\"$method\_as_number"}(($::form->{$method} // '') eq '' ? undef : $::form->{$method});
     } elsif ((ref $obj->meta->column($method)) =~ /^Rose::DB::Object::Metadata::Column::Boolean$/) {
       $obj->$method(!!$::form->{$method});
+    } elsif ((ref $obj->meta->column($method)) =~ /^Rose::DB::Object::Metadata::Column::(?:Big)?(?:Int(?:eger)?|Serial)$/) {
+      $obj->$method(($::form->{$method} // '') eq '' ? undef : $::form->{$method} * 1);
     } else {
       $obj->$method($::form->{$method});
     }
@@ -1924,11 +1988,20 @@ sub _make_record {
   my @items;
   for my $i (1 .. $::form->{rowcount}) {
     next unless $::form->{"id_$i"};
-    push @items, _make_record_item($i);
+    push @items, _make_record_item($i, factor => $factor);
   }
 
   $obj->items(@items) if @items;
   $obj->is_sales(!!$obj->customer_id) if $class eq 'SL::DB::DeliveryOrder';
+
+  if ($class eq 'SL::DB::Invoice') {
+    my $paid = $factor *
+      sum
+      map  { $::form->parse_amount(\%::myconfig, $::form->{$_}) }
+      grep { m{^paid_\d+$} }
+      keys %{ $::form };
+    $obj->paid($paid);
+  }
 
   return $obj;
 }
@@ -1936,9 +2009,8 @@ sub _make_record {
 sub setup_sales_purchase_print_options {
   my $print_form = Form->new('');
   $print_form->{printers}  = SL::DB::Manager::Printer->get_all_sorted;
-  $print_form->{languages} = SL::DB::Manager::Language->get_all_sorted;
 
-  $print_form->{$_} = $::form->{$_} for qw(type media language_id printer_id);
+  $print_form->{$_} = $::form->{$_} for qw(type media printer_id storno formname groupitems);
 
   return SL::Helper::PrintOptions->get_print_options(
     form    => $print_form,
@@ -1983,10 +2055,33 @@ sub _get_files_for_email_dialog {
 
 sub show_sales_purchase_email_dialog {
   my $email = '';
+  my $email_cc = '';
+  my $record_email;
   if ($::form->{cp_id}) {
     $email = SL::DB::Contact->load_cached($::form->{cp_id})->cp_email;
   }
-
+  # write a dispatch table if a third type enters
+  # check record mail for sales_invoice
+  if ($::form->{type} eq 'invoice' && (!$email || $::instance_conf->get_invoice_mail_settings ne 'cp')) {
+    # check for invoice_mail if defined (vc.invoice_email)
+    $record_email = SL::DB::Customer->load_cached($::form->{vc_id})->invoice_mail;
+    if ($record_email) {
+      # check if cc for contact is also wanted
+      $email_cc = $email if ($::instance_conf->get_invoice_mail_settings eq 'invoice_mail_cc_cp');
+      $email    = $record_email;
+    }
+  }
+  # check record mail for sales_delivery_order
+  if ($::form->{type} eq 'sales_delivery_order') {
+    # check for deliver_order_mail if defined (vc.delivery_order_mail)
+    $record_email = SL::DB::Customer->load_cached($::form->{vc_id})->delivery_order_mail;
+    if ($record_email) {
+      # check if cc for contact is also wanted
+      $email_cc = $email; # always cc to cp
+      $email    = $record_email;
+    }
+  }
+  # still no email? use general mail (vc.email)
   if (!$email && $::form->{vc} && $::form->{vc_id}) {
     $email = SL::DB::Customer->load_cached($::form->{vc_id})->email if 'customer' eq $::form->{vc};
     $email = SL::DB::Vendor  ->load_cached($::form->{vc_id})->email if 'vendor'   eq $::form->{vc};
@@ -1994,11 +2089,22 @@ sub show_sales_purchase_email_dialog {
 
   $email = '' if $::form->{type} eq 'purchase_delivery_order';
 
+  $::form->{language} = $::form->get_template_language(\%::myconfig);
+  $::form->{language} = "_" . $::form->{language};
+
+  my %body_params = (record_email => $record_email);
+  if (($::form->{type} eq 'invoice') && $::form->{direct_debit}) {
+    $body_params{translation_type}          = "preset_text_invoice_direct_debit";
+    $body_params{fallback_translation_type} = "preset_text_invoice";
+  }
+
   my $email_form = {
     to                  => $email,
+    cc                  => $email_cc,
     subject             => $::form->generate_email_subject,
-    message             => $::form->generate_email_body,
+    message             => $::form->generate_email_body(%body_params),
     attachment_filename => $::form->generate_attachment_filename,
+    js_send_function    => 'kivi.SalesPurchase.send_email()',
   };
 
   my %files = _get_files_for_email_dialog();
@@ -2007,6 +2113,7 @@ sub show_sales_purchase_email_dialog {
     show_bcc    => $::auth->assert('email_bcc', 'may fail'),
     FILES       => \%files,
     is_customer => $::form->{vc} eq 'customer',
+    is_invoice_mail => ($record_email && $::form->{type} eq 'invoice'),
   });
 
   print $::form->ajax_response_header, $html;
@@ -2037,4 +2144,37 @@ sub send_sales_purchase_email {
   flash_later('info', $::locale->text('The email has been sent.'));
 
   print $::form->redirect_header($script . '?action=edit&id=' . $::form->escape($id) . '&type=' . $::form->escape($type));
+}
+
+sub _maybe_attach_zugferd_data {
+  my ($form) = @_;
+
+  my $record = _make_record();
+
+  return if !$record
+    || !$record->can('customer')
+    || !$record->customer
+    || !$record->can('create_pdf_a_print_options')
+    || !$record->can('create_zugferd_data')
+    || !$record->customer->create_zugferd_invoices_for_this_customer;
+
+  eval {
+    my $xmlfile = File::Temp->new;
+    $xmlfile->print($record->create_zugferd_data);
+    $xmlfile->close;
+
+    $form->{TEMPLATE_DRIVER_OPTIONS}->{pdf_a}           = $record->create_pdf_a_print_options(zugferd_xmp_data => $record->create_zugferd_xmp_data);
+    $form->{TEMPLATE_DRIVER_OPTIONS}->{pdf_attachments} = [
+      { source       => $xmlfile,
+        name         => 'factur-x.xml',
+        description  => $::locale->text('Factur-X/ZUGFeRD invoice'),
+        relationship => '/Alternative',
+        mime_type    => 'text/xml',
+      }
+    ];
+  };
+
+  if (my $e = SL::X::ZUGFeRDValidation->caught) {
+    $::form->error($e->message);
+  }
 }

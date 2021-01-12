@@ -20,6 +20,7 @@ use SL::Helper::PrintOptions;
 use SL::Locale::String qw(t8);
 use SL::Mailer;
 use SL::IS;
+use SL::Presenter::Tag qw(select_tag);
 use SL::ReportGenerator;
 use SL::Webdav;
 use SL::Webdav::File;
@@ -105,7 +106,7 @@ sub action_update_contacts {
     return $self->js
       ->replaceWith(
         '#letter_cp_id',
-        SL::Presenter->get->select_tag('letter.cp_id', [], value_key => 'cp_id', title_key => 'full_name')
+        select_tag('letter.cp_id', [], value_key => 'cp_id', title_key => 'full_name')
       )
       ->render;
   }
@@ -124,7 +125,7 @@ sub action_update_contacts {
   $self->js
     ->replaceWith(
       '#letter_cp_id',
-      SL::Presenter->get->select_tag('letter.cp_id', $contacts, default => $default, value_key => 'cp_id', title_key => 'full_name')
+      select_tag('letter.cp_id', $contacts, default => $default, value_key => 'cp_id', title_key => 'full_name')
     )
     ->render;
 }
@@ -150,7 +151,7 @@ sub action_delete {
   my ($self, %params) = @_;
 
   if (!$self->letter->delete) {
-    flash('error', t8('An error occured. Letter could not be deleted.'));
+    flash('error', t8('An error occurred. Letter could not be deleted.'));
     return $self->action_update;
   }
 
@@ -245,7 +246,7 @@ sub action_print_letter {
                                 name => $params{email}->{attachment_filename} }];
       $mail->{message}    .=  "\n-- \n$signature";
       $mail->{message}     =~ s/\r//g;
-
+      $mail->{record_id}   =  $letter->id;
       $mail->send;
       unlink $result{file_name};
 
@@ -321,9 +322,6 @@ sub _display {
 
   $::form->{type}             = 'letter';   # needed for print_options
   $::form->{vc}               = $letter->is_sales ? 'customer' : 'vendor'; # needs to be for _get_contacts...
-
-  $::request->layout->add_javascripts('customer_or_vendor_selection.js');
-  $::request->layout->add_javascripts('edit_part_window.js');
 
   $::form->{language_id} ||= $params{language_id};
   $::form->{languages}   ||= SL::DB::Manager::Language->get_all_sorted;
@@ -594,11 +592,13 @@ sub init_is_sales {
 }
 
 sub check_auth_edit {
-  $::auth->assert('sales_letter_edit');
+  $::form->{is_sales} ? $::auth->assert('sales_letter_edit')
+                      : $::auth->assert('purchase_letter_edit');
 }
 
 sub check_auth_report {
-  $::auth->assert('sales_letter_report');
+  $::form->{is_sales} ? $::auth->assert('sales_letter_report')
+                      : $::auth->assert('purchase_letter_report');
 }
 
 sub setup_load_letter_draft_action_bar {

@@ -4,9 +4,16 @@
 # interface.
 admin_password = admin123
 
-# Which module to use for authentication. Valid values are 'DB' and
-# 'LDAP'.  If 'LDAP' is used then users cannot change their password
-# via kivitendo.
+# Which modules to use for authentication. Valid values are 'DB' and
+# 'LDAP'. You can use multiple modules separated by spaces.
+#
+# Multiple LDAP modules with different configurations can be used by
+# postfixing 'LDAP' with the name of the configuration section to use:
+# 'LDAP:ldap_fallback' would use the data from
+# '[authentication/ldap_fallback]'. The name defaults to 'ldap' if it
+# isn't given.
+#
+# Note that the LDAP module doesn't support changing the password.
 module = DB
 
 # The cookie name can be changed if desired.
@@ -43,6 +50,8 @@ password =
 # specified.
 #
 # tls:       Activate encryption via TLS
+# verify:    If 'tls' is used, how to verify the server's certificate.
+#            Can be one of 'require' or 'none'.
 # attribute: Name of the LDAP attribute containing the user's login name
 # base_dn:   Base DN the LDAP searches start from
 # filter:    An optional LDAP filter specification. The string '<%login%>'
@@ -51,6 +60,12 @@ password =
 #            If searching the LDAP tree requires user credentials
 #            (e.g. ActiveDirectory) then these two parameters specify
 #            the user name and password to use.
+# timeout:   Timeout when connecting to the server in seconds.
+#
+# You can specify a fallback LDAP server to use in case the main one
+# isn't reachable by duplicating this whole section as
+# "[authentication/ldap_fallback]".
+#
 host          = localhost
 port          = 389
 tls           = 0
@@ -59,6 +74,8 @@ base_dn       =
 filter        =
 bind_dn       =
 bind_password =
+timeout       = 10
+verify        = require
 
 [system]
 # Set language for login and admin forms. Currently "de" (German)
@@ -80,8 +97,14 @@ default_manager = german
 # processes). If either limit is reached at the end of the request
 # then the kivitendo process will exit.
 #
-# This only makes sense when running under FCGI. The FCGI manager will
-# then automatically start a new process.
+# This only applies for processes under FCGI and the task manager.
+# For CGI configurations the process will be terminated after each request
+# regardless of this setting.
+#
+# Note: this will only terminate processes with too high memory consumption. It
+# is assumed that an external managing service will start new instances. For
+# FCGI this will usually be apache or the wrapper scripts for nginx, for the
+# task server this will have to be the system manager.
 #
 # Numbers can be postfixed with KB, MB, GB. If no number is given or
 # the number is 0 then no checking will be performed.
@@ -149,10 +172,6 @@ latex = pdflatex
 # binary.
 python_uno = python
 
-# Location of the aqbanking binary to use when converting MT940 files
-# into the kivitendo import format
-aqbanking = /usr/bin/aqbanking-cli
-
 [environment]
 # Add the following paths to the PATH environment variable.
 path = /usr/local/bin:/usr/X11R6/bin:/usr/X11/bin
@@ -183,6 +202,11 @@ openofficeorg_daemon_port = 2002
 debug = 0
 # Chose a system user the daemon should run under when started as root.
 run_as =
+# Task servers can run on multiple machines. Each needs its own unique
+# ID. If unset, it defaults to the host name. All but one task server
+# must have 'only_run_tasks_for_this_node' set to 1.
+node_id =
+only_run_tasks_for_this_node = 0
 
 [task_server/notify_on_failure]
 # If you want email notifications for failed jobs then set this to a
@@ -196,15 +220,18 @@ email_subject  = kivitendo Task-Server: Hintergrundjob fehlgeschlagen
 email_template = templates/webpages/task_server/failure_notification_email.txt
 
 [periodic_invoices]
-# The user name a report about the posted and printed invoices is sent
-# to.
-send_email_to  = mb
+# The user name or email address a report about the posted and printed
+# invoices is sent to.
+send_email_to  =
 # The "From:" header for said email.
 email_from     = kivitendo Daemon <root@localhost>
 # The subject for said email.
 email_subject  = Benachrichtigung: automatisch erstellte Rechnungen
 # The template file used for the email's body.
 email_template = templates/webpages/oe/periodic_invoices_email.txt
+# Whether to always send the mail (0), or only if there were errors
+# (1).
+send_for_errors_only = 0
 
 [self_test]
 
@@ -370,3 +397,5 @@ dial_command =
 external_prefix = 0
 # The prefix for international calls (numbers starting with +).
 international_dialing_prefix = 00
+# Our own country code
+our_country_code = 49

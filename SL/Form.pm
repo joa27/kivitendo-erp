@@ -1,4 +1,4 @@
-#========= ===========================================================
+#=====================================================================
 # LX-Office ERP
 # Copyright (C) 2004
 # Based on SQL-Ledger Version 2.1.9
@@ -42,11 +42,11 @@ use Carp;
 use Data::Dumper;
 
 use Carp;
-use Config;
 use CGI;
 use Cwd;
 use Encode;
 use File::Copy;
+use File::Temp ();
 use IO::File;
 use Math::BigInt;
 use POSIX qw(strftime);
@@ -79,6 +79,7 @@ use SL::Request;
 use SL::Template;
 use SL::User;
 use SL::Util;
+use SL::Version;
 use SL::X;
 use Template;
 use URI;
@@ -86,19 +87,13 @@ use List::Util qw(first max min sum);
 use List::MoreUtils qw(all any apply);
 use SL::DB::Tax;
 use SL::Helper::File qw(:all);
+use SL::Helper::Number;
 use SL::Helper::CreatePDF qw(merge_pdfs);
 
 use strict;
 
 sub read_version {
-  my ($self) = @_;
-
-  open VERSION_FILE, "VERSION";                 # New but flexible code reads version from VERSION-file
-  my $version =  <VERSION_FILE>;
-  $version    =~ s/[^0-9A-Za-z\.\_\-]//g; # only allow numbers, letters, points, underscores and dashes. Prevents injecting of malicious code.
-  close VERSION_FILE;
-
-  return $version;
+  SL::Version->get_version;
 }
 
 sub new {
@@ -116,16 +111,9 @@ sub new {
 
   bless $self, $type;
 
-  $self->{version} = $self->read_version;
-
   $main::lxdebug->leave_sub();
 
   return $self;
-}
-
-sub read_cgi_input {
-  my ($self) = @_;
-  SL::Request::read_cgi_input($self);
 }
 
 sub _flatten_variables_rec {
@@ -158,7 +146,7 @@ sub _flatten_variables_rec {
           $first_array_entry = 0;
         }
       } else {
-        @result = ({ 'key' => $prefix . $key . ($first_array_entry ? '[+]' : '[]'), 'value' => $element });
+        push @result, { 'key' => $prefix . $key . '[]', 'value' => $element };
       }
     }
   }
@@ -189,7 +177,7 @@ sub flatten_standard_variables {
   $main::lxdebug->enter_sub(2);
 
   my $self      = shift;
-  my %skip_keys = map { $_ => 1 } (qw(login password header stylesheet titlebar version), @_);
+  my %skip_keys = map { $_ => 1 } (qw(login password header stylesheet titlebar), @_);
 
   my @variables;
 
@@ -200,36 +188,6 @@ sub flatten_standard_variables {
   $main::lxdebug->leave_sub(2);
 
   return @variables;
-}
-
-sub debug {
-  $main::lxdebug->enter_sub();
-
-  my ($self) = @_;
-
-  print "\n";
-
-  map { print "$_ = $self->{$_}\n" } (sort keys %{$self});
-
-  $main::lxdebug->leave_sub();
-}
-
-sub dumper {
-  $main::lxdebug->enter_sub(2);
-
-  my $self          = shift;
-  my $password      = $self->{password};
-
-  $self->{password} = 'X' x 8;
-
-  local $Data::Dumper::Sortkeys = 1;
-  my $output                    = Dumper($self);
-
-  $self->{password} = $password;
-
-  $main::lxdebug->leave_sub(2);
-
-  return $output;
 }
 
 sub escape {
@@ -287,7 +245,7 @@ sub hide_form {
 
 sub throw_on_error {
   my ($self, $code) = @_;
-  local $self->{__ERROR_HANDLER} = sub { die SL::X::FormError->new($_[0]) };
+  local $self->{__ERROR_HANDLER} = sub { SL::X::FormError->throw(error => $_[0]) };
   $code->();
 }
 
@@ -349,9 +307,9 @@ sub numtextrows {
 sub dberror {
   my ($self, $msg) = @_;
 
-  die SL::X::DBError->new(
-    msg   => $msg,
-    error => $DBI::errstr,
+  SL::X::DBError->throw(
+    msg      => $msg,
+    db_error => $DBI::errstr,
   );
 }
 
@@ -424,10 +382,11 @@ sub create_http_response {
     my $session_cookie_value = $main::auth->get_session_id();
 
     if ($session_cookie_value) {
-      $session_cookie = $cgi->cookie('-name'   => $main::auth->get_session_cookie_name(),
-                                     '-value'  => $session_cookie_value,
-                                     '-path'   => $uri->path,
-                                     '-secure' => $::request->is_https);
+      $session_cookie = $cgi->cookie('-name'    => $main::auth->get_session_cookie_name(),
+                                     '-value'   => $session_cookie_value,
+                                     '-path'    => $uri->path,
+                                     '-expires' => '+' . $::auth->{session_timeout} . 'm',
+                                     '-secure'  => $::request->is_https);
     }
   }
 
@@ -435,7 +394,7 @@ sub create_http_response {
   $cgi_params{'-charset'} = $params{charset} if ($params{charset});
   $cgi_params{'-cookie'}  = $session_cookie  if ($session_cookie);
 
-  map { $cgi_params{'-' . $_} = $params{$_} if exists $params{$_} } qw(content_disposition content_length);
+  map { $cgi_params{'-' . $_} = $params{$_} if exists $params{$_} } qw(content_disposition content_length status);
 
   my $output = $cgi->header(%cgi_params);
 
@@ -476,7 +435,7 @@ sub header {
   ), "jquery/ui/i18n/jquery.ui.datepicker-$::myconfig{countrycode}");
 
   $self->{favicon} ||= "favicon.ico";
-  $self->{titlebar} = join ' - ', grep $_, $self->{title}, $self->{login}, $::myconfig{dbname}, $self->{version} if $self->{title} || !$self->{titlebar};
+  $self->{titlebar} = join ' - ', grep $_, $self->{title}, $self->{login}, $::myconfig{dbname}, $self->read_version if $self->{title} || !$self->{titlebar};
 
   # build includes
   if ($self->{refresh_url} || $self->{refresh_time}) {
@@ -570,7 +529,7 @@ sub set_standard_title {
   $::lxdebug->enter_sub;
   my $self = shift;
 
-  $self->{titlebar}  = "kivitendo " . $::locale->text('Version') . " $self->{version}";
+  $self->{titlebar}  = "kivitendo " . $::locale->text('Version') . " " . $self->read_version;
   $self->{titlebar} .= "- $::myconfig{name}"   if $::myconfig{name};
   $self->{titlebar} .= "- $::myconfig{dbname}" if $::myconfig{name};
 
@@ -741,44 +700,10 @@ sub sort_columns {
   return @columns;
 }
 #
+
 sub format_amount {
-  $main::lxdebug->enter_sub(2);
-
   my ($self, $myconfig, $amount, $places, $dash) = @_;
-  $amount ||= 0;
-  $dash   ||= '';
-  my $neg = $amount < 0;
-  my $force_places = defined $places && $places >= 0;
-
-  $amount = $self->round_amount($amount, abs $places) if $force_places;
-  $neg    = 0 if $amount == 0; # don't show negative zero
-  $amount = sprintf "%.*f", ($force_places ? $places : 10), abs $amount; # 6 is default for %fa
-
-  # before the sprintf amount was a number, afterwards it's a string. because of the dynamic nature of perl
-  # this is easy to confuse, so keep in mind: before this comment no s///, m//, concat or other strong ops on
-  # $amount. after this comment no +,-,*,/,abs. it will only introduce subtle bugs.
-
-  $amount =~ s/0*$// unless defined $places && $places == 0;             # cull trailing 0s
-
-  my @d = map { s/\d//g; reverse split // } my $tmp = $myconfig->{numberformat}; # get delim chars
-  my @p = split(/\./, $amount);                                          # split amount at decimal point
-
-  $p[0] =~ s/\B(?=(...)*$)/$d[1]/g if $d[1];                             # add 1,000 delimiters
-  $amount = $p[0];
-  if ($places || $p[1]) {
-    $amount .= $d[0]
-            .  ( $p[1] || '' )
-            .  (0 x max(abs($places || 0) - length ($p[1]||''), 0));     # pad the fraction
-  }
-
-  $amount = do {
-    ($dash =~ /-/)    ? ($neg ? "($amount)"                            : "$amount" )                              :
-    ($dash =~ /DRCR/) ? ($neg ? "$amount " . $main::locale->text('DR') : "$amount " . $main::locale->text('CR') ) :
-                        ($neg ? "-$amount"                             : "$amount" )                              ;
-  };
-
-  $main::lxdebug->leave_sub(2);
-  return $amount;
+  SL::Helper::Number::_format_number($amount, $places, %$myconfig, dash => $dash);
 }
 
 sub format_amount_units {
@@ -867,82 +792,11 @@ sub format_string {
 #
 
 sub parse_amount {
-  $main::lxdebug->enter_sub(2);
-
   my ($self, $myconfig, $amount) = @_;
-
-  if (!defined($amount) || ($amount eq '')) {
-    $main::lxdebug->leave_sub(2);
-    return 0;
-  }
-
-  if (   ($myconfig->{numberformat} eq '1.000,00')
-      || ($myconfig->{numberformat} eq '1000,00')) {
-    $amount =~ s/\.//g;
-    $amount =~ s/,/\./g;
-  }
-
-  if ($myconfig->{numberformat} eq "1'000.00") {
-    $amount =~ s/\'//g;
-  }
-
-  $amount =~ s/,//g;
-
-  $main::lxdebug->leave_sub(2);
-
-  # Make sure no code wich is not a math expression ends up in eval().
-  return 0 unless $amount =~ /^ [\s \d \( \) \- \+ \* \/ \. ]* $/x;
-
-  # Prevent numbers from being parsed as octals;
-  $amount =~ s{ (?<! [\d.] ) 0+ (?= [1-9] ) }{}gx;
-
-  return scalar(eval($amount)) * 1 ;
+  SL::Helper::Number::_parse_number($amount, %$myconfig);
 }
 
-sub round_amount {
-  my ($self, $amount, $places, $adjust) = @_;
-
-  return 0 if !defined $amount;
-
-  $places //= 0;
-
-  if ($adjust) {
-    my $precision = $::instance_conf->get_precision || 0.01;
-    return $self->round_amount( $self->round_amount($amount / $precision, 0) * $precision, $places);
-  }
-
-  # We use Perl's knowledge of string representation for
-  # rounding. First, convert the floating point number to a string
-  # with a high number of places. Then split the string on the decimal
-  # sign and use integer calculation for rounding the decimal places
-  # part. If an overflow occurs then apply that overflow to the part
-  # before the decimal sign as well using integer arithmetic again.
-
-  my $int_amount = int(abs $amount);
-  my $str_places = max(min(10, 16 - length("$int_amount") - $places), $places);
-  my $amount_str = sprintf '%.*f', $places + $str_places, abs($amount);
-
-  return $amount unless $amount_str =~ m{^(\d+)\.(\d+)$};
-
-  my ($pre, $post)      = ($1, $2);
-  my $decimals          = '1' . substr($post, 0, $places);
-
-  my $propagation_limit = $Config{i32size} == 4 ? 7 : 18;
-  my $add_for_rounding  = substr($post, $places, 1) >= 5 ? 1 : 0;
-
-  if ($places > $propagation_limit) {
-    $decimals = Math::BigInt->new($decimals)->badd($add_for_rounding);
-    $pre      = Math::BigInt->new($decimals)->badd(1) if substr($decimals, 0, 1) eq '2';
-
-  } else {
-    $decimals += $add_for_rounding;
-    $pre      += 1 if substr($decimals, 0, 1) eq '2';
-  }
-
-  $amount  = ("${pre}." . substr($decimals, 1)) * ($amount <=> 0);
-
-  return $amount;
-}
+sub round_amount { shift; goto &SL::Helper::Number::_round_number; }
 
 sub parse_template {
   $main::lxdebug->enter_sub();
@@ -952,11 +806,18 @@ sub parse_template {
 
   local (*IN, *OUT);
 
-  my $defaults  = SL::DB::Default->get;
-  my $userspath = $::lx_office_conf{paths}->{userspath};
+  my $defaults        = SL::DB::Default->get;
 
-  $self->{"cwd"} = getcwd();
-  $self->{"tmpdir"} = $self->{cwd} . "/${userspath}";
+  my $keep_temp_files = $::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files};
+  $self->{cwd}        = getcwd();
+  my $temp_dir        = File::Temp->newdir(
+    "kivitendo-print-XXXXXX",
+    DIR     => $self->{cwd} . "/" . $::lx_office_conf{paths}->{userspath},
+    CLEANUP => !$keep_temp_files,
+  );
+
+  my $userspath   = File::Spec->abs2rel($temp_dir->dirname);
+  $self->{tmpdir} = $temp_dir->dirname;
 
   my $ext_for_format;
 
@@ -972,13 +833,6 @@ sub parse_template {
   } elsif (($self->{"format"} =~ /html/i) || (!$self->{"format"} && ($self->{"IN"} =~ /html$/i))) {
     $template_type  = 'HTML';
     $ext_for_format = 'html';
-
-  } elsif (($self->{"format"} =~ /xml/i) || (!$self->{"format"} && ($self->{"IN"} =~ /xml$/i))) {
-    $template_type  = 'XML';
-    $ext_for_format = 'xml';
-
-  } elsif ( $self->{"format"} =~ /elster(?:winston|taxbird)/i ) {
-    $template_type = 'XML';
 
   } elsif ( $self->{"format"} =~ /excel/i ) {
     $template_type  = 'Excel';
@@ -1023,7 +877,6 @@ sub parse_template {
 
   # OUT is used for the media, screen, printer, email
   # for postscript we store a copy in a temporary file
-  my $keep_temp_files = $::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files};
 
   my ($temp_fh, $suffix);
   $suffix =  $self->{IN};
@@ -1065,15 +918,22 @@ sub parse_template {
   close OUT if $self->{OUT};
   # check only one flag (webdav_documents)
   # therefore copy to webdav, even if we do not have the webdav feature enabled (just archive)
-  my $copy_to_webdav =  $::instance_conf->get_webdav_documents && !$self->{preview} && $self->{tmpdir} && $self->{tmpfile} && $self->{type};
-
+  my $copy_to_webdav =  $::instance_conf->get_webdav_documents && !$self->{preview} && $self->{tmpdir} && $self->{tmpfile} && $self->{type}
+                        && $self->{type} ne 'statement';
   if ( $ext_for_format eq 'pdf' && $self->doc_storage_enabled ) {
     $self->append_general_pdf_attachments(filepath =>  $self->{tmpdir}."/".$self->{tmpfile},
                                           type     =>  $self->{type});
   }
   if ($self->{media} eq 'file') {
     copy(join('/', $self->{cwd}, $userspath, $self->{tmpfile}), $out =~ m|^/| ? $out : join('/', $self->{cwd}, $out)) if $template->uses_temp_file;
-    Common::copy_file_to_webdav_folder($self)                                                                         if $copy_to_webdav;
+
+    if ($copy_to_webdav) {
+      if (my $error = Common::copy_file_to_webdav_folder($self)) {
+        chdir("$self->{cwd}");
+        $self->error($error);
+      }
+    }
+
     if (!$self->{preview} && $self->doc_storage_enabled)
     {
       $self->{attachment_filename} ||= $self->generate_attachment_filename;
@@ -1087,7 +947,12 @@ sub parse_template {
     return;
   }
 
-  Common::copy_file_to_webdav_folder($self) if $copy_to_webdav;
+  if ($copy_to_webdav) {
+    if (my $error = Common::copy_file_to_webdav_folder($self)) {
+      chdir("$self->{cwd}");
+      $self->error($error);
+    }
+  }
 
   if ( !$self->{preview} && $ext_for_format eq 'pdf' && $self->doc_storage_enabled) {
     $self->{attachment_filename} ||= $self->generate_attachment_filename;
@@ -1135,7 +1000,7 @@ sub send_email {
   my $mail = Mailer->new;
 
   map { $mail->{$_} = $self->{$_} }
-    qw(cc subject message version format);
+    qw(cc subject message format);
 
   $mail->{bcc}    = $self->get_bcc_defaults($myconfig, $self->{bcc});
   $mail->{to}     = $self->{EMAIL_RECIPIENT} ? $self->{EMAIL_RECIPIENT} : $self->{email};
@@ -1148,10 +1013,10 @@ sub send_email {
   my @attfiles;
   # if we send html or plain text inline
   if (($self->{format} eq 'html') && ($self->{sendmode} eq 'inline')) {
-    $mail->{contenttype}    =  "text/html";
+    $mail->{content_type}   =  "text/html";
     $mail->{message}        =~ s/\r//g;
-    $mail->{message}        =~ s/\n/<br>\n/g;
-    $full_signature         =~ s/\n/<br>\n/g;
+    $mail->{message}        =~ s{\n}{<br>\n}g;
+    $full_signature         =~ s{\n}{<br>\n}g;
     $mail->{message}       .=  $full_signature;
 
     open(IN, "<", $self->{tmpfile})
@@ -1161,7 +1026,7 @@ sub send_email {
 
   } elsif (($self->{attachment_policy} // '') ne 'no_file') {
     my $attachment_name  =  $self->{attachment_filename}  || $self->{tmpfile};
-    $attachment_name     =~ s/\.(.+?)$/.${ext_for_format}/ if ($ext_for_format);
+    $attachment_name     =~ s{\.(.+?)$}{.${ext_for_format}} if ($ext_for_format);
 
     if (($self->{attachment_policy} // '') eq 'old_file') {
       my ( $attfile ) = SL::File->get_all(object_id   => $self->{id},
@@ -1301,6 +1166,20 @@ sub get_formname_translation {
   return $formname_translations{$formname};
 }
 
+sub get_cusordnumber_translation {
+  $main::lxdebug->enter_sub();
+  my ($self, $formname) = @_;
+
+  $formname ||= $self->{formname};
+
+  $self->{recipient_locale} ||=  Locale->lang_to_locale($self->{language});
+  local $::locale = Locale->new($self->{recipient_locale});
+
+
+  $main::lxdebug->leave_sub();
+  return $main::locale->text('Your Order');
+}
+
 sub get_number_prefix_for_type {
   $main::lxdebug->enter_sub();
   my ($self) = @_;
@@ -1376,13 +1255,17 @@ sub generate_email_subject {
     $subject .= " " . $self->{"${prefix}number"}
   }
 
+  if ($self->{cusordnumber}) {
+    $subject = $self->get_cusordnumber_translation() . ' ' . $self->{cusordnumber} . ' / ' . $subject;
+  }
+
   $main::lxdebug->leave_sub();
   return $subject;
 }
 
 sub generate_email_body {
   $main::lxdebug->enter_sub();
-  my ($self) = @_;
+  my ($self, %params) = @_;
   # simple german and english will work grammatically (most european languages as well)
   # Dear Mr Alan Greenspan:
   # Sehr geehrte Frau Meyer,
@@ -1390,7 +1273,7 @@ sub generate_email_body {
   # Gentile Signora Ferrari,
   my $body = '';
 
-  if ($self->{cp_id}) {
+  if ($self->{cp_id} && !$params{record_email}) {
     my $givenname = SL::DB::Contact->load_cached($self->{cp_id})->cp_givenname; # for qw(gender givename name);
     my $name      = SL::DB::Contact->load_cached($self->{cp_id})->cp_name; # for qw(gender givename name);
     my $gender    = SL::DB::Contact->load_cached($self->{cp_id})->cp_gender; # for qw(gender givename name);
@@ -1403,8 +1286,11 @@ sub generate_email_body {
 
   return undef unless $body;
 
-  $body   .= GenericTranslations->get(translation_type =>"salutation_punctuation_mark", language_id => $self->{language_id}) . "\n";
-  $body   .= GenericTranslations->get(translation_type =>"preset_text_$self->{formname}", language_id => $self->{language_id});
+  my $translation_type = $params{translation_type} // "preset_text_$self->{formname}";
+  my $main_body        = GenericTranslations->get(translation_type => $translation_type,                  language_id => $self->{language_id});
+  $main_body           = GenericTranslations->get(translation_type => $params{fallback_translation_type}, language_id => $self->{language_id}) if !$main_body && $params{fallback_translation_type};
+  $body               .= GenericTranslations->get(translation_type => "salutation_punctuation_mark",      language_id => $self->{language_id}) . "\n\n";
+  $body               .= $main_body;
 
   $body = $main::locale->unquote_special_chars('HTML', $body);
 
@@ -1898,7 +1784,7 @@ sub add_shipto {
   my @values;
 
   foreach my $item (qw(name department_1 department_2 street zipcode city country gln
-                       contact cp_gender phone fax email)) {
+                       contact phone fax email)) {
     if ($self->{"shipto$item"}) {
       $shipto = 1 if ($self->{$item} ne $self->{"shipto$item"});
     }
@@ -1906,6 +1792,12 @@ sub add_shipto {
   }
 
   return if !$shipto;
+
+  # shiptocp_gender only makes sense, if any other shipto attribute is set.
+  # Because shiptocp_gender is set to 'm' by default in forms
+  # it must not be considered above to decide if shiptos has to be added or
+  # updated, but must be inserted or updated as well in case.
+  push(@values, $self->{shiptocp_gender});
 
   my $shipto_id = $self->{shipto_id};
 
@@ -1920,10 +1812,10 @@ sub add_shipto {
                      shiptocountry = ?,
                      shiptogln = ?,
                      shiptocontact = ?,
-                     shiptocp_gender = ?,
                      shiptophone = ?,
                      shiptofax = ?,
                      shiptoemail = ?
+                     shiptocp_gender = ?,
                    WHERE shipto_id = ?|;
     do_query($self, $dbh, $query, @values, $self->{shipto_id});
   } else {
@@ -1937,10 +1829,10 @@ sub add_shipto {
                      shiptocountry = ? AND
                      shiptogln = ? AND
                      shiptocontact = ? AND
-                     shiptocp_gender = ? AND
                      shiptophone = ? AND
                      shiptofax = ? AND
                      shiptoemail = ? AND
+                     shiptocp_gender = ? AND
                      module = ? AND
                      trans_id = ?|;
     my $insert_check = selectfirst_hashref_query($self, $dbh, $query, @values, $module, $id);
@@ -1948,7 +1840,7 @@ sub add_shipto {
       my $insert_query =
         qq|INSERT INTO shipto (trans_id, shiptoname, shiptodepartment_1, shiptodepartment_2,
                                shiptostreet, shiptozipcode, shiptocity, shiptocountry, shiptogln,
-                               shiptocontact, shiptocp_gender, shiptophone, shiptofax, shiptoemail, module)
+                               shiptocontact, shiptophone, shiptofax, shiptoemail, shiptocp_gender, module)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)|;
       do_query($self, $dbh, $insert_query, $id, @values, $module);
 
@@ -2096,26 +1988,6 @@ sub _get_projects {
   $main::lxdebug->leave_sub();
 }
 
-sub _get_shipto {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $dbh, $vc_id, $key) = @_;
-
-  $key = "all_shipto" unless ($key);
-
-  if ($vc_id) {
-    # get shipping addresses
-    my $query = qq|SELECT * FROM shipto WHERE trans_id = ?|;
-
-    $self->{$key} = selectall_hashref_query($self, $dbh, $query, $vc_id);
-
-  } else {
-    $self->{$key} = [];
-  }
-
-  $main::lxdebug->leave_sub();
-}
-
 sub _get_printers {
   $main::lxdebug->enter_sub();
 
@@ -2149,36 +2021,6 @@ sub _get_charts {
     qq|          WHERE taxkeys.chart_id = c.id AND startdate <= $transdate | .
     qq|          ORDER BY startdate DESC LIMIT 1)) | .
     qq|ORDER BY c.accno|;
-
-  $self->{$key} = selectall_hashref_query($self, $dbh, $query);
-
-  $main::lxdebug->leave_sub();
-}
-
-sub _get_taxcharts {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $dbh, $params) = @_;
-
-  my $key = "all_taxcharts";
-  my @where;
-
-  if (ref $params eq 'HASH') {
-    $key = $params->{key} if ($params->{key});
-    if ($params->{module} eq 'AR') {
-      push @where, 'chart_categories ~ \'[ACILQ]\'';
-
-    } elsif ($params->{module} eq 'AP') {
-      push @where, 'chart_categories ~ \'[ACELQ]\'';
-    }
-
-  } elsif ($params) {
-    $key = $params;
-  }
-
-  my $where = @where ? ' WHERE ' . join(' AND ', map { "($_)" } @where) : '';
-
-  my $query = qq|SELECT * FROM tax $where ORDER BY taxkey, rate|;
 
   $self->{$key} = selectall_hashref_query($self, $dbh, $query);
 
@@ -2398,31 +2240,19 @@ sub _get_simple {
   $main::lxdebug->leave_sub();
 }
 
-#sub _get_groups {
-#  $main::lxdebug->enter_sub();
-#
-#  my ($self, $dbh, $key) = @_;
-#
-#  $key ||= "all_groups";
-#
-#  my $groups = $main::auth->read_groups();
-#
-#  $self->{$key} = selectall_hashref_query($self, $dbh, $query);
-#
-#  $main::lxdebug->leave_sub();
-#}
-
 sub get_lists {
   $main::lxdebug->enter_sub();
 
   my $self = shift;
   my %params = @_;
 
+  croak "get_lists: shipto is no longer supported" if $params{shipto};
+
   my $dbh = $self->get_standard_dbh(\%main::myconfig);
   my ($sth, $query, $ref);
 
   my ($vc, $vc_id);
-  if ($params{contacts} || $params{shipto}) {
+  if ($params{contacts}) {
     $vc = 'customer' if $self->{"vc"} eq "customer";
     $vc = 'vendor'   if $self->{"vc"} eq "vendor";
     die "invalid use of get_lists, need 'vc'" unless $vc;
@@ -2431,10 +2261,6 @@ sub get_lists {
 
   if ($params{"contacts"}) {
     $self->_get_contacts($dbh, $vc_id, $params{"contacts"});
-  }
-
-  if ($params{"shipto"}) {
-    $self->_get_shipto($dbh, $vc_id, $params{"shipto"});
   }
 
   if ($params{"projects"} || $params{"all_projects"}) {
@@ -2453,10 +2279,6 @@ sub get_lists {
 
   if ($params{"charts"}) {
     $self->_get_charts($dbh, $params{"charts"});
-  }
-
-  if ($params{"taxcharts"}) {
-    $self->_get_taxcharts($dbh, $params{"taxcharts"});
   }
 
   if ($params{"taxzones"}) {
@@ -2510,10 +2332,6 @@ sub get_lists {
   if ($params{warehouses}) {
     $self->_get_warehouses($dbh, $params{warehouses});
   }
-
-#  if ($params{groups}) {
-#    $self->_get_groups($dbh, $params{groups});
-#  }
 
   if ($params{partsgroup}) {
     $self->get_partsgroup(\%main::myconfig, { all => 1, target => $params{partsgroup} });
@@ -2748,8 +2566,8 @@ sub create_links {
   if ($self->{id}) {
     $query =
       qq|SELECT
-           a.cp_id, a.invnumber, a.transdate, a.${table}_id, a.datepaid,
-           a.duedate, a.ordnumber, a.taxincluded, (SELECT cu.name FROM currencies cu WHERE cu.id=a.currency_id) AS currency, a.notes,
+           a.cp_id, a.invnumber, a.transdate, a.${table}_id, a.datepaid, a.deliverydate,
+           a.duedate, a.tax_point, a.ordnumber, a.taxincluded, (SELECT cu.name FROM currencies cu WHERE cu.id=a.currency_id) AS currency, a.notes,
            a.mtime, a.itime,
            a.intnotes, a.department_id, a.amount AS oldinvtotal,
            a.paid AS oldtotalpaid, a.employee_id, a.gldate, a.type,
@@ -3364,19 +3182,6 @@ sub prepare_for_printing {
     $self->{"employee_${_}"} = $defaults->$_   for qw(address businessnumber co_ustid company duns sepa_creditor_id taxnumber);
   }
 
-  # Load shipping address from database. If shipto_id is set then it's
-  # one from the customer's/vendor's master data. Otherwise look an a
-  # customized address linking back to the current record.
-  my $shipto_module = $self->{type} =~ /_delivery_order$/                                             ? 'DO'
-                    : $self->{type} =~ /sales_order|sales_quotation|request_quotation|purchase_order/ ? 'OE'
-                    :                                                                                   'AR';
-  my $shipto        = $self->{shipto_id} ? SL::DB::Shipto->new(shipto_id => $self->{shipto_id})->load
-                    :                      SL::DB::Manager::Shipto->get_first(where => [ module => $shipto_module, trans_id => $self->{id} ]);
-  if ($shipto) {
-    $self->{$_} = $shipto->$_ for grep { m{^shipto} } map { $_->name } @{ $shipto->meta->columns };
-    $self->{"shiptocvar_" . $_->config->name} = $_->value_as_text for @{ $shipto->cvars_by_config };
-  }
-
   my $language = $self->{language} ? '_' . $self->{language} : '';
 
   my ($language_tc, $output_numberformat, $output_dateformat, $output_longdates);
@@ -3425,7 +3230,7 @@ sub prepare_for_printing {
 
   # Format dates.
   $self->format_dates($output_dateformat, $output_longdates,
-                      qw(invdate orddate quodate pldate duedate reqdate transdate shippingdate deliverydate validitydate paymentdate datepaid
+                      qw(invdate orddate quodate pldate duedate reqdate transdate tax_point shippingdate deliverydate validitydate paymentdate datepaid
                          transdate_oe deliverydate_oe employee_startdate employee_enddate),
                       grep({ /^(?:datepaid|transdate_oe|reqdate|deliverydate|deliverydate_oe|transdate)_\d+$/ } keys(%{$self})));
 
@@ -3443,6 +3248,14 @@ sub prepare_for_printing {
 
   while (my ($precision, $field_list) = each %{ $cvar_number_fields }) {
     $self->reformat_numbers($output_numberformat, $precision, @{ $field_list });
+  }
+
+  # Translate units
+  if (($self->{language} // '') ne '') {
+    my $template_arrays = $self->{TEMPLATE_ARRAYS} || $self;
+    for my $idx (0..scalar(@{ $template_arrays->{unit} }) - 1) {
+      $template_arrays->{unit}->[$idx] = AM->translate_units($self, $self->{language}, $template_arrays->{unit}->[$idx], $template_arrays->{qty}->[$idx])
+    }
   }
 
   $self->{template_meta} = {
@@ -3622,29 +3435,6 @@ sub create_email_signature {
   return $signature;
 
 };
-
-sub layout {
-  my ($self) = @_;
-  $::lxdebug->enter_sub;
-
-  my %style_to_script_map = (
-    v3  => 'v3',
-    neu => 'new',
-  );
-
-  my $menu_script = $style_to_script_map{$::myconfig{menustyle}} || '';
-
-  package main;
-  require "bin/mozilla/menu$menu_script.pl";
-  package Form;
-  require SL::Controller::FrameHeader;
-
-
-  my $layout = SL::Controller::FrameHeader->new->action_header . ::render();
-
-  $::lxdebug->leave_sub;
-  return $layout;
-}
 
 sub calculate_tax {
   # this function calculates the net amount and tax for the lines in ar, ap and

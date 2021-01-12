@@ -49,17 +49,19 @@ use SL::DB;
 use strict;
 
 sub post_transaction {
-  my ($self, $myconfig, $form, $provided_dbh, $payments_only) = @_;
+  my ($self, $myconfig, $form, $provided_dbh, %params) = @_;
   $main::lxdebug->enter_sub();
 
-  my $rc = SL::DB->client->with_transaction(\&_post_transaction, $self, $myconfig, $form, $provided_dbh, $payments_only);
+  my $rc = SL::DB->client->with_transaction(\&_post_transaction, $self, $myconfig, $form, $provided_dbh, %params);
 
   $::lxdebug->leave_sub;
   return $rc;
 }
 
 sub _post_transaction {
-  my ($self, $myconfig, $form, $provided_dbh, $payments_only) = @_;
+  my ($self, $myconfig, $form, $provided_dbh, %params) = @_;
+
+  my $payments_only = $params{payments_only};
 
   my ($query, $sth, $null, $taxrate, $amount, $tax);
   my $exchangerate = 0;
@@ -132,14 +134,14 @@ sub _post_transaction {
     $query =
       qq|UPDATE ar set
            invnumber = ?, ordnumber = ?, transdate = ?, customer_id = ?,
-           taxincluded = ?, amount = ?, duedate = ?, paid = ?,
+           taxincluded = ?, amount = ?, duedate = ?, deliverydate = ?, tax_point = ?, paid = ?,
            currency_id = (SELECT id FROM currencies WHERE name = ?),
            netamount = ?, notes = ?, department_id = ?,
            employee_id = ?, storno = ?, storno_id = ?, globalproject_id = ?,
            direct_debit = ?
          WHERE id = ?|;
     my @values = ($form->{invnumber}, $form->{ordnumber}, conv_date($form->{transdate}), conv_i($form->{customer_id}), $form->{taxincluded} ? 't' : 'f', $form->{amount},
-                  conv_date($form->{duedate}), $form->{paid},
+                  conv_date($form->{duedate}), conv_date($form->{deliverydate}), conv_date($form->{tax_point}), $form->{paid},
                   $form->{currency},
                   $form->{netamount}, $form->{notes}, conv_i($form->{department_id}),
                   conv_i($form->{employee_id}), $form->{storno} ? 't' : 'f', $form->{storno_id},
@@ -190,6 +192,8 @@ sub _post_transaction {
 
   $form->new_lastmtime('ar');
 
+  my %already_cleared = %{ $params{already_cleared} // {} };
+
   # add paid transactions
   for my $i (1 .. $form->{paidaccounts}) {
 
@@ -213,20 +217,28 @@ sub _post_transaction {
       $form->{exchangerate} = $form->{"exchangerate_$i"}
         if ($form->{amount} == 0 && $form->{netamount} == 0);
 
+      my $new_cleared = !$form->{"acc_trans_id_$i"}                                                       ? 'f'
+                      : !$already_cleared{$form->{"acc_trans_id_$i"}}                                     ? 'f'
+                      : $already_cleared{$form->{"acc_trans_id_$i"}}->{amount} != $form->{"paid_$i"} * -1 ? 'f'
+                      : $already_cleared{$form->{"acc_trans_id_$i"}}->{accno}  != $form->{AR}{"paid_$i"}  ? 'f'
+                      : $already_cleared{$form->{"acc_trans_id_$i"}}->{cleared}                           ? 't'
+                      :                                                                                     'f';
+
       # receivables amount
       $amount = $form->round_amount($form->{"paid_$i"} * $form->{exchangerate}, 2);
 
       if ($amount != 0) {
         # add receivable
-        $query = qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, project_id, taxkey, tax_id, chart_link)
-                     VALUES (?, ?, ?, ?, ?, (SELECT taxkey_id FROM chart WHERE id = ?),
+        $query = qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, project_id, cleared, taxkey, tax_id, chart_link)
+                     VALUES (?, ?, ?, ?, ?, ?, (SELECT taxkey_id FROM chart WHERE id = ?),
                      (SELECT tax_id
                       FROM taxkeys
                       WHERE chart_id = ?
                       AND startdate <= ?
                       ORDER BY startdate DESC LIMIT 1),
                      (SELECT c.link FROM chart c WHERE c.id = ?))|;
-        @values = (conv_i($form->{id}), $form->{AR_chart_id}, $amount, conv_date($form->{"datepaid_$i"}), $project_id, $form->{AR_chart_id}, $form->{AR_chart_id}, conv_date($form->{"datepaid_$i"}), $form->{AR_chart_id});
+        @values = (conv_i($form->{id}), $form->{AR_chart_id}, $amount, conv_date($form->{"datepaid_$i"}), $project_id, $new_cleared,
+                   $form->{AR_chart_id}, $form->{AR_chart_id}, conv_date($form->{"datepaid_$i"}), $form->{AR_chart_id});
 
         do_query($form, $dbh, $query, @values);
       }
@@ -236,8 +248,8 @@ sub _post_transaction {
         my $project_id = conv_i($form->{"paid_project_id_$i"});
         my $gldate = (conv_date($form->{"gldate_$i"}))? conv_date($form->{"gldate_$i"}) : conv_date($form->current_date($myconfig));
         $amount = $form->{"paid_$i"} * -1;
-        $query  = qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, gldate, source, memo, project_id, taxkey, tax_id, chart_link)
-                     VALUES (?, (SELECT id FROM chart WHERE accno = ?), ?, ?, ?, ?, ?, ?, (SELECT taxkey_id FROM chart WHERE accno = ?),
+        $query  = qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, gldate, source, memo, project_id, cleared, taxkey, tax_id, chart_link)
+                     VALUES (?, (SELECT id FROM chart WHERE accno = ?), ?, ?, ?, ?, ?, ?, ?, (SELECT taxkey_id FROM chart WHERE accno = ?),
                      (SELECT tax_id
                       FROM taxkeys
                       WHERE chart_id= (SELECT id
@@ -246,7 +258,7 @@ sub _post_transaction {
                       AND startdate <= ?
                       ORDER BY startdate DESC LIMIT 1),
                      (SELECT c.link FROM chart c WHERE c.accno = ?))|;
-        @values = (conv_i($form->{id}), $form->{AR}{"paid_$i"}, $amount, conv_date($form->{"datepaid_$i"}), $gldate, $form->{"source_$i"}, $form->{"memo_$i"}, $project_id, $form->{AR}{"paid_$i"},
+        @values = (conv_i($form->{id}), $form->{AR}{"paid_$i"}, $amount, conv_date($form->{"datepaid_$i"}), $gldate, $form->{"source_$i"}, $form->{"memo_$i"}, $project_id, $new_cleared, $form->{AR}{"paid_$i"},
                     $form->{AR}{"paid_$i"}, conv_date($form->{"datepaid_$i"}), $form->{AR}{"paid_$i"});
         do_query($form, $dbh, $query, @values);
 
@@ -385,6 +397,15 @@ sub _post_payment {
 
   $old_form = save_form();
 
+  $query = <<SQL;
+    SELECT at.acc_trans_id, at.amount, at.cleared, c.accno
+    FROM acc_trans at
+    LEFT JOIN chart c ON (at.chart_id = c.id)
+    WHERE (at.trans_id = ?)
+SQL
+
+  my %already_cleared = selectall_as_map($form, $dbh, $query, 'acc_trans_id', [ qw(amount cleared accno) ], $form->{id});
+
   # Delete all entries in acc_trans from prior payments.
   if (SL::DB::Default->get->payments_changeable != 0) {
     $self->_delete_payments($form, $dbh);
@@ -424,7 +445,7 @@ sub _post_payment {
   ($form->{AR_chart_id}) = selectfirst_array_query($form, $dbh, $query, conv_i($form->{id}));
 
   # Post the new payments.
-  $self->post_transaction($myconfig, $form, $dbh, 1);
+  $self->post_transaction($myconfig, $form, $dbh, payments_only => 1, already_cleared => \%already_cleared);
 
   restore_form($old_form);
 
@@ -460,6 +481,7 @@ sub ar_transactions {
 
   my $query =
     qq|SELECT DISTINCT a.id, a.invnumber, a.ordnumber, a.cusordnumber, a.transdate, | .
+    qq|  a.donumber, a.deliverydate, | .
     qq|  a.duedate, a.netamount, a.amount, a.paid, | .
     qq|  a.invoice, a.datepaid, a.notes, a.shipvia, | .
     qq|  a.shippingpoint, a.storno, a.storno_id, a.globalproject_id, | .
@@ -495,9 +517,46 @@ sub ar_transactions {
 
   my $where = "1 = 1";
 
-  unless ( $::auth->assert('show_ar_transactions', 1) ) {
-    $where .= " AND NOT invoice = 'f' ";  # remove ar transactions from Sales -> Reports -> Invoices
-  };
+  # Permissions:
+  # - Always return invoices & AR transactions for projects the employee has "view invoices" permissions for, no matter what the other rules say.
+  # - Exclude AR transactions if no permissions for them exist.
+  # - Limit to own invoices unless may edit all invoices.
+  # - If may edit all, allow filtering by employee/salesman.
+  my (@permission_where, @permission_values);
+
+  if ($::auth->assert('invoice_edit', 1)) {
+    if (!$::auth->assert('show_ar_transactions', 1) ) {
+      push @permission_where, "NOT invoice = 'f'";  # remove ar transactions from Sales -> Reports -> Invoices
+    }
+
+    if (!$::auth->assert('sales_all_edit', 1)) {
+      # only show own invoices
+      push @permission_where,  "a.employee_id = ?";
+      push @permission_values, SL::DB::Manager::Employee->current->id;
+
+    } else {
+      if ($form->{employee_id}) {
+        push @permission_where,  "a.employee_id = ?";
+        push @permission_values, conv_i($form->{employee_id});
+      }
+      if ($form->{salesman_id}) {
+        push @permission_where,  "a.salesman_id = ?";
+        push @permission_values, conv_i($form->{salesman_id});
+      }
+    }
+  }
+
+  if (@permission_where || !$::auth->assert('invoice_edit', 1)) {
+    my $permission_where_str = @permission_where ? "OR (" . join(" AND ", map { "($_)" } @permission_where) . ")" : "";
+    $where .= qq|
+      AND (   (a.globalproject_id IN (
+               SELECT epi.project_id
+               FROM employee_project_invoices epi
+               WHERE epi.employee_id = ?))
+           $permission_where_str)
+    |;
+    push @values, SL::DB::Manager::Employee->current->id, @permission_values;
+  }
 
   if ($form->{customer}) {
     $where .= " AND c.name ILIKE ?";
@@ -557,21 +616,6 @@ sub ar_transactions {
     }
   }
 
-  if (!$main::auth->assert('sales_all_edit', 1)) {
-    # only show own invoices
-    $where .= " AND a.employee_id = (select id from employee where login= ?)";
-    push (@values, $::myconfig{login});
-  } else {
-    if ($form->{employee_id}) {
-      $where .= " AND a.employee_id = ?";
-      push @values, conv_i($form->{employee_id});
-    }
-    if ($form->{salesman_id}) {
-      $where .= " AND a.salesman_id = ?";
-      push @values, conv_i($form->{salesman_id});
-    }
-  };
-
   if ($form->{parts_partnumber}) {
     $where .= <<SQL;
       AND EXISTS (
@@ -597,6 +641,18 @@ SQL
       )
 SQL
     push @values, like($form->{parts_description});
+  }
+
+  if ($form->{show_not_mailed}) {
+    $where .= <<SQL;
+      AND NOT EXISTS (
+        SELECT rl.to_id
+        FROM record_links rl
+        WHERE (rl.from_id = a.id)
+          AND (rl.to_table = 'email_journal')
+        LIMIT 1
+      )
+SQL
   }
 
   if ($form->{show_marked_as_closed}) {
@@ -627,7 +683,7 @@ SQL
   my $sortdir   = !defined $form->{sortdir} ? 'ASC' : $form->{sortdir} ? 'ASC' : 'DESC';
   my $sortorder = join(', ', map { "$_ $sortdir" } @a);
 
-  if (grep({ $_ eq $form->{sort} } qw(id transdate duedate invnumber ordnumber cusordnumber name datepaid employee shippingpoint shipvia transaction_description))) {
+  if (grep({ $_ eq $form->{sort} } qw(id transdate duedate invnumber ordnumber cusordnumber donumber deliverydate name datepaid employee shippingpoint shipvia transaction_description department))) {
     $sortorder = $form->{sort} . " $sortdir";
   }
 

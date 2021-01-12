@@ -15,7 +15,7 @@ sub flatten_to_form {
   _copy($self, $form, '', '', 0, qw(id type taxzone_id ordnumber quonumber invnumber donumber cusordnumber taxincluded shippingpoint shipvia notes intnotes cp_id
                                     employee_id salesman_id closed department_id language_id payment_id delivery_customer_id delivery_vendor_id shipto_id proforma
                                     globalproject_id delivered transaction_description container_type accepted_by_customer invoice storno storno_id dunning_config_id
-                                    orddate quodate reqdate gldate duedate deliverydate datepaid transdate delivery_term_id));
+                                    orddate quodate reqdate gldate duedate deliverydate datepaid transdate tax_point delivery_term_id));
   $form->{currency} = $form->{curr} = $self->currency_id ? $self->currency->name || '' : '';
 
   if ( $vc eq 'customer' ) {
@@ -36,26 +36,32 @@ sub flatten_to_form {
   $form->{vc} = $vc if ref($self) =~ m{^SL::DB::(?:.*Invoice|.*Order)};
 
   my @vc_fields          = (qw(account_number bank bank_code bic business city contact country creditlimit
-                               department_1 department_2 discount email fax gln homepage iban language name
-                               phone street taxnumber ustid zipcode),
+                               department_1 department_2 discount email fax gln greeting homepage iban language name
+                               natural_person phone street taxnumber ustid zipcode),
                             "${vc}number",
-                            ($vc eq 'customer')? 'c_vendor_id': 'v_customer_id');
+                            ($vc eq 'customer')? qw(c_vendor_id c_vendor_routing_id): 'v_customer_id');
   my @vc_prefixed_fields = qw(email fax notes number phone);
 
-  _copy($self,                          $form, '',              '', 1, qw(amount netamount marge_total marge_percent container_remaining_weight container_remaining_volume paid));
+  _copy($self,                          $form, '',              '', 1, qw(amount netamount marge_total marge_percent container_remaining_weight container_remaining_volume paid exchangerate));
   _copy($self->$vc,                     $form, '',              '', 0, @vc_fields);
   _copy($self->$vc,                     $form, $vc,             '', 0, @vc_prefixed_fields);
   _copy($self->contact,                 $form, '',              '', 0, grep { /^cp_/    } map { $_->name } SL::DB::Contact->meta->columns) if _has($self, 'cp_id');
-  _copy($self->shipto,                  $form, '',              '', 0, grep { /^shipto/ } map { $_->name } SL::DB::Shipto->meta->columns)  if _has($self, 'shipto_id');
   _copy($self->globalproject,           $form, 'globalproject', '', 0, qw(number description))                                             if _has($self, 'globalproject_id');
   _copy($self->employee,                $form, 'employee_',     '', 0, map { $_->name } SL::DB::Employee->meta->columns)                   if _has($self, 'employee_id');
   _copy($self->salesman,                $form, 'salesman_',     '', 0, map { $_->name } SL::DB::Employee->meta->columns)                   if _has($self, 'salesman_id');
   _copy($self->acceptance_confirmed_by, $form, 'acceptance_confirmed_by_', '', 0, map { $_->name } SL::DB::Employee->meta->columns)        if _has($self, 'acceptance_confirmed_by_id');
 
-  if (_has($self, 'employee_id')) {
-    my $user = User->new(login => $self->employee->login);
-    $form->{"employee_$_"} = $user->{$_} for qw(tel email fax);
+  # Copy selected shipto to form, if set. Else, copy custom shipto, if set.
+  my $shipto = _has($self, 'shipto_id')     ? $self->shipto
+             : _has($self, 'custom_shipto') ? $self->custom_shipto
+             : undef;
+  if ($shipto) {
+    _copy($shipto,                  $form, '',            '', 0, grep { m{^shipto(?!_id$)} } map { $_->name } SL::DB::Shipto->meta->columns);
+    _copy_custom_variables($shipto, $form, 'shiptocvar_', '');
   }
+
+  _handle_user_data($self, $form);
+
   # company is employee and login independent
   $form->{"${_}_company"}  = $::instance_conf->get_company for qw (employee salesman);
 
@@ -92,7 +98,7 @@ sub flatten_to_form {
     _copy($item,          $form, '',               "_${idx}", 0,               qw(description project_id ship serialnumber pricegroup_id ordnumber donumber cusordnumber unit
                                                                                   subtotal longdescription price_factor_id marge_price_factor reqdate transdate
                                                                                   active_price_source active_discount_source));
-    _copy($item,          $form, '',              "_${idx}", $format_noround, qw(qty sellprice));
+    _copy($item,          $form, '',              "_${idx}", $format_noround, qw(qty sellprice fxsellprice));
     _copy($item,          $form, '',              "_${idx}", $format_amounts, qw(marge_total marge_percent lastcost));
     _copy($item,          $form, '',              "_${idx}", $format_percent, qw(discount));
     _copy($item->project, $form, 'project',       "_${idx}", 0,               qw(number description)) if _has($item, 'project_id');
@@ -134,7 +140,7 @@ sub _copy {
 sub _copy_custom_variables {
   my ($src, $form, $prefix, $postfix, $cvar_validity) = @_;
 
-  my $obj = (any { ref($src) eq $_ } qw(SL::DB::OrderItem SL::DB::DeliveryOrderItem SL::DB::InvoiceItem SL::DB::Contact))
+  my $obj = (any { ref($src) eq $_ } qw(SL::DB::OrderItem SL::DB::DeliveryOrderItem SL::DB::InvoiceItem SL::DB::Contact SL::DB::Shipto))
           ? $src
           : $src->customervendor;
 
@@ -168,6 +174,25 @@ sub _determine_cvar_validity {
     items => \%item_cvar_validity,
     vc    => \%vc_cvar_validity,
   );
+}
+
+sub  _handle_user_data {
+  my ($self, $form) = @_;
+
+  foreach my $type (qw(employee salesman)) {
+    next if !_has($self, "${type}_id");
+
+    my $user = User->new(login => $self->$type->login);
+    $form->{"${type}_$_"} = $user->{$_} for qw(tel email fax signature);
+
+    if ($self->$type->deleted) {
+      for my $key (grep { $_ =~ m{^deleted_} } SL::DB::Employee->meta->columns) {
+        $key =~ s{^deleted_}{};
+        $form->{"${type}_${key}"} = $form->{"${type}_deleted_${key}"}
+      }
+    }
+
+  }
 }
 
 1;

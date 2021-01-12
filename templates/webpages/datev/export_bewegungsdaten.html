@@ -29,7 +29,7 @@
             <option value=9>[% 'September' | $T8 %]</option>
             <option value=10>[% 'October' | $T8 %]</option>
             <option value=11>[% 'November' | $T8 %]</option>
-            <option value=12>[% 'December' | $T8 %]</option>
+            <option value=12>[% 'December last year period' | $T8 %]</option>
           </select></td>
         </tr>
         <tr>
@@ -103,6 +103,16 @@
            <td colspan="2"><font color="gray">[% 'Hint: Not all VC Numbers are personal accounts compliant' | $T8 %]</font></td>
           [% END %]
          </tr>
+         <tr>
+           <td align=left>[% 'Lock bookings' | $T8 %]</td>
+           <td align=left></td>
+           <td colspan="3">[% L.yes_no_tag('locked', 0) %]</td>
+        </tr>
+         <tr>
+           <td align=left>[% 'Export imported bookings' | $T8 %]</td>
+           <td align=left></td>
+           <td colspan="3">[% L.yes_no_tag('imported', 0) %]</td>
+        </tr>
         </table>
      </td>
    </tr>
@@ -121,4 +131,5 @@
 <input type=hidden name=abrechnungsnr value="[% abrechnungsnr %]">
 
 <input type=hidden name=exporttype value="[% exporttype %]">
+
 </form>

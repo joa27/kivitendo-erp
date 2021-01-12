@@ -118,6 +118,8 @@ sub export3 {
       $::form->{transdatefrom}, $::form->{transdateto},
     );
     $data{use_pk} = $::form->{use_pk};
+    $data{locked} = $::form->{locked};
+    $data{imported} = $::form->{imported};
   } else {
     die 'invalid exporttype';
   }
@@ -199,6 +201,9 @@ sub _get_dates {
 
   if ($mode eq "monat") {
     $fromdate = DateTime->new(day => 1, month => $month, year => DateTime->today->year);
+    # december export is usually in january/february
+    $fromdate = $fromdate->subtract(years => 1) if ($month == 12);
+
     $todate   = $fromdate->clone->add(months => 1)->add(days => -1);
   } elsif ($mode eq "quartal") {
     die 'quarter out of of bounds' if $quarter < 1 || $quarter > 4;

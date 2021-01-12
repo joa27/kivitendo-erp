@@ -8,6 +8,7 @@ use SL::BackgroundJob::Base;
 use SL::Controller::Helper::GetModels;
 use SL::DB::BackgroundJob;
 use SL::Helper::Flash;
+use SL::JSON;
 use SL::Locale::String;
 use SL::System::TaskServer;
 
@@ -116,6 +117,33 @@ sub action_execute {
                      action     => 'show',
                      id         => $history->id,
                      back_to    => $self->url_for(action => 'edit', id => $self->background_job->id));
+}
+
+sub action_execute_class {
+  my ($self) = @_;
+
+  my $result;
+
+  my $ok = eval {
+    die "no class name given in parameter 'class'" if !$::form->{class} || ($::form->{class} =~ m{[^a-z0-9]}i);
+    die "invalid class"                            if ! -f "SL/BackgroundJob/" . $::form->{class} . ".pm";
+
+    my $package = "SL::BackgroundJob::" . $::form->{class};
+
+    eval "require $package" or die $@;
+    my $job = SL::DB::BackgroundJob->new(data => $::form->{data});
+    $job->data(decode_json($::form->{json_data})) if $::form->{json_data};
+    $result = $package->new->run($job);
+
+    1;
+  };
+
+  my $reply = {
+    status => $ok ? 'succeeded' : 'failed',
+    result => $ok ? $result     : $@,
+  };
+
+  $self->render(\to_json($reply), { type => 'json' });
 }
 
 #

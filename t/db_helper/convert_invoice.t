@@ -25,6 +25,7 @@ use SL::DB::Unit;
 use SL::Dev::ALL qw(:ALL);
 
 my ($customer, $employee, $payment_do, $unit, @parts, $department);
+my ($transdate);
 
 my $VISUAL_TEST = 0;  # just a sleep to click around
 
@@ -39,6 +40,9 @@ sub reset_state {
   my %params = @_;
 
   clear_up();
+
+  $transdate = DateTime->today_local;
+  $transdate->set_year(2019) if $transdate->year == 2020; # use year 2019 in 2020, because of tax rate change in Germany
 
   $unit     = SL::DB::Manager::Unit->find_by(name => 'kg') || die "Can't find unit 'kg'";
   $customer = new_customer()->save;
@@ -91,6 +95,7 @@ reset_state();
 # we create L20199 with two items
 my $do1 = create_sales_delivery_order(
   'department_id' => $department->id,
+  'transdate'     => $transdate,
   'donumber'      => 'L20199',
   'employee_id'   => $employee->id,
   'intnotes'      => 'some intnotes',
@@ -144,7 +149,7 @@ is (SL::DB::Manager::DeliveryOrderItem->get_all_count(where => [ delivery_order_
 
 
 # convert this do to invoice
-my $invoice = $do1->convert_to_invoice();
+my $invoice = $do1->convert_to_invoice(transdate => $transdate);
 
 sleep (300) if $VISUAL_TEST; # we can do a real visual test via gui login
 # test invoice afterwards
@@ -157,48 +162,14 @@ ok ($invoice->notes eq '<ul><li><strong>fett</strong></li><li><strong>und</stron
 ok(($do1->closed) , 'Delivery Order is closed after conversion');
 is($invoice->payment_terms->description, "14Tage 2%Skonto, 30Tage netto", 'payment term description check');
 
-# some test data from original client invoice console (!)
-# my $invoice3 = SL::DB::Manager::Invoice->find_by( ordnumber => 'A16399' );
-# which will fail due to PTC Calculation differs from GUI-Calculation, see issue: http://redmine.kivitendo-premium.de/issues/82
-# pp $invoice3
-# values from gui should be:
-#ok($invoice->amount == 1354.20000, 'amount check');
-#ok($invoice->marge_percent == 50.88666, 'marge percent check');
-#ok($invoice->marge_total == 579.08000, 'marge total check');
-#ok($invoice->netamount == 1137.98000, 'netamount check');
-
-
-# the values change if one reloads the object
-# without reloading we get this failures
-#not ok 17 - amount check
-#   Failed test 'amount check'
-#   at t/db_helper/convert_invoice.t line 272.
-#          got: '1354.17'
-#     expected: '1354.17000'
-#not ok 18 - marge percent check
-#   Failed test 'marge percent check'
-#   at t/db_helper/convert_invoice.t line 273.
-#          got: '50.8857956342929'
-#     expected: '50.88580'
-#not ok 19 - marge total check
-#   Failed test 'marge total check'
-#   at t/db_helper/convert_invoice.t line 274.
-#          got: '579.06'
-#     expected: '579.06000'
-#not ok 20 - netamount check
-#   Failed test 'netamount check'
-#   at t/db_helper/convert_invoice.t line 275.
-#          got: '1137.96'
-#     expected: '1137.96000'
-
 $invoice->load;
 
 is($invoice->cusordnumber            , 'b84da'           , 'cusordnumber check');
 is($invoice->department->description , "Test Department" , 'department description ok');
-is($invoice->amount                  , '1354.17000'      , 'amount check');
-is($invoice->marge_percent           , '50.88580'        , 'marge percent check');
-is($invoice->marge_total             , '579.06000'       , 'marge total check');
-is($invoice->netamount               , '1137.96000'      , 'netamount check');
+is($invoice->amount                  , '1354.20000'      , 'amount check');
+is($invoice->marge_percent           , '50.88666'        , 'marge percent check');
+is($invoice->marge_total             , '579.08000'       , 'marge total check');
+is($invoice->netamount               , '1137.98000'      , 'netamount check');
 
 # some item checks
 is($invoice->items_sorted->[0]->parts_id         , $parts[0]->id , 'invoiceitem 1 linked with part');
@@ -267,3 +238,9 @@ foreach ( $do1_item1->id, $do1_item2->id ) {
 clear_up();
 
 1;
+
+# vim: ft=perl
+# set emacs to perl mode
+# Local Variables:
+# mode: perl
+# End:

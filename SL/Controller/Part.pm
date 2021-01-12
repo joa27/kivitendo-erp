@@ -6,6 +6,7 @@ use parent qw(SL::Controller::Base);
 use Clone qw(clone);
 use SL::DB::Part;
 use SL::DB::PartsGroup;
+use SL::DB::PriceRuleItem;
 use SL::DB::Shop;
 use SL::Controller::Helper::GetModels;
 use SL::Locale::String qw(t8);
@@ -19,17 +20,20 @@ use SL::DB::Helper::ValidateAssembly qw(validate_assembly);
 use SL::CVar;
 use SL::MoreCommon qw(save_form);
 use Carp;
+use SL::Presenter::EscapedText qw(escape is_escaped);
+use SL::Presenter::Tag qw(select_tag);
 
 use Rose::Object::MakeMethods::Generic (
   'scalar --get_set_init' => [ qw(parts models part p warehouses multi_items_models
                                   makemodels shops_not_assigned
+                                  customerprices
                                   orphaned
                                   assortment assortment_items assembly assembly_items
                                   all_pricegroups all_translations all_partsgroups all_units
                                   all_buchungsgruppen all_payment_terms all_warehouses
                                   parts_classification_filter
                                   all_languages all_units all_price_factors) ],
-  'scalar'                => [ qw(warehouse bin) ],
+  'scalar'                => [ qw(warehouse bin stock_amounts journal) ],
 );
 
 # safety
@@ -136,11 +140,11 @@ sub action_save {
     )->save();
 
     CVar->save_custom_variables(
-        dbh          => $self->part->db->dbh,
-        module       => 'IC',
-        trans_id     => $self->part->id,
-        variables    => $::form, # $::form->{cvar} would be nicer
-        always_valid => 1,
+      dbh           => $self->part->db->dbh,
+      module        => 'IC',
+      trans_id      => $self->part->id,
+      variables     => $::form, # $::form->{cvar} would be nicer
+      save_validity => 1,
     );
 
     1;
@@ -258,6 +262,17 @@ sub action_history {
   $_[0]->render('part/history', { layout => 0 },
                                   history_entries => $history_entries);
 }
+
+sub action_inventory {
+  my ($self) = @_;
+
+  $::auth->assert('warehouse_contents');
+
+  $self->stock_amounts($self->part->get_simple_stock_sql);
+  $self->journal($self->part->get_mini_journal);
+
+  $_[0]->render('part/_inventory_data', { layout => 0 });
+};
 
 sub action_update_item_totals {
   my ($self) = @_;
@@ -395,23 +410,28 @@ sub action_add_assembly_item {
 }
 
 sub action_show_multi_items_dialog {
+  my ($self) = @_;
+
+  my $search_term = $self->models->filtered->laundered->{all_substr_multi__ilike};
+  $search_term  ||= $self->models->filtered->laundered->{all_with_makemodel_substr_multi__ilike};
+  $search_term  ||= $self->models->filtered->laundered->{all_with_customer_partnumber_substr_multi__ilike};
+
   $_[0]->render('part/_multi_items_dialog', { layout => 0 },
-    all_partsgroups => SL::DB::Manager::PartsGroup->get_all
+                all_partsgroups => SL::DB::Manager::PartsGroup->get_all,
+                search_term     => $search_term
   );
 }
 
 sub action_multi_items_update_result {
   my $max_count = 100;
 
-  $::form->{multi_items}->{filter}->{obsolete} = 0;
-
   my $count = $_[0]->multi_items_models->count;
 
   if ($count == 0) {
-    my $text = SL::Presenter::EscapedText->new(text => $::locale->text('No results.'));
+    my $text = escape($::locale->text('No results.'));
     $_[0]->render($text, { layout => 0 });
   } elsif ($count > $max_count) {
-    my $text = SL::Presenter::EscapedText->new(text => $::locale->text('Too many results (#1 from #2).', $count, $max_count));
+    my $text = escape($::locale->text('Too many results (#1 from #2).', $count, $max_count));
     $_[0]->render($text, { layout => 0 });
   } else {
     my $multi_items = $_[0]->multi_items_models->get;
@@ -452,6 +472,39 @@ sub action_add_makemodel_row {
     ->val('.add_makemodel_input', '')
     ->run('kivi.Part.focus_last_makemodel_input')
     ->render;
+}
+
+sub action_add_customerprice_row {
+  my ($self) = @_;
+
+  my $customer_id = $::form->{add_customerprice};
+
+  my $customer = SL::DB::Manager::Customer->find_by(id => $customer_id)
+    or return $self->js->error(t8("No customer selected or found!"))->render;
+
+  if (grep { $customer_id == $_->customer_id } @{ $self->customerprices }) {
+    $self->js->flash('info', t8("This customer has already been added."));
+  }
+
+  my $position = scalar @{ $self->customerprices } + 1;
+
+  my $cu = SL::DB::PartCustomerPrice->new(
+                      customer_id         => $customer->id,
+                      customer_partnumber => '',
+                      price               => 0,
+                      sortorder           => $position,
+  ) or die "Can't create Customerprice object";
+
+  my $row_as_html = $self->p->render(
+                                     'part/_customerprice_row',
+                                      customerprice => $cu,
+                                      listrow       => $position % 2 ? 0
+                                                                     : 1,
+  );
+
+  $self->js->append('#customerprice_rows', $row_as_html)    # append in tbody
+           ->val('.add_customerprice_input', '')
+           ->run('kivi.Part.focus_last_customerprice_input')->render;
 }
 
 sub action_reorder_items {
@@ -527,7 +580,9 @@ sub action_ajax_autocomplete {
   # since we need a second get models instance with different filters for that,
   # we only modify the original filter temporarily in place
   if ($::form->{prefer_exact}) {
-    local $::form->{filter}{'all::ilike'} = delete local $::form->{filter}{'all:substr:multi::ilike'};
+    local $::form->{filter}{'all::ilike'}                          = delete local $::form->{filter}{'all:substr:multi::ilike'};
+    local $::form->{filter}{'all_with_makemodel::ilike'}           = delete local $::form->{filter}{'all_with_makemodel:substr:multi::ilike'};
+    local $::form->{filter}{'all_with_customer_partnumber::ilike'} = delete local $::form->{filter}{'all_with_customer_partnumber:substr:multi::ilike'};
 
     my $exact_models = SL::Controller::Helper::GetModels->new(
       controller   => $self,
@@ -548,6 +603,7 @@ sub action_ajax_autocomplete {
      id          => $_->id,
      partnumber  => $_->partnumber,
      description => $_->description,
+     ean         => $_->ean,
      part_type   => $_->part_type,
      unit        => $_->unit,
      cvars       => { map { ($_->config->name => { value => $_->value_as_text, is_valid => $_->is_valid }) } @{ $_->cvars_by_config } },
@@ -562,7 +618,13 @@ sub action_test_page {
 }
 
 sub action_part_picker_search {
-  $_[0]->render('part/part_picker_search', { layout => 0 });
+  my ($self) = @_;
+
+  my $search_term = $self->models->filtered->laundered->{all_substr_multi__ilike};
+  $search_term  ||= $self->models->filtered->laundered->{all_with_makemodel_substr_multi__ilike};
+  $search_term  ||= $self->models->filtered->laundered->{all_with_customer_partnumber_substr_multi__ilike};
+
+  $_[0]->render('part/part_picker_search', { layout => 0 }, search_term => $search_term);
 }
 
 sub action_part_picker_result {
@@ -604,6 +666,8 @@ sub prepare_assortment_render_vars {
 
 sub prepare_assembly_render_vars {
   my ($self) = @_;
+
+  croak("Need assembly item(s) to create a 'save as new' assembly.") unless $self->part->items;
 
   my %vars = ( items_sellprice_sum => $self->part->items_sellprice_sum,
                items_lastcost_sum  => $self->part->items_lastcost_sum,
@@ -692,6 +756,8 @@ sub parse_form {
   $self->part->assign_attributes(%{ $params});
   $self->part->bin_id(undef) unless $self->part->warehouse_id;
 
+  $self->normalize_text_blocks;
+
   # Only reset items ([]) and rewrite from form if $::form->{assortment_items} isn't empty. This
   # will be the case for used assortments when saving, or when a used assortment
   # is "used as new"
@@ -711,6 +777,7 @@ sub parse_form {
   $self->part->prices([]);
   $self->parse_form_prices;
 
+  $self->parse_form_customerprices;
   $self->parse_form_makemodels;
 }
 
@@ -757,8 +824,9 @@ sub parse_form_makemodels {
     $position++;
     my $vendor = SL::DB::Manager::Vendor->find_by(id => $makemodel->{make}) || die "Can't find vendor from make";
 
+    my $id = $makemodels_map->{$makemodel->{id}} ? $makemodels_map->{$makemodel->{id}}->id : undef;
     my $mm = SL::DB::MakeModel->new( # parts_id   => $self->part->id, # will be assigned by row add_makemodels
-                                     id         => $makemodel->{id},
+                                     id         => $id,
                                      make       => $makemodel->{make},
                                      model      => $makemodel->{model} || '',
                                      lastcost   => $::form->parse_amount(\%::myconfig, $makemodel->{lastcost_as_number}),
@@ -780,12 +848,53 @@ sub parse_form_makemodels {
   };
 }
 
+sub parse_form_customerprices {
+  my ($self) = @_;
+
+  my $customerprices_map;
+  if ( $self->part->customerprices ) { # check for new parts or parts without customerprices
+    $customerprices_map = { map { $_->id => Rose::DB::Object::Helpers::clone($_) } @{$self->part->customerprices} };
+  };
+
+  $self->part->customerprices([]);
+
+  my $position = 0;
+  my $customerprices = delete($::form->{customerprices}) || [];
+  foreach my $customerprice ( @{$customerprices} ) {
+    next unless $customerprice->{customer_id};
+    $position++;
+    my $customer = SL::DB::Manager::Customer->find_by(id => $customerprice->{customer_id}) || die "Can't find customer from id";
+
+    my $id = $customerprices_map->{$customerprice->{id}} ? $customerprices_map->{$customerprice->{id}}->id : undef;
+    my $cu = SL::DB::PartCustomerPrice->new( # parts_id   => $self->part->id, # will be assigned by row add_customerprices
+                                     id                   => $id,
+                                     customer_id          => $customerprice->{customer_id},
+                                     customer_partnumber  => $customerprice->{customer_partnumber} || '',
+                                     price                => $::form->parse_amount(\%::myconfig, $customerprice->{price_as_number}),
+                                     sortorder            => $position,
+                                   );
+    if ($customerprices_map->{$cu->id} && !$customerprices_map->{$cu->id}->lastupdate && $customerprices_map->{$cu->id}->price == 0 && $cu->price == 0) {
+      # lastupdate isn't set, original price is 0 and new lastcost is 0
+      # don't change lastupdate
+    } elsif ( !$customerprices_map->{$cu->id} && $cu->price == 0 ) {
+      # new customerprice, no lastcost entered, leave lastupdate empty
+    } elsif ($customerprices_map->{$cu->id} && $customerprices_map->{$cu->id}->price == $cu->price) {
+      # price hasn't changed, use original lastupdate
+      $cu->lastupdate($customerprices_map->{$cu->id}->lastupdate);
+    } else {
+      $cu->lastupdate(DateTime->now);
+    };
+    $self->part->add_customerprices($cu);
+  };
+}
+
 sub build_bin_select {
-  $_[0]->p->select_tag('part.bin_id', [ $_[0]->warehouse->bins ],
+  select_tag('part.bin_id', [ $_[0]->warehouse->bins ],
     title_key => 'description',
     default   => $_[0]->bin->id,
   );
 }
+
 
 # get_set_inits for partpicker
 
@@ -804,7 +913,9 @@ sub init_part {
   # used by edit, save, delete and add
 
   if ( $::form->{part}{id} ) {
-    return SL::DB::Part->new(id => $::form->{part}{id})->load(with => [ qw(makemodels prices translations partsgroup shop_parts shop_parts.shop) ]);
+    return SL::DB::Part->new(id => $::form->{part}{id})->load(with => [ qw(makemodels customerprices prices translations partsgroup shop_parts shop_parts.shop) ]);
+  } elsif ( $::form->{id} ) {
+    return SL::DB::Part->new(id => $::form->{id})->load; # used by inventory tab
   } else {
     die "part_type missing" unless $::form->{part}{part_type};
     return SL::DB::Part->new(part_type => $::form->{part}{part_type});
@@ -883,6 +994,29 @@ sub init_makemodels {
   return \@makemodel_array;
 }
 
+sub init_customerprices {
+  my ($self) = @_;
+
+  my $position = 0;
+  my @customerprice_array = ();
+  my $customerprices = delete($::form->{customerprices}) || [];
+
+  foreach my $customerprice ( @{$customerprices} ) {
+    next unless $customerprice->{customer_id};
+    $position++;
+    my $cu = SL::DB::PartCustomerPrice->new( # parts_id   => $self->part->id, # will be assigned by row add_customerprices
+                                    id                  => $customerprice->{id},
+                                    customer_partnumber => $customerprice->{customer_partnumber},
+                                    customer_id         => $customerprice->{customer_id} || '',
+                                    price               => $::form->parse_amount(\%::myconfig, $customerprice->{price_as_number} || 0),
+                                    sortorder           => $position,
+                                  ) or die "Can't create cu";
+    # $cu->id($customerprice->{id}) if $customerprice->{id};
+    push(@customerprice_array, $cu);
+  };
+  return \@customerprice_array;
+}
+
 sub init_assembly_items {
   my ($self) = @_;
   my $position = 0;
@@ -921,7 +1055,7 @@ sub init_all_buchungsgruppen {
   if ( $self->part->orphaned ) {
     return SL::DB::Manager::Buchungsgruppe->get_all_sorted;
   } else {
-    return SL::DB::Manager::Buchungsgruppe->get_all(where => [ id => $self->part->buchungsgruppen_id ]);
+    return SL::DB::Manager::Buchungsgruppe->get_all_sorted(where => [ id => $self->part->buchungsgruppen_id ]);
   }
 }
 
@@ -1088,6 +1222,25 @@ sub check_has_valid_part_type {
   die "invalid part_type" unless $_[0] =~ /^(part|service|assembly|assortment)$/;
 }
 
+
+sub normalize_text_blocks {
+  my ($self) = @_;
+
+  # check if feature is enabled (select normalize_part_descriptions from defaults)
+  return unless ($::instance_conf->get_normalize_part_descriptions);
+
+  # text block
+  foreach (qw(description)) {
+    $self->part->{$_} =~ s/\s+$//s;
+    $self->part->{$_} =~ s/^\s+//s;
+    $self->part->{$_} =~ s/ {2,}/ /g;
+  }
+  # html block (caveat: can be circumvented by using bold or italics)
+  $self->part->{notes} =~ s/^<p>(&nbsp;)+\s+/<p>/s;
+  $self->part->{notes} =~ s/(&nbsp;)+<\/p>$/<\/p>/s;
+
+}
+
 sub render_assortment_items_to_html {
   my ($self, $assortment_items, $number_of_items) = @_;
 
@@ -1162,7 +1315,8 @@ sub parse_add_items_to_objects {
 sub _setup_form_action_bar {
   my ($self) = @_;
 
-  my $may_edit = $::auth->assert('part_service_assembly_edit', 'may fail');
+  my $may_edit           = $::auth->assert('part_service_assembly_edit', 'may fail');
+  my $used_in_pricerules = !!SL::DB::Manager::PriceRuleItem->get_all_count(where => [type => 'part', value_int => $self->part->id]);
 
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
@@ -1171,7 +1325,6 @@ sub _setup_form_action_bar {
           t8('Save'),
           call      => [ 'kivi.Part.save' ],
           disabled  => !$may_edit ? t8('You do not have the permissions to access this function.') : undef,
-          accesskey => 'enter',
         ],
         action => [
           t8('Use as new'),
@@ -1189,6 +1342,7 @@ sub _setup_form_action_bar {
         disabled => !$self->part->id       ? t8('This object has not been saved yet.')
                   : !$may_edit             ? t8('You do not have the permissions to access this function.')
                   : !$self->part->orphaned ? t8('This object has already been used.')
+                  : $used_in_pricerules    ? t8('This object is used in price rules.')
                   :                          undef,
       ],
 

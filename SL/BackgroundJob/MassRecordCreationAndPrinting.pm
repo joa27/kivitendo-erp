@@ -14,8 +14,7 @@ use SL::Template;
 use SL::Locale::String qw(t8);
 use SL::Helper::MassPrintCreatePDF qw(:all);
 use SL::Helper::CreatePDF qw(:all);
-use SL::Helper::File qw(store_pdf append_general_pdf_attachments);
-use SL::Webdav;
+use SL::Helper::File qw(store_pdf append_general_pdf_attachments doc_storage_enabled);
 
 use constant WAITING_FOR_EXECUTION       => 0;
 use constant CONVERTING_DELIVERY_ORDERS  => 1;
@@ -50,17 +49,12 @@ sub create_invoices {
     my $data   = $job_obj->data_as_hash;
 
     eval {
-      my $invoice;
       my $sales_delivery_order = SL::DB::DeliveryOrder->new(id => $delivery_order_id)->load;
       $number                  = $sales_delivery_order->donumber;
+      my %conversion_params    = $data->{transdate} ? ('attributes' => { transdate => $data->{transdate} }) : ();
+      my $invoice              = $sales_delivery_order->convert_to_invoice(%conversion_params);
 
-      if (!$db->with_transaction(sub {
-        $invoice = $sales_delivery_order->convert_to_invoice(sub { $data->{transdate} ? ('attributes' => { transdate => $data->{transdate} }) :
-                                                                         undef }->() ) || die $db->error;
-        1;
-      })) {
-        die $db->error;
-      }
+      die $db->error if !$invoice;
 
       $data->{num_created}++;
       push @{ $data->{invoice_ids} }, $invoice->id;
@@ -104,32 +98,18 @@ sub convert_invoices_to_pdf {
   foreach my $invoice (@{ $self->{invoices} }) {
 
     eval {
+      my @errors = ();
       my %params = (
         variables => \%variables,
         return    => 'file_name',
         document  => $invoice,
+        errors    => \@errors,
       );
       push @pdf_file_names, $self->create_massprint_pdf(%params);
-
       $data->{num_printed}++;
 
-      # OLD WebDAV Code, may be deleted:
-      # copy file to webdav folder
-      if ($::instance_conf->get_webdav_documents) {
-        my $webdav = SL::Webdav->new(
-          type     => 'invoice',
-          number   => $invoice->invnumber,
-        );
-        my $webdav_file = SL::Webdav::File->new(
-          webdav   => $webdav,
-          filename => t8('Invoice') . '_' . $invoice->invnumber . '.pdf',
-        );
-        eval {
-          $webdav_file->store(file => $pdf_file_names[-1]);
-          1;
-        } or do {
-          push @{ $data->{print_errors} }, { id => $invoice->id, number => $invoice->invnumber, message => $@ };
-        }
+      if (scalar @errors) {
+        push @{ $data->{print_errors} }, { id => $invoice->id, number => $invoice->invnumber, message => join(', ', @errors) };
       }
 
       1;

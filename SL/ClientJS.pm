@@ -113,6 +113,7 @@ my %supported_methods = (
 
   # ## other stuff ##
   redirect_to            => 1,  # window.location.href = <TARGET>
+  save_file              => 4,  # kivi.save_file(<TARGET>, <ARGS>)
 
   flash                  => 2,  # kivi.display_flash(<TARGET>, <ARGS>)
   flash_detail           => 2,  # kivi.display_flash_detail(<TARGET>, <ARGS>)
@@ -122,6 +123,8 @@ my %supported_methods = (
   run_once_for           => 3,  # kivi.run_once_for(<TARGET>, <ARGS>)
 
   scroll_into_view       => 1,  # $(<TARGET>)[0].scrollIntoView()
+
+  set_cursor_position    => 2,  # kivi.set_cursor_position(<TARGET>, <ARGS>)
 );
 
 my %trim_target_for = map { ($_ => 1) } qw(insertAfter insertBefore appendTo prependTo);

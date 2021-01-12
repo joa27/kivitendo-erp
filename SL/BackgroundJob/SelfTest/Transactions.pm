@@ -15,7 +15,7 @@ sub run {
 
   $self->_setup;
 
-  $self->tester->plan(tests => 24);
+  $self->tester->plan(tests => 34);
 
   $self->check_konten_mit_saldo_nicht_in_guv;
   $self->check_bilanzkonten_mit_pos_eur;
@@ -41,6 +41,10 @@ sub run {
   $self->check_ar_paid_acc_trans;
   $self->check_ap_paid_acc_trans;
   $self->check_zero_amount_paid_but_datepaid_exists;
+  $self->check_orphaned_reconciliated_links;
+  $self->check_recommended_client_settings;
+  $self->check_orphaned_bank_transaction_acc_trans_links;
+  $self->check_consistent_itimes;
 }
 
 sub _setup {
@@ -204,22 +208,35 @@ sub check_invnumbers_unique {
 sub check_summe_stornobuchungen {
   my ($self) = @_;
 
-  my $query = qq|
-    SELECT sum(amount) from ar a WHERE a.id IN
-      (SELECT id from ap where storno is true
-       AND a.transdate >= ? and a.transdate <= ?)|;
-  my ($summe_stornobuchungen_ar) = selectfirst_array_query($::form, $self->dbh, $query, $self->fromdate, $self->todate);
+  my %sums_canceled;
+  my %sums_storno;
+  foreach my $table (qw(ar ap)) {
+    # check invoices canceled (stornoed) in consideration period (corresponding stornos do not have to be in this period)
+    my $query = qq|
+      SELECT sum(amount) FROM $table WHERE id IN (
+        SELECT id FROM $table WHERE storno IS TRUE AND storno_id IS NULL AND transdate >= ? AND transdate <= ?
+        UNION
+        SELECT id FROM $table WHERE storno IS TRUE AND storno_id IS NOT NULL AND storno_id IN
+          (SELECT id FROM $table WHERE storno IS TRUE AND storno_id IS NULL AND transdate >= ? AND transdate <= ?)
+      )|;
+    ($sums_canceled{$table}) = selectfirst_array_query($::form, $self->dbh, $query, $self->fromdate, $self->todate, $self->fromdate, $self->todate);
 
-  $query = qq|
-    SELECT sum(amount) from ap a WHERE a.id IN
-      (SELECT id from ap where storno is true
-       AND a.transdate >= ? and a.transdate <= ?)|;
-  my ($summe_stornobuchungen_ap) = selectfirst_array_query($::form, $self->dbh, $query, $self->fromdate, $self->todate);
+    # check storno invoices in consideration period (corresponding canceled (stornoed) invoices do not have to be in this period)
+    $query = qq|
+      SELECT sum(amount) FROM $table WHERE id IN (
+        SELECT storno_id FROM $table WHERE storno IS TRUE AND storno_id IS NOT NULL AND transdate >= ? AND transdate <= ?
+        UNION
+        SELECT id FROM $table WHERE storno IS TRUE AND storno_id IS NOT NULL AND transdate >= ? AND transdate <= ?
+      )|;
+    ($sums_storno{$table}) = selectfirst_array_query($::form, $self->dbh, $query, $self->fromdate, $self->todate, $self->fromdate, $self->todate);
 
-  $self->tester->ok($summe_stornobuchungen_ap == 0, 'Summe aller Einkaufsrechnungen (stornos + stornierte) soll 0 sein');
-  $self->tester->ok($summe_stornobuchungen_ar == 0, 'Summe aller Verkaufsrechnungen (stornos + stornierte) soll 0 sein');
-  $self->tester->diag("Summe Verkaufsrechnungen (ar): $summe_stornobuchungen_ar") if $summe_stornobuchungen_ar;
-  $self->tester->diag("Summe Einkaufsrechnungen (ap): $summe_stornobuchungen_ap") if $summe_stornobuchungen_ap;
+    my $text_rg = ($table eq 'ar') ? 'Verkaufsrechnungen' : 'Einkaufsrechnungen';
+
+    $self->tester->ok($sums_canceled{$table} == 0, "Summe aller $text_rg (stornos + stornierte) soll 0 sein (für stornierte Rechnungen)");
+    $self->tester->ok($sums_storno  {$table} == 0, "Summe aller $text_rg (stornos + stornierte) soll 0 sein (für Storno-Rechnungen)");
+    $self->tester->diag("Summe $text_rg ($table) (für stornierte Rechnungen) : " . $sums_canceled{$table}) if $sums_canceled{$table} != 0;
+    $self->tester->diag("Summe $text_rg ($table) (für Storno-Rechnungen)     : " . $sums_storno  {$table}) if $sums_storno  {$table} != 0;
+  }
 }
 
 sub check_ar_paid {
@@ -252,7 +269,7 @@ sub check_ap_paid {
   my ($self) = @_;
 
   my $query = qq|
-      select invnumber,paid,
+      select invnumber,paid,id,
             (select sum(amount) from acc_trans a left join chart c on (c.id = a.chart_id) where trans_id = ap.id and c.link like '%AP_paid%') as accpaid ,
             paid-(select sum(amount) from acc_trans a left join chart c on (c.id = a.chart_id) where trans_id = ap.id and c.link like '%AP_paid%') as diff
      from ap
@@ -268,7 +285,7 @@ sub check_ap_paid {
   $self->tester->ok(!$errors, "Vergleich ap paid mit acc_trans AP_paid");
   for my $paid_diff_ap (@{ $paid_diffs_ap }) {
      next if $paid_diff_ap->{diff} == 0;
-     $self->tester->diag("ap invnumber: $paid_diff_ap->{invnumber} : paid: $paid_diff_ap->{paid}    acc_paid= $paid_diff_ap->{accpaid}    diff: $paid_diff_ap->{diff}");
+     $self->tester->diag("ap invnumber: $paid_diff_ap->{invnumber} : ID :: ID :  $paid_diff_ap->{id}  : paid: $paid_diff_ap->{paid}    acc_paid= $paid_diff_ap->{accpaid}    diff: $paid_diff_ap->{diff}");
   }
 }
 
@@ -478,7 +495,7 @@ sub check_ap_acc_trans_amount {
   my $query = qq|
           select sum(ac.amount) as amount, ap.invnumber,ap.netamount
           from acc_trans ac left join ap on (ac.trans_id = ap.id)
-          WHERE ac.chart_link like '%AP_amount%'
+          WHERE (ac.chart_link like '%AP_amount%' OR ac.chart_link like '%IC_cogs%')
           AND ac.transdate >= ? AND ac.transdate <= ?
           group by invnumber,trans_id,netamount having sum(ac.amount) <> ap.netamount*-1|;
 
@@ -621,6 +638,168 @@ sub check_zero_amount_paid_but_datepaid_exists {
   }
 }
 
+sub check_orphaned_reconciliated_links {
+  my ($self) = @_;
+
+  my $query = qq|
+          SELECT purpose from bank_transactions
+          WHERE cleared is true
+          AND NOT EXISTS (SELECT bank_transaction_id from reconciliation_links WHERE bank_transaction_id = bank_transactions.id)
+          AND transdate >= ? AND transdate <= ?|;
+
+  my $bt_cleared_no_link = selectall_hashref_query($::form, $self->dbh, $query, $self->fromdate, $self->todate);
+
+  if ( scalar @{ $bt_cleared_no_link } > 0 ) {
+    $self->tester->ok(0, "Verwaiste abgeglichene Bankbewegungen gefunden. Bei folgenden Bankbewegungen ist die abgleichende Verknüpfung gelöscht worden:");
+
+    for my $bt_orphaned (@{ $bt_cleared_no_link }) {
+      $self->tester->diag("Verwendungszweck: $bt_orphaned->{purpose}");
+    }
+  } else {
+    $self->tester->ok(1, "Keine verwaisten Einträge in abgeglichenen Bankbewegungen.");
+  }
+}
+
+sub check_recommended_client_settings {
+  my ($self) = @_;
+
+  my $all_ok = 1;
+
+  # expand: check datev && check mark_as_paid
+  my %settings_values_nok = (
+                              SL::DB::Default->get->is_changeable => 1,
+                              SL::DB::Default->get->ar_changeable => 1,
+                              SL::DB::Default->get->ap_changeable => 1,
+                              SL::DB::Default->get->ir_changeable => 1,
+                              SL::DB::Default->get->gl_changeable => 1,
+                             );
+
+  foreach (keys %settings_values_nok) {
+    if ($_ == $settings_values_nok{$_}) {
+      $self->tester->ok(0, "Buchungskonfiguration: Mindestens ein Belegtyp ist immer änderbar.");
+      undef $all_ok;
+    }
+  }
+
+  # payments more strict (avoid losing payments acc_trans_ids)
+  my $payments_ok = SL::DB::Default->get->payments_changeable == 0 ? 1 : 0;
+  $self->tester->ok(0, "Manuelle Zahlungen sind zu lange änderbar (Empfehlung: niemals).") unless $payments_ok;
+
+  $self->tester->ok(1, "Mandantenkonfiguration optimal eingestellt.") if ($payments_ok && $all_ok);
+}
+
+sub check_orphaned_bank_transaction_acc_trans_links {
+  my ($self) = @_;
+
+  my $query = qq|
+          SELECT purpose from bank_transactions
+          WHERE invoice_amount <> 0
+          AND NOT EXISTS (SELECT bank_transaction_id FROM bank_transaction_acc_trans WHERE bank_transaction_id = bank_transactions.id)
+          AND itime > (SELECT min(itime) from bank_transaction_acc_trans)
+          AND transdate >= ? AND transdate <= ?|;
+
+  my $bt_assigned_no_link = selectall_hashref_query($::form, $self->dbh, $query, $self->fromdate, $self->todate);
+
+  if ( scalar @{ $bt_assigned_no_link } > 0 ) {
+    $self->tester->ok(0, "Verwaiste Verknüpfungen zu Bankbewegungen gefunden. Bei folgenden Bankbewegungen ist eine interne Verknüpfung gelöscht worden:");
+
+    for my $bt_orphaned (@{ $bt_assigned_no_link }) {
+      $self->tester->diag("Verwendungszweck: $bt_orphaned->{purpose}");
+    }
+  } else {
+    $self->tester->ok(1, "Keine verwaisten Einträge in verknüpften Bankbewegungen (Richtung Bank).");
+  }
+  # check for deleted acc_trans_ids
+  $query = qq|
+          SELECT purpose from bank_transactions
+          WHERE id in
+          (SELECT bank_transaction_id from bank_transaction_acc_trans
+           WHERE NOT EXISTS (SELECT acc_trans.acc_trans_id FROM acc_trans WHERE acc_trans.acc_trans_id = bank_transaction_acc_trans.acc_trans_id)
+           AND transdate >= ? AND transdate <= ?)|;
+
+  my $bt_assigned_no_acc_trans = selectall_hashref_query($::form, $self->dbh, $query, $self->fromdate, $self->todate);
+
+  if ( scalar @{ $bt_assigned_no_acc_trans } > 0 ) {
+    $self->tester->ok(0, "Verwaiste Verknüpfungen zu Bankbewegungen gefunden. Bei folgenden Bankbewegungen ist eine interne Verknüpfung gelöscht worden:");
+
+    for my $bt_orphaned (@{ $bt_assigned_no_acc_trans }) {
+      $self->tester->diag("Verwendungszweck: $bt_orphaned->{purpose}");
+    }
+  } else {
+    $self->tester->ok(1, "Keine verwaisten Einträge in verknüpften Bankbewegungen (Richtung Buchung (Richtung Buchung)).");
+  }
+}
+
+sub check_consistent_itimes {
+  my ($self) = @_;
+  my $query;
+
+  $query = qq|
+    SELECT mtime, itime,gldate, acc_trans_id, trans_id
+    FROM  acc_trans a
+    WHERE itime::date <> gldate::date
+    AND a.transdate >= ? and a.transdate <= ?|;
+
+  my $itimes_ac = selectall_hashref_query($::form, $self->dbh, $query, $self->fromdate, $self->todate);
+
+  if ( scalar @{ $itimes_ac } > 0 ) {
+    $self->tester->ok(0, "Inkonsistente Zeitstempel in der acc_trans gefunden. Bei folgenden ids:");
+    for my $bogus_time (@{ $itimes_ac }) {
+      $self->tester->diag("ID: $bogus_time->{trans_id} acc_trans_id: $bogus_time->{acc_trans_id} ");
+    }
+  } else {
+    $self->tester->ok(1, "Keine inkonsistenten Zeitstempel in der acc_trans.");
+  }
+  $query = qq|
+    SELECT amount, itime, gldate, id
+    FROM ap a
+    WHERE itime::date <> gldate::date
+    AND a.transdate >= ? and a.transdate <= ?|;
+
+  my $itimes_ap = selectall_hashref_query($::form, $self->dbh, $query, $self->fromdate, $self->todate);
+
+  if ( scalar @{ $itimes_ap } > 0 ) {
+    $self->tester->ok(0, "Inkonsistente Zeitstempel in ap gefunden. Bei folgenden ids:");
+    for my $bogus_time (@{ $itimes_ap }) {
+      $self->tester->diag("ID: $bogus_time->{id} itime: $bogus_time->{itime} mtime: $bogus_time->{mtime} ");
+    }
+  } else {
+    $self->tester->ok(1, "Keine inkonsistenten Zeitstempel in ap.");
+  }
+  $query = qq|
+    SELECT amount, itime, gldate, id
+    FROM ar a
+    WHERE itime::date <> gldate::date
+    AND a.transdate >= ? and a.transdate <= ?|;
+
+  my $itimes_ar = selectall_hashref_query($::form, $self->dbh, $query, $self->fromdate, $self->todate);
+
+  if ( scalar @{ $itimes_ap } > 0 ) {
+    $self->tester->ok(0, "Inkonsistente Zeitstempel in ar gefunden. Bei folgenden ids:");
+    for my $bogus_time (@{ $itimes_ar }) {
+      $self->tester->diag("ID: $bogus_time->{id} itime: $bogus_time->{itime} mtime: $bogus_time->{mtime} ");
+    }
+  } else {
+    $self->tester->ok(1, "Keine inkonsistenten Zeitstempel in ar.");
+  }
+  $query = qq|
+    SELECT itime, gldate, id, mtime
+    FROM gl a
+    WHERE itime::date <> gldate::date
+    AND a.transdate >= ? and a.transdate <= ?|;
+
+  my $itimes_gl = selectall_hashref_query($::form, $self->dbh, $query, $self->fromdate, $self->todate);
+
+  if ( scalar @{ $itimes_gl } > 0 ) {
+    $self->tester->ok(0, "Inkonsistente Zeitstempel in gl gefunden. Bei folgenden ids:");
+    for my $bogus_time (@{ $itimes_ar }) {
+      $self->tester->diag("ID: $bogus_time->{id} itime: $bogus_time->{itime} mtime: $bogus_time->{mtime} ");
+    }
+  } else {
+    $self->tester->ok(1, "Keine inkonsistenten Zeitstempel in gl.");
+  }
+}
+
 1;
 
 __END__
@@ -635,10 +814,6 @@ SL::BackgroundJob::SelfTest::Transactions - base tests
 
 Several tests for data integrity.
 
-=head1 FUNCTIONS
-
-=head1 BUGS
-
 =head1 AUTHOR
 
 G. Richardson E<lt>information@richardson-bueren.deE<gt>
@@ -646,4 +821,3 @@ Jan Büren E<lt>information@richardson-bueren.deE<gt>
 Sven Schoeling E<lt>s.schoeling@linet-services.deE<gt>
 
 =cut
-

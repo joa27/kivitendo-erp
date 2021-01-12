@@ -22,8 +22,18 @@ __PACKAGE__->add_filter_specs(
   },
   all => sub {
     my ($key, $value, $prefix) = @_;
-    return or => [ map { $prefix . $_ => $value } qw(partnumber description) ]
-  }
+    return or => [ map { $prefix . $_ => $value } qw(partnumber description ean) ]
+  },
+  all_with_makemodel => sub {
+    my ($key, $value, $prefix) = @_;
+    return or => [ map { $prefix . $_ => $value } qw(partnumber description ean makemodels.model) ],
+      $prefix . 'makemodels';
+  },
+  all_with_customer_partnumber => sub {
+    my ($key, $value, $prefix) = @_;
+    return or => [ map { $prefix . $_ => $value } qw(partnumber description ean customerprices.customer_partnumber) ],
+      $prefix . 'customerprices';
+  },
 );
 
 sub type_filter {

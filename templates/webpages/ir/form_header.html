@@ -51,7 +51,7 @@
         <tr>
           <th align="right">[% 'Vendor' | $T8 %]</th>
           <td>
-           [% P.customer_vendor_picker("vendor_id", vendor_id, type="vendor", style="width: 250px", class="initial_focus", onchange="\$('#update_button').click()") %]
+           [% P.customer_vendor.picker("vendor_id", vendor_id, type="vendor", style="width: 250px", class="initial_focus", onchange="\$('#update_button').click()") %]
            [% P.button_tag("show_vc_details('vendor')", LxERP.t8('Details (one letter abbreviation)')) %]
            [% P.hidden_tag("previous_vendor_id", vendor_id) %]
           </td>
@@ -124,7 +124,7 @@
           <th align="right">[% 'Exchangerate' | $T8 %]</th>
           <td>
            [%- IF forex %]
-            [% LxERP.format_amount(exchangerate, 2) %]
+            [% LxERP.format_amount(exchangerate, 5) %]
            [%- ELSE %]
             <input name="exchangerate" size="10" value="[% HTML.escape(LxERP.format_amount(exchangerate)) %]">
            [%- END %]
@@ -139,20 +139,9 @@
           <th align="right">[% 'Employee' | $T8 %]</th>
           <td>[% L.select_tag('employee_id', ALL_EMPLOYEES, default = employee_id, title_key = 'safe_name') %]</td>
         </tr>
-
-[%- IF is_type_credit_note %]
-        <tr>
-          <th align="right" nowrap>[% 'Credit Note Number' | $T8 %]</th>
-          <td colspan="3"><input size='11' name="invnumber" value="[% HTML.escape(invnumber) %]"></td>
-        </tr>
-        <tr>
-          <th align="right">[% 'Credit Note Date' | $T8 %]</th>
-          <td>[% L.date_tag('invdate', invdate) %]</td>
-        </tr>
-[%- ELSE %]
         <tr>
           <th align="right" nowrap>[% 'Invoice Number' | $T8 %]</th>
-          <td colspan="3"><input size='11' name="invnumber" value="[% HTML.escape(invnumber) %]"></td>
+          <td colspan="3">[% L.input_tag("invnumber", invnumber, size="11") %]</td>
         </tr>
         <tr>
           <th align="right">[% 'Invoice Date' | $T8 %]</th>
@@ -165,8 +154,14 @@
            <span id="duedate_fixed"[% IF !payment_terms_obj.auto_calculation %] style="display:none"[% END %]>[% HTML.escape(duedate) %]</span>
           </td>
         </tr>
-[%- END %]
-
+        <tr>
+          <th align="right" nowrap>[% LxERP.t8('Tax point') %]</th>
+          <td nowrap>[% L.date_tag('tax_point', tax_point, id='tax_point') %]</td>
+        </tr>
+        <tr>
+          <th align="right">[% 'Delivery Date' | $T8 %]</th>
+          <td>[% L.date_tag('deliverydate', deliverydate) %]</td>
+        </tr>
         <tr>
           <th align="right" nowrap>[% 'Order Number' | $T8 %]</th>
           <td colspan="3"><input size='11' name="ordnumber" value="[% HTML.escape(ordnumber) %]"></td>
@@ -181,7 +176,7 @@
         </tr>
         <tr>
           <th align="right" nowrap>[% 'Project Number' | $T8 %]</th>
-          <td>[% P.project_picker('globalproject_id', globalproject_id) %]</td>
+          <td>[% P.project.picker('globalproject_id', globalproject_id, onchange="document.getElementById('update_button').click();") %]</td>
         </tr>
       </table>
     </td>

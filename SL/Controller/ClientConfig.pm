@@ -12,19 +12,24 @@ use SL::DB::Default;
 use SL::DB::Language;
 use SL::DB::Part;
 use SL::DB::Unit;
+use SL::DB::Customer;
 use SL::Helper::Flash;
 use SL::Locale::String qw(t8);
 use SL::PriceSource::ALL;
 use SL::Template;
 use SL::Controller::TopQuickSearch;
+use SL::DB::Helper::AccountingPeriod qw(get_balance_startdate_method_options);
 use SL::Helper::ShippedQty;
+use SL::VATIDNr;
+use SL::ZUGFeRD;
 
 __PACKAGE__->run_before('check_auth');
 
 use Rose::Object::MakeMethods::Generic (
   'scalar --get_set_init' => [ qw(defaults all_warehouses all_weightunits all_languages all_currencies all_templates all_price_sources h_unit_name available_quick_search_modules available_shipped_qty_item_identity_fields
-                                  all_project_statuses all_project_types
-                                  posting_options payment_options accounting_options inventory_options profit_options balance_startdate_method_options) ],
+                                  all_project_statuses all_project_types zugferd_settings
+                                  posting_options payment_options accounting_options inventory_options profit_options balance_startdate_method_options
+                                  displayable_name_specs_by_module) ],
 );
 
 sub action_edit {
@@ -96,6 +101,11 @@ sub action_save {
     }
   }
 
+  my $cleaned_ustid = SL::VATIDNr->clean($defaults->{co_ustid});
+  if ($cleaned_ustid && !SL::VATIDNr->validate($cleaned_ustid)) {
+    push @errors, t8("The VAT ID number '#1' is invalid.", $defaults->{co_ustid});
+  }
+
   # Show form again if there were any errors. Nothing's been changed
   # yet in the database.
   if (@errors) {
@@ -131,6 +141,11 @@ sub action_save {
     $self->defaults->templates('templates/' . $::form->{new_templates});
   }
 
+  # Displayable name preferences
+  foreach my $specs (@{ $::form->{displayable_name_specs} }) {
+    $self->displayable_name_specs_by_module->{$specs->{module}}->{prefs}->store_default($specs->{default});
+  }
+
   # Finally save defaults.
   $self->defaults->save;
 
@@ -152,6 +167,7 @@ sub init_all_templates   { +{ SL::Template->available_templates }               
 sub init_h_unit_name     { first { SL::DB::Manager::Unit->find_by(name => $_) } qw(Std h Stunde)                         }
 sub init_all_project_types    { SL::DB::Manager::ProjectType->get_all_sorted                                             }
 sub init_all_project_statuses { SL::DB::Manager::ProjectStatus->get_all_sorted                                           }
+sub init_zugferd_settings     { \@SL::ZUGFeRD::customer_settings                                                         }
 
 sub init_posting_options {
   [ { title => t8("never"),           value => 0           },
@@ -181,11 +197,7 @@ sub init_profit_options {
 }
 
 sub init_balance_startdate_method_options {
-  [ { title => t8("After closed period"),                       value => "closed_to"                   },
-    { title => t8("Start of year"),                             value => "start_of_year"               },
-    { title => t8("All transactions"),                          value => "all_transactions"            },
-    { title => t8("Last opening balance or all transactions"),  value => "last_ob_or_all_transactions" },
-    { title => t8("Last opening balance or start of year"),     value => "last_ob_or_start_of_year"    }, ]
+  return SL::DB::Helper::AccountingPeriod::get_balance_startdate_method_options;
 }
 
 sub init_all_price_sources {
@@ -200,6 +212,23 @@ sub init_available_quick_search_modules {
 
 sub init_available_shipped_qty_item_identity_fields {
   [ SL::Helper::ShippedQty->new->available_item_identity_fields ];
+}
+
+sub init_displayable_name_specs_by_module {
+  +{
+     'SL::DB::Customer' => {
+       specs => SL::DB::Customer->displayable_name_specs,
+       prefs => SL::DB::Customer->displayable_name_prefs,
+     },
+     'SL::DB::Vendor' => {
+       specs => SL::DB::Vendor->displayable_name_specs,
+       prefs => SL::DB::Vendor->displayable_name_prefs,
+     },
+     'SL::DB::Part' => {
+       specs => SL::DB::Part->displayable_name_specs,
+       prefs => SL::DB::Part->displayable_name_prefs,
+     },
+  };
 }
 
 #

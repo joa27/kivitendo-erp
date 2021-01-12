@@ -29,7 +29,8 @@ sub calculate_prices_and_taxes {
                last_incex_chart_id => undef,
                units_by_name       => \%units_by_name,
                price_factors_by_id => \%price_factors_by_id,
-               taxes               => { },
+               taxes_by_chart_id   => { },
+               taxes_by_tax_id     => { },
                amounts             => { },
                amounts_cogs        => { },
                allocated           => { },
@@ -53,10 +54,10 @@ sub calculate_prices_and_taxes {
   $self->netamount(  0);
   $self->marge_total(0);
 
-  SL::DB::Manager::Chart->cache_taxkeys(date => $self->transdate);
+  SL::DB::Manager::Chart->cache_taxkeys(date => $self->effective_tax_point);
 
   my $idx = 0;
-  foreach my $item ($self->items) {
+  foreach my $item (@{ $self->items_sorted }) {
     $idx++;
     _calculate_item($self, $item, $idx, \%data, %params);
   }
@@ -65,7 +66,7 @@ sub calculate_prices_and_taxes {
 
   return $self unless wantarray;
 
-  return map { ($_ => $data{$_}) } qw(taxes amounts amounts_cogs allocated exchangerate assembly_items items rounding);
+  return map { ($_ => $data{$_}) } qw(taxes_by_chart_id taxes_by_tax_id amounts amounts_cogs allocated exchangerate assembly_items items rounding);
 }
 
 sub _get_exchangerate {
@@ -83,46 +84,33 @@ sub _calculate_item {
   my ($self, $item, $idx, $data, %params) = @_;
 
   my $part       = SL::DB::Part->load_cached($item->parts_id);
-  return unless $item->part;
+  return unless $part;
 
   my $part_unit  = $data->{units_by_name}->{ $part->unit };
   my $item_unit  = $data->{units_by_name}->{ $item->unit };
 
   croak("Undefined unit " . $part->unit) if !$part_unit;
-  croak("Undefined unit " . $item->unit)       if !$item_unit;
+  croak("Undefined unit " . $item->unit) if !$item_unit;
 
   $item->base_qty($item_unit->convert_to($item->qty, $part_unit));
   $item->fxsellprice($item->sellprice) if $data->{is_invoice};
 
   my $num_dec   = max 2, _num_decimal_places($item->sellprice);
-  my $discount  = _round($item->sellprice * ($item->discount || 0), $num_dec);
-  my $sellprice = _round($item->sellprice - $discount,              $num_dec);
+
+  $item->discount(0) if !$item->discount;
+
+  # don't include rounded discount into sellprice for calculation
+  # any time the sellprice is multiplied with qty discount has to be considered as part of the multiplication
+  my $sellprice = $item->sellprice;
 
   $item->price_factor(      ! $item->price_factor_obj   ? 1 : ($item->price_factor_obj->factor   || 1));
   $item->marge_price_factor(! $part->price_factor ? 1 : ($part->price_factor->factor || 1));
-  my $linetotal = _round($sellprice * $item->qty / $item->price_factor, 2) * $data->{exchangerate};
-  $linetotal    = _round($linetotal,                                    2);
+  my $linetotal = _round($sellprice * (1 - $item->discount) * $item->qty / $item->price_factor, 2) * $data->{exchangerate};
+  $linetotal    = _round($linetotal,                                                            2);
 
-  $data->{invoicediff} += $sellprice * $item->qty * $data->{exchangerate} / $item->price_factor - $linetotal if $self->taxincluded;
+  $data->{invoicediff} += $sellprice * (1 - $item->discount) * $item->qty * $data->{exchangerate} / $item->price_factor - $linetotal if $self->taxincluded;
 
-  my $linetotal_cost = 0;
-
-  if (!$linetotal) {
-    $item->marge_total(  0);
-    $item->marge_percent(0);
-
-  } else {
-    my $lastcost       = !(($item->lastcost // 0) * 1) ? ($part->lastcost || 0) : $item->lastcost;
-    $linetotal_cost    = _round($lastcost * $item->qty / $item->marge_price_factor, 2);
-
-    $item->marge_total(  $linetotal - $linetotal_cost);
-    $item->marge_percent($item->marge_total * 100 / $linetotal);
-
-    $self->marge_total(  $self->marge_total + $item->marge_total);
-    $data->{lastcost_total} += $linetotal_cost;
-  }
-
-  my $taxkey     = $part->get_taxkey(date => $self->transdate, is_sales => $data->{is_sales}, taxzone => $self->taxzone_id);
+  my $taxkey     = $part->get_taxkey(date => $self->effective_tax_point, is_sales => $data->{is_sales}, taxzone => $self->taxzone_id);
   my $tax_rate   = $taxkey->tax->rate;
   my $tax_amount = undef;
 
@@ -135,18 +123,36 @@ sub _calculate_item {
   }
 
   if ($taxkey->tax->chart_id) {
-    $data->{taxes}->{ $taxkey->tax->chart_id } ||= 0;
-    $data->{taxes}->{ $taxkey->tax->chart_id }  += $tax_amount;
+    $data->{taxes_by_chart_id}->{ $taxkey->tax->chart_id } ||= 0;
+    $data->{taxes_by_chart_id}->{ $taxkey->tax->chart_id }  += $tax_amount;
+    $data->{taxes_by_tax_id}->{ $taxkey->tax_id }          ||= 0;
+    $data->{taxes_by_tax_id}->{ $taxkey->tax_id }           += $tax_amount;
   } elsif ($tax_amount) {
     die "tax_amount != 0 but no chart_id for taxkey " . $taxkey->id . " tax " . $taxkey->tax->id;
   }
-
-  $self->netamount($self->netamount + $sellprice * $item->qty / $item->price_factor);
 
   my $chart = $part->get_chart(type => $data->{is_sales} ? 'income' : 'expense', taxzone => $self->taxzone_id);
   $data->{amounts}->{ $chart->id }           ||= { taxkey => $taxkey->taxkey_id, tax_id => $taxkey->tax_id, amount => 0 };
   $data->{amounts}->{ $chart->id }->{amount}  += $linetotal;
   $data->{amounts}->{ $chart->id }->{amount}  -= $tax_amount if $self->taxincluded;
+
+  my $linetotal_cost = 0;
+
+  if (!$linetotal) {
+    $item->marge_total(  0);
+    $item->marge_percent(0);
+
+  } else {
+    my $lastcost       = !(($item->lastcost // 0) * 1) ? ($part->lastcost || 0) : $item->lastcost;
+    $linetotal_cost    = _round($lastcost * $item->qty / $item->marge_price_factor, 2);
+    my $linetotal_net  = $self->taxincluded ? $linetotal - $tax_amount : $linetotal;
+
+    $item->marge_total(  $linetotal_net - $linetotal_cost);
+    $item->marge_percent($item->marge_total * 100 / $linetotal_net);
+
+    $self->marge_total(  $self->marge_total + $item->marge_total);
+    $data->{lastcost_total} += $linetotal_cost;
+  }
 
   push @{ $data->{assembly_items} }, [];
   if ($part->is_assembly) {
@@ -159,10 +165,12 @@ sub _calculate_item {
 
   $data->{last_incex_chart_id} = $chart->id if $data->{is_sales};
 
+  my $item_sellprice = _round($sellprice * (1 - $item->discount), $num_dec);
+
   push @{ $data->{items} }, {
     linetotal      => $linetotal,
     linetotal_cost => $linetotal_cost,
-    sellprice      => $sellprice,
+    sellprice      => $item_sellprice,
     tax_amount     => $tax_amount,
     taxkey_id      => $taxkey->id,
   };
@@ -175,11 +183,13 @@ sub _calculate_amounts {
   my ($self, $data, %params) = @_;
 
   my $tax_diff = 0;
-  foreach my $chart_id (keys %{ $data->{taxes} }) {
-    my $rounded                  = _round($data->{taxes}->{$chart_id} * $data->{exchangerate}, 2);
-    $tax_diff                   += $data->{taxes}->{$chart_id} * $data->{exchangerate} - $rounded if $self->taxincluded;
-    $data->{taxes}->{$chart_id}  = $rounded;
+  foreach my $chart_id (keys %{ $data->{taxes_by_chart_id} }) {
+    my $rounded                              = _round($data->{taxes_by_chart_id}->{$chart_id} * $data->{exchangerate}, 2);
+    $tax_diff                               += $data->{taxes_by_chart_id}->{$chart_id} * $data->{exchangerate} - $rounded if $self->taxincluded;
+    $data->{taxes_by_chart_id}->{$chart_id}  = $rounded;
   }
+
+  $self->netamount(sum map { $_->{amount} } values %{ $data->{amounts} });
 
   my $amount    = _round(($self->netamount + $tax_diff) * $data->{exchangerate}, 2);
   my $diff      = $amount - ($self->netamount + $tax_diff) * $data->{exchangerate};
@@ -192,7 +202,7 @@ sub _calculate_amounts {
 
   _dbg("Sna " . $self->netamount . " idiff " . $data->{invoicediff} . " tdiff ${tax_diff}");
 
-  my $tax              = sum values %{ $data->{taxes} };
+  my $tax              = sum values %{ $data->{taxes_by_chart_id} };
   $amount              = $netamount + $tax;
   my $grossamount      = _round($amount, 2, 1);
   $data->{rounding}    = _round($grossamount - $amount, 2);
@@ -244,7 +254,7 @@ sub _calculate_part_item {
 
     next unless $qty;
 
-    my $linetotal = _round(($entry->sellprice * $qty) / $base_factor, 2);
+    my $linetotal = _round(($entry->sellprice * (1 - $entry->discount) * $qty) / $base_factor, 2);
 
     $data->{amounts_cogs}->{ $expense_income_chart->id } -= $linetotal;
     $data->{amounts_cogs}->{ $inventory_chart->id      } += $linetotal;
@@ -328,9 +338,14 @@ In array context a hash with the following keys is returned:
 
 =over 2
 
-=item C<taxes>
+=item C<taxes_by_chart_id>
 
 A hash reference with the calculated taxes. The keys are chart IDs,
+the values the rounded calculated taxes.
+
+=item C<taxes_by_tax_id>
+
+A hash reference with the calculated taxes. The keys are tax IDs,
 the values the calculated taxes.
 
 =item C<amounts>

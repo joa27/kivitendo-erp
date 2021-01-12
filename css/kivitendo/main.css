@@ -14,7 +14,7 @@ Tabcolor:      #CAFFA3
 body {
   background-color: #FFFFFF;
   color: #000000;
-  font-family: Verdana, Arial, Helvetica, sans-serif;
+  font-family: sans-serif;
   font-size: 80%;
 }
 
@@ -330,11 +330,9 @@ body.menu {
   padding-left: 30px
 }
 .submit {
-  font-family: Verdana, Arial, Helvetica;
   color: #000000;
 }
 .checkbox, .radio {
-  font-family: Verdana, Arial, Helvetica;
   color: #778899;
 }
 .plus0 {
@@ -480,6 +478,10 @@ div.cpc_block span.cpc_block_number
 {
   float:left;
 }
+div.ppp_block span.ppp_block_ean {
+  float:left;
+  margin-left:1em;
+}
 div.ppp_block span.ppp_block_description {
   float:right;
   margin-left:1em;
@@ -489,6 +491,11 @@ div.cpc_block span.cpc_block_description {
   float:left;
   margin-left:1em;
   font-weight:bold;
+}
+div.ppp_line span.ppp_block_number,
+div.ppp_line span.ppp_block_ean {
+  float:left;
+  margin-left:1em;
 }
 div.ppp_line span.ppp_block_description,
 div.cpc_line span.cpc_block_description
@@ -523,6 +530,15 @@ span.toggle_selected {
     display: block;
     max-width: 16px;
     max-height: 16px;
+}
+#update_from_master {
+    cursor: pointer;
+    display: block;
+    max-width: 16px;
+    max-height: 16px;
+}
+#update_from_master:hover {
+    background: #ddd;
 }
 
 /* Bank transactions */
@@ -597,4 +613,26 @@ body > div.admin {
 }
 .cke_button {
   padding: 0px; 6px !important;
+}
+
+/* selects with text filters */
+div.filtered_select input, div.filtered_select select {
+  display: block;
+}
+
+div.filtered_select input {
+  background-image: url(../../image/glass14x14.png);
+  background-repeat: no-repeat;
+  background-position: 2px 2px;
+  border-radius: 0px;
+  border: solid #a0a0a0 1px;
+  border-bottom: none;
+  padding: 0px;
+  padding-left: 20px;
+  margin: 0;
+  width: 500px;
+}
+
+div.filtered_select select {
+  width: 522px;
 }

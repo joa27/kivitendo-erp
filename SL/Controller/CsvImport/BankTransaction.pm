@@ -74,8 +74,9 @@ sub check_existing {
     # * transdate
     # * remote_account_number  (may be empty for records of our own bank)
     # * amount
+    # * local_bank_account_id (case flatrate bank charges for two accounts in one bank: same purpose, transdate, remote_account_number(empty), amount. Just different local_bank_account_id)
     my $num;
-    if ( $num = SL::DB::Manager::BankTransaction->get_all_count(query =>[ remote_account_number => $object->remote_account_number, transdate => $object->transdate, purpose => $object->purpose, amount => $object->amount] ) ) {
+    if ( $num = SL::DB::Manager::BankTransaction->get_all_count(query =>[ remote_account_number => $object->remote_account_number, transdate => $object->transdate, purpose => $object->purpose, amount => $object->amount, local_bank_account_id => $object->local_bank_account_id] ) ) {
       push(@{$entry->{errors}}, $::locale->text('Skipping due to existing bank transaction in database'));
     };
   } else {
@@ -96,7 +97,21 @@ sub _displayable_columns {
    { name => 'currency',              description => $::locale->text('Currency') },
    { name => 'currency_id',           description => $::locale->text('Currency (database ID)')          },
    { name => 'remote_name',           description => $::locale->text('Name of the goal/source (if field names remote_name and remote_name_1 exist they will be combined into field "remote_name")') },
-   { name => 'purpose',               description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') }
+   { name => 'remote_name_1',          description => $::locale->text('Name of the goal/source (if field names remote_name and remote_name_1 exist they will be combined into field "remote_name")') },
+   { name => 'purpose',               description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose1',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose2',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose3',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose4',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose5',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose6',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose7',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose8',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose9',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose10',             description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose11',             description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose12',             description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose13',             description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') }
  );
 }
 
@@ -160,18 +175,12 @@ sub join_purposes {
 
   my $object = $entry->{object};
 
-  my $purpose = join('', $entry->{raw_data}->{purpose},
-                         $entry->{raw_data}->{purpose1},
-                         $entry->{raw_data}->{purpose2},
-                         $entry->{raw_data}->{purpose3},
-                         $entry->{raw_data}->{purpose4},
-                         $entry->{raw_data}->{purpose5},
-                         $entry->{raw_data}->{purpose6},
-                         $entry->{raw_data}->{purpose7},
-                         $entry->{raw_data}->{purpose8},
-                         $entry->{raw_data}->{purpose9},
-                         $entry->{raw_data}->{purpose10},
-                         $entry->{raw_data}->{purpose11} );
+  my $purpose =
+    join ' ',
+    grep { ($_ // '') !~ m{^ *$} }
+    map  { $entry->{raw_data}->{"purpose$_"} }
+    ('', 1..13);
+
   $object->purpose($purpose);
 
 }
@@ -181,7 +190,7 @@ sub join_remote_names {
 
   my $object = $entry->{object};
 
-  my $remote_name = join('', $entry->{raw_data}->{remote_name},
+  my $remote_name = join(' ', $entry->{raw_data}->{remote_name},
                              $entry->{raw_data}->{remote_name_1} );
   $object->remote_name($remote_name);
 }

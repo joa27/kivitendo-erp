@@ -35,7 +35,6 @@ use Carp;
 use List::MoreUtils qw(uniq);
 use List::Util qw(max sum);
 use POSIX qw(strftime);
-use YAML;
 
 use SL::DB::DeliveryOrder;
 use SL::DO;
@@ -44,6 +43,7 @@ use SL::IS;
 use SL::MoreCommon qw(ary_diff restore_form save_form);
 use SL::ReportGenerator;
 use SL::WH;
+use SL::YAML;
 use Sort::Naturally ();
 require "bin/mozilla/common.pl";
 require "bin/mozilla/io.pl";
@@ -247,7 +247,6 @@ sub setup_do_action_bar {
         [ t8('Update'),
           submit    => [ '#form', { action => "update" } ],
           id        => 'update_button',
-          checks    => [ 'kivi.validate_form' ],
           accesskey => 'enter',
         ],
 
@@ -324,6 +323,10 @@ sub setup_do_action_bar {
         t8('Invoice'),
         submit => [ '#form', { action => "invoice" } ],
         disabled => !$::form->{id} ? t8('This record has not been saved yet.') : undef,
+        confirm  => $::form->{delivered}                                                                         ? undef
+                  : ($::form->{vc} eq 'customer' && $::instance_conf->get_sales_delivery_order_check_stocked)    ? t8('This record has not been stocked out. Proceed?')
+                  : ($::form->{vc} eq 'vendor'   && $::instance_conf->get_purchase_delivery_order_check_stocked) ? t8('This record has not been stocked in. Proceed?')
+                  :                                                                                                undef,
       ],
 
       combobox => [
@@ -337,6 +340,7 @@ sub setup_do_action_bar {
           t8('E Mail'),
           call   => [ 'kivi.SalesPurchase.show_email_dialog' ],
           checks => [ 'kivi.validate_form' ],
+          disabled => !$::form->{id} ? t8('This record has not been saved yet.') : undef,
         ],
       ], # end of combobox "Export"
 
@@ -417,6 +421,7 @@ sub form_header {
                    "business_types" => "ALL_BUSINESS_TYPES",
     );
   $form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
+  $form->{ALL_LANGUAGES}   = SL::DB::Manager::Language->get_all_sorted;
 
   # Projects
   my @old_project_ids = uniq grep { $_ } map { $_ * 1 } ($form->{"globalproject_id"}, map { $form->{"project_id_$_"} } 1..$form->{"rowcount"});
@@ -466,11 +471,6 @@ sub form_header {
 
   $::request->{layout}->use_javascript(map { "${_}.js" } qw(kivi.File kivi.MassDeliveryOrderPrint kivi.SalesPurchase kivi.Part kivi.CustomerVendor kivi.Validator ckeditor/ckeditor ckeditor/adapters/jquery kivi.io));
 
-  my @custom_hidden;
-  push @custom_hidden, map { "shiptocvar_" . $_->name } @{ SL::DB::Manager::CustomVariableConfig->get_all(where => [ module => 'ShipTo' ]) };
-
-  $::form->{HIDDENS} = [ map { +{ name => $_, value => $::form->{$_} } } (@custom_hidden) ];
-
   setup_do_action_bar();
 
   $form->header();
@@ -501,8 +501,15 @@ sub form_footer {
   $form->{PRINT_OPTIONS}      = setup_sales_purchase_print_options();
   $form->{ALL_DELIVERY_TERMS} = SL::DB::Manager::DeliveryTerm->get_all_sorted();
 
+  my $shipto_cvars       = SL::DB::Shipto->new->cvars_by_config;
+  foreach my $var (@{ $shipto_cvars }) {
+    my $name = "shiptocvar_" . $var->config->name;
+    $var->value($form->{$name}) if exists $form->{$name};
+  }
+
   print $form->parse_html_template('do/form_footer',
-    {transfer_default         => ($::instance_conf->get_transfer_default)});
+    {transfer_default => ($::instance_conf->get_transfer_default),
+     shipto_cvars     => $shipto_cvars});
 
   $main::lxdebug->leave_sub();
 }
@@ -706,12 +713,12 @@ sub orders {
   push @hidden_variables, $form->{vc}, qw(l_closed l_notdelivered open closed delivered notdelivered donumber ordnumber serialnumber cusordnumber
                                           transaction_description transdatefrom transdateto reqdatefrom reqdateto
                                           type vc employee_id salesman_id project_id parts_partnumber parts_description
-                                          insertdatefrom insertdateto business_id);
+                                          insertdatefrom insertdateto business_id all department_id);
 
   my $href = build_std_url('action=orders', grep { $form->{$_} } @hidden_variables);
 
   my %column_defs = (
-    'ids'                     => { 'text' => '<input type="checkbox" id="multi_all" value="1">', 'align' => 'center' },
+    'ids'                     => { raw_header_data => SL::Presenter::Tag::checkbox_tag("", id => "multi_all", checkall => "[data-checkall=1]"), align => 'center' },
     'transdate'               => { 'text' => $locale->text('Delivery Order Date'), },
     'reqdate'                 => { 'text' => $locale->text('Reqdate'), },
     'id'                      => { 'text' => $locale->text('ID'), },
@@ -808,6 +815,7 @@ sub orders {
   if ($form->{notdelivered}) {
     push @options, $locale->text('Not delivered');
   }
+  push @options, $locale->text('Quick Search') . " : $form->{all}" if $form->{all};
 
   my $pr = SL::DB::Manager::Printer->find_by(
       printer_description => $::locale->text("sales_delivery_order_printer"));
@@ -840,7 +848,9 @@ sub orders {
   my $callback = $form->escape($href);
 
   my $edit_url       = build_std_url('action=edit', 'type', 'vc');
-  my $edit_order_url = build_std_url('script=oe.pl', 'type=' . ($form->{type} eq 'sales_delivery_order' ? 'sales_order' : 'purchase_order'), 'action=edit');
+  my $edit_order_url = ($::instance_conf->get_feature_experimental_order)
+                     ? build_std_url('script=controller.pl', 'action=Order/edit', 'type=' . ($form->{type} eq 'sales_delivery_order' ? 'sales_order' : 'purchase_order'))
+                     : build_std_url('script=oe.pl',         'action=edit',       'type=' . ($form->{type} eq 'sales_delivery_order' ? 'sales_order' : 'purchase_order'));
 
   my $idx            = 1;
 
@@ -853,7 +863,7 @@ sub orders {
     my $ord_id = $dord->{id};
     $row->{ids}  = {
       'raw_data' =>   $cgi->hidden('-name' => "trans_id_${idx}", '-value' => $ord_id)
-                    . $cgi->checkbox('-name' => "multi_id_${idx}",' id' => "multi_id_id_".$ord_id, '-value' => 1, '-label' => ''),
+                    . $cgi->checkbox('-name' => "multi_id_${idx}",' id' => "multi_id_id_".$ord_id, '-value' => 1, 'data-checkall' => 1, '-label' => ''),
       'valign'   => 'center',
       'align'    => 'center',
     };
@@ -941,8 +951,8 @@ sub delete {
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
   my $locale   = $main::locale;
-
-  if (DO->delete()) {
+  my $ret;
+  if ($ret = DO->delete()) {
     # saving the history
     if(!exists $form->{addition}) {
       $form->{snumbers} = qq|donumber_| . $form->{donumber};
@@ -955,7 +965,7 @@ sub delete {
     $::dispatcher->end_request;
   }
 
-  $form->error($locale->text('Cannot delete delivery order!'));
+  $form->error($locale->text('Cannot delete delivery order!') . $ret);
 
   $main::lxdebug->leave_sub();
 }
@@ -1028,7 +1038,8 @@ sub invoice {
 
   if ($form->{ordnumber}) {
     require SL::DB::Order;
-    if (my $order = SL::DB::Manager::Order->find_by(ordnumber => $form->{ordnumber})) {
+    my $vc_id  = $form->{type} =~ /^sales/ ? 'customer_id' : 'vendor_id';
+    if (my $order = SL::DB::Manager::Order->find_by(ordnumber => $form->{ordnumber}, $vc_id => $form->{"$vc_id"})) {
       $order->load;
       $form->{orddate} = $order->transdate_as_date;
       $form->{$_}      = $order->$_ for qw(payment_id salesman_id taxzone_id quonumber);
@@ -1386,7 +1397,7 @@ sub set_stock_in {
     push @{ $stock_info }, { map { $_ => $form->{"${_}_${i}"} } qw(delivery_order_items_stock_id warehouse_id bin_id chargenumber bestbefore qty unit) };
   }
 
-  $form->{stock} = YAML::Dump($stock_info);
+  $form->{stock} = SL::YAML::Dump($stock_info);
 
   _stock_in_out_set_qty_display($stock_info);
 
@@ -1481,7 +1492,7 @@ sub set_stock_out {
   my @errors     = DO->check_stock_availability('requests' => $stock_info,
                                                 'parts_id' => $form->{parts_id});
 
-  $form->{stock} = YAML::Dump($stock_info);
+  $form->{stock} = SL::YAML::Dump($stock_info);
 
   if (@errors) {
     $form->{ERRORS} = [];
@@ -1913,7 +1924,7 @@ sub transfer_in_out_default {
   foreach (@all_requests){
     $i++;
     next unless scalar(%{ $_ });
-    $form->{"stock_${prefix}_$i"} = YAML::Dump([$_]);
+    $form->{"stock_${prefix}_$i"} = SL::YAML::Dump([$_]);
   }
 
   save(no_redirect => 1); # Wir können auslagern, deshalb beleg speichern

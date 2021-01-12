@@ -18,7 +18,7 @@
           [% L.textarea_tag("notes", notes, wrap="soft", style="width: 350px; height: 150px", class="texteditor") %]
          </td>
          <td>
-          <textarea name="intnotes" rows="[% rows %]" cols="35">[% intnotes %]</textarea>
+          [% L.textarea_tag("intnotes", intnotes, wrap="soft", style="width: 350px; height: 150px") %]
          </td>
          <td>
            <table>
@@ -152,7 +152,7 @@
 <input type="hidden" name="gldate" value="[% gldate %]">
 
 <div id="shipto_inputs" class="hidden">
- [%- PROCESS 'common/_ship_to_dialog.html' %]
+ [%- PROCESS 'common/_ship_to_dialog.html' cvars=shipto_cvars %]
 </div>
 
 <div id="email_inputs" style="display: none"></div>
