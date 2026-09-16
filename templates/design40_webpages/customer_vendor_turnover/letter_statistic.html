@@ -1,0 +1,43 @@
+[%- USE T8 %]
+[%- USE LxERP %]
+[%- USE L %]
+[%- USE HTML %]
+[%- USE Dumper %]
+
+<div id="letter_statistic" class="wrapper">
+  <table class="tbl-list wi-moderate">
+    <thead>
+      <tr>
+        <th>[% 'Date' | $T8 %]</th>
+        <th>[% 'Subject' | $T8 %]</th>
+        <th>[% 'Letternumber' | $T8 %]</th>
+        <th>[% 'Contact' | $T8 %]</th>
+        <th>[% 'Author' | $T8 %]</th>
+      </tr>
+    </thead>
+    <tbody>
+      [%- FOREACH row = letters %]
+      [% IF row.customer_id %]
+      [% SET is_sales = 1 %]
+      [% ELSE %]
+      [% SET is_sales = 0 %]
+      [% END %]
+      <tr>
+        <td>[% row.date.to_kivitendo | html %]</td>
+        <td>
+          <a href="[% SELF.url_for(controller='controller.pl', action => 'Letter/edit', 'letter.id' => row.id, is_sales=is_sales, back_to => SELF.get_callback) %]">
+            [%- HTML.escape(row.subject) %]
+          </a>
+        </td>
+        <td>
+          <a href="[% SELF.url_for(controller='controller.pl', action => 'Letter/edit', 'letter.id' => row.id, is_sales=is_sales, back_to => SELF.get_callback) %]">
+            [% row.letternumber | html %]
+          </a>
+        </td>
+        <td>[% row.contact.cp_givenname %] [% row.contact.cp_name %]</td>
+        <td>[% row.employee.name %]</td>
+      </tr>
+      [% END %]
+    </tbody>
+  </table>
+</div>

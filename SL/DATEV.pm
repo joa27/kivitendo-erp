@@ -31,12 +31,16 @@ use utf8;
 use strict;
 
 use SL::DBUtils;
-use SL::DATEV::KNEFile;
 use SL::DATEV::CSV;
 use SL::DB;
+use SL::DB::Manager::BankAccount;
+use Encode qw(encode);
 use SL::HTML::Util ();
+use SL::Iconv;
 use SL::Locale::String qw(t8);
+use SL::VATIDNr;
 
+use Archive::Zip;
 use Data::Dumper;
 use DateTime;
 use Exporter qw(import);
@@ -47,6 +51,7 @@ use List::Util qw(min max sum);
 use List::UtilsBy qw(partition_by sort_by);
 use Text::CSV_XS;
 use Time::HiRes qw(gettimeofday);
+use XML::LibXML;
 
 {
   my $i = 0;
@@ -187,6 +192,7 @@ sub from {
  my $self = shift;
 
  if (@_) {
+   die "Invalid type, need DateTime Object" unless ref $_[0] eq 'DateTime';
    $self->{from} = $_[0];
  }
 
@@ -197,6 +203,7 @@ sub to {
  my $self = shift;
 
  if (@_) {
+   die "Invalid type, need DateTime Object" unless ref $_[0] eq 'DateTime';
    $self->{to} = $_[0];
  }
 
@@ -286,29 +293,6 @@ sub clean_temporary_directories {
   $::lxdebug->leave_sub;
 }
 
-sub _fill {
-  $main::lxdebug->enter_sub();
-
-  my $text      = shift // '';
-  my $field_len = shift;
-  my $fill_char = shift;
-  my $alignment = shift || 'right';
-
-  my $text_len  = length $text;
-
-  if ($field_len < $text_len) {
-    $text = substr $text, 0, $field_len;
-
-  } elsif ($field_len > $text_len) {
-    my $filler = ($fill_char) x ($field_len - $text_len);
-    $text      = $alignment eq 'right' ? $filler . $text : $text . $filler;
-  }
-
-  $main::lxdebug->leave_sub();
-
-  return $text;
-}
-
 sub get_datev_stamm {
   return $_[0]{stamm} ||= selectfirst_hashref_query($::form, $_[0]->dbh, 'SELECT * FROM datev');
 }
@@ -329,40 +313,8 @@ sub save_datev_stamm {
 
 sub export {
   my ($self) = @_;
-  my $result;
 
-  die 'no format set!' unless $self->has_format;
-
-  if ($self->format == DATEV_FORMAT_CSV) {
-    $result = $self->csv_export;
-  } elsif ($self->format == DATEV_FORMAT_KNE) {
-    $result = $self->kne_export;
-  } elsif ($self->format == DATEV_FORMAT_OBE) {
-    $result = $self->obe_export;
-  } else {
-    die 'unrecognized export format';
-  }
-
-  return $result;
-}
-
-sub kne_export {
-  my ($self) = @_;
-  my $result;
-
-  die 'no exporttype set!' unless $self->has_exporttype;
-
-  if ($self->exporttype == DATEV_ET_BUCHUNGEN) {
-    $result = $self->kne_buchungsexport;
-  } elsif ($self->exporttype == DATEV_ET_STAMM) {
-    $result = $self->kne_stammdatenexport;
-  } elsif ($self->exporttype == DATEV_ET_CSV) {
-    $result = $self->csv_export_for_tax_accountant;
-  } else {
-    die 'unrecognized exporttype';
-  }
-
-  return $result;
+  return $self->csv_export;
 }
 
 sub csv_export {
@@ -393,30 +345,41 @@ sub csv_export {
                 eol          => "\r\n",
               }) or die "Cannot use CSV: ".Text::CSV_XS->error_diag();
 
-    my $csv_file = IO::File->new($self->export_path . '/' . $filename, '>:encoding(cp1252)') or die "Can't open: $!";
+    # get encoding from defaults - use cp1252 if DATEV strict export is used
+    my $enc = ($::instance_conf->get_datev_export_format eq 'cp1252') ? 'cp1252' : 'utf-8';
+    my $csv_file = IO::File->new($self->export_path . '/' . $filename, ">:encoding($enc)") or die "Can't open: $!";
+
     $csv->print($csv_file, $_) for @{ $datev_csv->header };
     $csv->print($csv_file, $_) for @{ $datev_csv->lines  };
     $csv_file->close;
     $self->{warnings} = $datev_csv->warnings;
 
+    $self->_create_xml_and_documents if $self->{documents} && $self->{guids} && %{ $self->{guids} };
+
+    # convert utf-8 to cp1252//translit if set
+    if ($::instance_conf->get_datev_export_format eq 'cp1252-translit') {
+
+      my $filename_translit = "EXTF_DATEV_kivitendo_translit" . $self->from->ymd() . '-' . $self->to->ymd() . ".csv";
+      open my $fh_in,  '<:encoding(UTF-8)',  $self->export_path . '/' . $filename or die "could not open $filename for reading: $!";
+      open my $fh_out, '>', $self->export_path . '/' . $filename_translit         or die "could not open $filename_translit for writing: $!";
+
+      my $converter = SL::Iconv->new("utf-8", "cp1252//translit");
+
+      print $fh_out $converter->convert($_) while <$fh_in>;
+      close $fh_in;
+      close $fh_out;
+
+      unlink $self->export_path . '/' . $filename or warn "Could not unlink $filename: $!";
+      $filename = $filename_translit;
+    }
+
     return { download_token => $self->download_token, filenames => $filename };
 
-  } elsif ($self->exporttype == DATEV_ET_STAMM) {
-    die 'will never be implemented';
-    # 'Background: Export should only contain non
-    #  DATEV-Charts and DATEV import will only
-    #  import new Charts.'
-  } elsif ($self->exporttype == DATEV_ET_CSV) {
-    $result = $self->csv_export_for_tax_accountant;
   } else {
     die 'unrecognized exporttype';
   }
 
   return $result;
-}
-
-sub obe_export {
-  die 'not yet implemented';
 }
 
 sub fromto {
@@ -438,6 +401,90 @@ sub locked {
    $self->{locked} = $_[0];
  }
  return $self->{locked};
+}
+
+sub imported {
+ my $self = shift;
+
+ if (@_) {
+   $self->{imported} = $_[0];
+ }
+ return $self->{imported};
+}
+
+sub documents {
+ my $self = shift;
+
+ if (@_) {
+   $self->{documents} = $_[0];
+ }
+ return $self->{documents};
+}
+
+sub _create_xml_and_documents {
+  my $self = shift;
+
+  die "No guids" unless %{ $self->{guids} };
+
+  my $today = DateTime->now_local;
+  my $doc   = XML::LibXML::Document->new('1.0', 'utf-8');
+
+  my $root  = $doc->createElement('archive');
+  #<archive xmlns="http://xml.datev.de/bedi/tps/document/v05.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://xml.datev.de/bedi/tps/document/v05.0 Document_v050.xsd" version="5.0" generatingSystem="DATEV-Musterdaten">
+
+  $root->setAttribute('xmlns'              => 'http://xml.datev.de/bedi/tps/document/v05.0');
+  $root->setAttribute('xmlns:xsi'          => 'http://www.w3.org/2001/XMLSchema-instance');
+  $root->setAttribute('xsi:schemaLocation' => 'http://xml.datev.de/bedi/tps/document/v05.0 Document_v050.xsd');
+  $root->setAttribute('version'            => '5.0');
+  $root->setAttribute('generatingSystem'   => 'kivitendo');
+
+  # header with timestamp
+  my $header_tag = $doc->createElement('header');
+  $root->appendChild($header_tag);
+  my $date_tag = $doc->createElement('date');
+  $date_tag->appendTextNode($today);
+  $header_tag->appendChild($date_tag);
+
+
+  # content
+  my $content_node = $doc->createElement('content');
+  $root->appendChild($content_node);
+  # we have n document childs
+  foreach my $guid (keys %{ $self->{guids} }) {
+    # 1. get filename and file location
+    my $file_version = SL::DB::Manager::FileVersion->find_by(guid => $guid);
+    die "Invalid guid $guid" unless ref $file_version eq 'SL::DB::FileVersion';
+    # file_name has to be unique add guid if needed
+    my $filename_for_zip = (exists $self->{files}{$file_version->file_name})
+                           ? $file_version->file_name . '__' . $guid
+                           : $file_version->file_name;
+    $filename_for_zip = $guid . '.pdf';
+    $self->{files}{$filename_for_zip} = $file_version->get_system_location;
+    # create xml metadata for files
+    my $document_node = $doc->createElement('document');
+    # set attr
+    $document_node->setAttribute('guid'      => $guid);
+    $document_node->setAttribute('processID' => '1');
+    $document_node->setAttribute('type'      => '1');
+    $content_node->appendChild($document_node);
+    my $extension_node = $doc->createElement('extension');
+    $extension_node->setAttribute('xsi:type' => 'File');
+    $extension_node->setAttribute('name'     => $filename_for_zip);
+    $document_node->appendChild($extension_node);
+  }
+  $doc->setDocumentElement($root);
+
+  # create Archive::Zip in Export Path
+  my $zip = Archive::Zip->new();
+  # add metadata document
+  $zip->addString($doc->toString(), 'document.xml');
+  # add real files
+  foreach my $filename (keys %{ $self->{files} }) {
+#    my $enc_filename = encode('Windows-1252', $filename);
+    $zip->addFile($self->{files}{$filename}, $filename);
+  }
+  die "Cannot write Belege-XML.zip" unless ($zip->writeToFileNamed($self->export_path . 'Belege-XML.zip')
+                                            == Archive::Zip::AZ_OK());
 }
 
 sub generate_datev_data {
@@ -492,10 +539,25 @@ sub generate_datev_data {
     $ar_accno = "CASE WHEN ac.chart_link = 'AR' THEN ct.customernumber ELSE c.accno END as accno";
     $ap_accno = "CASE WHEN ac.chart_link = 'AP' THEN ct.vendornumber   ELSE c.accno END as accno";
   }
+  my $gl_imported;
+  if ( !$self->imported ) {
+    $gl_imported = " AND NOT imported";
+  }
+
+  my $exempt_datev_skonto_filter =
+    qq| AND NOT EXISTS (SELECT
+          FROM bank_transaction_acc_trans btacc
+          JOIN acc_trans         acc ON btacc.acc_trans_id = acc.acc_trans_id
+          JOIN bank_transactions bt  ON btacc.bank_transaction_id = bt.id
+          JOIN bank_accounts     ba  ON bt.local_bank_account_id = ba.id AND ba.exempt_from_datev_export IS true
+          WHERE btacc.automatic IS true
+            AND btacc.type = 'skonto_charts_and_tax_correction'
+            AND btacc.gl_id = gl.id
+        )|;
 
   my $query    =
     qq|SELECT ac.acc_trans_id, ac.transdate, ac.gldate, ac.trans_id,ar.id, ac.amount, ac.taxkey, ac.memo,
-         ar.invnumber, ar.duedate, ar.amount as umsatz, ar.deliverydate, ar.itime::date,
+         ar.invnumber, ar.duedate, ar.amount as umsatz, COALESCE(ar.tax_point, ar.deliverydate) AS deliverydate, ar.itime::date,
          ct.name, ct.ustid, ct.customernumber AS vcnumber, ct.id AS customer_id, NULL AS vendor_id,
          $ar_accno, c.description AS accname, c.taxkey_id as charttax, c.datevautomatik, c.id, ac.chart_link AS link,
          ar.invoice,
@@ -524,7 +586,7 @@ sub generate_datev_data {
        UNION ALL
 
        SELECT ac.acc_trans_id, ac.transdate, ac.gldate, ac.trans_id,ap.id, ac.amount, ac.taxkey, ac.memo,
-         ap.invnumber, ap.duedate, ap.amount as umsatz, ap.deliverydate, ap.itime::date,
+         ap.invnumber, ap.duedate, ap.amount as umsatz, COALESCE(ap.tax_point, ap.deliverydate) AS deliverydate, ap.itime::date,
          ct.name, ct.ustid, ct.vendornumber AS vcnumber, NULL AS customer_id, ct.id AS vendor_id,
          $ap_accno, c.description AS accname, c.taxkey_id as charttax, c.datevautomatik, c.id, ac.chart_link AS link,
          ap.invoice,
@@ -553,7 +615,7 @@ sub generate_datev_data {
        UNION ALL
 
        SELECT ac.acc_trans_id, ac.transdate, ac.gldate, ac.trans_id,gl.id, ac.amount, ac.taxkey, ac.memo,
-         gl.reference AS invnumber, gl.transdate AS duedate, ac.amount as umsatz, NULL as deliverydate, gl.itime::date,
+         gl.reference AS invnumber, NULL AS duedate, ac.amount as umsatz, COALESCE(gl.tax_point, gl.deliverydate) AS deliverydate, gl.itime::date,
          gl.description AS name, NULL as ustid, '' AS vcname, NULL AS customer_id, NULL AS vendor_id,
          c.accno, c.description AS accname, c.taxkey_id as charttax, c.datevautomatik, c.id, ac.chart_link AS link,
          FALSE AS invoice,
@@ -575,6 +637,9 @@ sub generate_datev_data {
          $trans_id_filter
          $gl_itime_filter
          $gl_department_id_filter
+         $gl_imported
+         AND NOT EXISTS (SELECT gl_id from ap_gl where gl_id = gl.id)
+         $exempt_datev_skonto_filter
          $filter
 
        ORDER BY trans_id, acc_trans_id|;
@@ -756,10 +821,17 @@ sub generate_datev_data {
           $absumsatz               += -1 * $new_trans{'amount'};
 
         } else {
-          my $unrounded             = $trans->[$j]->{'amount'} * (1 + $tax_rate) * -1 + $rounding_error;
-          my $rounded               = $form->round_amount($unrounded, 2);
+          # emulate PTC rounding behaviour: first round taxes in isolation, then add up and round the entire sum
+          # makes a difference in the very rare case where tax ends on .0044444449 and tax + netamount ends on 0.00500001
+          # see "rounding error test" in t/datev/invoices.t
+          my $unrounded_tax         = $trans->[$j]->{'amount'} * ($tax_rate) * -1 + $rounding_error;
+          my $rounded_tax           = $form->round_amount($unrounded_tax, 2);
+          $rounding_error           = $unrounded_tax - $rounded_tax;
 
+          my $unrounded             = $trans->[$j]->{'amount'} * -1 + $rounding_error + $rounded_tax;
+          my $rounded               = $form->round_amount($unrounded, 2);
           $rounding_error           = $unrounded - $rounded;
+
           $new_trans{'amount'}      = $rounded;
           $new_trans{'umsatz'}      = abs($rounded) * $ml;
           $trans->[$j]->{'umsatz'}  = $new_trans{umsatz};
@@ -826,139 +898,12 @@ sub generate_datev_data {
   $::lxdebug->leave_sub;
 }
 
-sub make_kne_data_header {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $form) = @_;
-  my ($primanota);
-
-  my $stamm = $self->get_datev_stamm;
-
-  my $jahr = $self->from ? $self->from->year : DateTime->today->year;
-
-  #Header
-  my $header  = "\x1D\x181";
-  $header    .= _fill($stamm->{datentraegernr}, 3, ' ', 'left');
-  $header    .= ($self->fromto) ? "11" : "13"; # Anwendungsnummer
-  $header    .= _fill($stamm->{dfvkz}, 2, '0');
-  $header    .= _fill($stamm->{beraternr}, 7, '0');
-  $header    .= _fill($stamm->{mandantennr}, 5, '0');
-  $header    .= _fill(($stamm->{abrechnungsnr} // '') . $jahr, 6, '0');
-
-  $header .= $self->from ? $self->from->strftime('%d%m%y') : '';
-  $header .= $self->to   ? $self->to->strftime('%d%m%y')   : '';
-
-  if ($self->fromto) {
-    $primanota = "001";
-    $header .= $primanota;
-  }
-
-  $header .= _fill($stamm->{passwort}, 4, '0');
-  $header .= " " x 16;       # Anwendungsinfo
-  $header .= " " x 16;       # Inputinfo
-  $header .= "\x79";
-
-  #Versionssatz
-  my $versionssatz  = $self->exporttype == DATEV_ET_BUCHUNGEN ? "\xB5" . "1," : "\xB6" . "1,";
-
-  my $query         = qq|SELECT accno FROM chart LIMIT 1|;
-  my $ref           = selectfirst_hashref_query($form, $self->dbh, $query);
-
-  $versionssatz    .= length $ref->{accno};
-  $versionssatz    .= ",";
-  $versionssatz    .= length $ref->{accno};
-  $versionssatz    .= ",SELF" . "\x1C\x79";
-
-  $header          .= $versionssatz;
-
-  $main::lxdebug->leave_sub();
-
-  return $header;
-}
-
-sub datetofour {
-  $main::lxdebug->enter_sub();
-
-  my ($date, $six) = @_;
-
-  my ($day, $month, $year) = split(/\./, $date);
-
-  if (length($month) < 2) {
-    $month = "0" . $month;
-  }
-  if (length($year) > 2) {
-    $year = substr($year, -2, 2);
-  }
-
-  if ($six) {
-    $date = $day . $month . $year;
-  } else {
-    $date = $day . $month;
-  }
-
-  $main::lxdebug->leave_sub();
-
-  return $date;
-}
-
-sub trim_leading_zeroes {
-  my $str = shift;
-
-  $str =~ s/^0+//g;
-
-  return $str;
-}
-
-sub make_ed_versionset {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $header, $filename, $blockcount) = @_;
-
-  my $versionset  = "V" . substr($filename, 2, 5);
-  $versionset    .= substr($header, 6, 22);
-
-  if ($self->fromto) {
-    $versionset .= "0000" . substr($header, 28, 19);
-  } else {
-    my $datum = " " x 16;
-    $versionset .= $datum . "001" . substr($header, 28, 4);
-  }
-
-  $versionset .= _fill($blockcount, 5, '0');
-  $versionset .= "001";
-  $versionset .= " 1";
-  $versionset .= substr($header, -12, 10) . "    ";
-  $versionset .= " " x 53;
-
-  $main::lxdebug->leave_sub();
-
-  return $versionset;
-}
-
-sub make_ev_header {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $form, $fileno) = @_;
-
-  my $stamm = $self->get_datev_stamm;
-
-  my $ev_header  = _fill($stamm->{datentraegernr}, 3, ' ', 'left');
-  $ev_header    .= "   ";
-  $ev_header    .= _fill($stamm->{beraternr}, 7, ' ', 'left');
-  $ev_header    .= _fill($stamm->{beratername}, 9, ' ', 'left');
-  $ev_header    .= " ";
-  $ev_header    .= (_fill($fileno, 5, '0')) x 2;
-  $ev_header    .= " " x 95;
-
-  $main::lxdebug->leave_sub();
-
-  return $ev_header;
-}
-
 sub generate_datev_lines {
   my ($self) = @_;
 
   my @datev_lines = ();
+
+  my @exempt_bank_accno = map { $_->chart->accno } @{ SL::DB::Manager::BankAccount->get_all(where => [ exempt_from_datev_export => 1 ]) || [] };
 
   foreach my $transaction ( @{ $self->{DATEV} } ) {
 
@@ -996,6 +941,7 @@ sub generate_datev_lines {
       }
       if ($transaction->[$i]->{'taxkey'}) {
         $taxkey = $transaction->[$i]->{'taxkey'};
+        # $taxkey = 0 if $taxkey == 94; # taxbookings are in gl
       }
       if ($transaction->[$i]->{'charttax'}) {
         $charttax = $transaction->[$i]->{'charttax'};
@@ -1024,10 +970,25 @@ sub generate_datev_lines {
         $datev_data{buchungstext} = $transaction->[$haben]->{'name'};
       }
       if (($transaction->[$haben]->{'ustid'} // '') ne "") {
-        $datev_data{ustid} = $transaction->[$haben]->{'ustid'};
+        $datev_data{ustid} = SL::VATIDNr->normalize($transaction->[$haben]->{'ustid'});
       }
       if (($transaction->[$haben]->{'duedate'} // '') ne "") {
         $datev_data{belegfeld2} = $transaction->[$haben]->{'duedate'};
+      }
+
+      # if deliverydate exists, add it to datev export if it is
+      # * an ar/ap booking that is not a payment
+      # * a gl booking
+      if (    ($transaction->[$haben]->{'deliverydate'} // '') ne ''
+           && (
+                (    $transaction->[$haben]->{'table'} =~ /^(ar|ap)$/
+                  && $transaction->[$haben]->{'link'}  !~ m/_paid/
+                  && $transaction->[$soll]->{'link'}   !~ m/_paid/
+                )
+                || $transaction->[$haben]->{'table'} eq 'gl'
+              )
+         ) {
+        $datev_data{leistungsdatum} = $transaction->[$haben]->{'deliverydate'};
       }
     }
     $datev_data{umsatz} = abs($umsatz); # sales invoices without tax have a different sign???
@@ -1049,8 +1010,46 @@ sub generate_datev_lines {
       # $datev_data{buchungsschluessel} = !$datevautomatik ? $taxkey : "4";
       $datev_data{buchungsschluessel} = $taxkey;
     }
+    # set lock for each transaction
+    $datev_data{locked} = $self->locked;
 
-    push(@datev_lines, \%datev_data);
+    # ignore transactions for bank accounts which have "exempt from DATEV export" set.
+    next if (any { $datev_data{konto} eq $_ || $datev_data{gegenkonto} eq $_ } @exempt_bank_accno);
+
+    # add guids if datev export with documents is requested
+    if ($self->documents) {
+      # add all document links for the latest created/uploaded document
+      my $latest_document = SL::DB::Manager::File->get_first(query =>
+                                [
+                                  object_id   => $transaction->[$haben]->{trans_id},
+                                  file_type   => 'document',
+                                  mime_type   => 'application/pdf',
+                                  or          => [
+                                                   object_type => 'gl_transaction',
+                                                   object_type => 'purchase_invoice',
+                                                   object_type => 'invoice',
+                                                   object_type => 'credit_note',
+                                                 ],
+                                ],
+                                  sort_by   => 'itime DESC');
+      if (ref $latest_document eq 'SL::DB::File') {
+      #if (scalar @{ $latest_documents }) {
+        # if we have a booking document add guid from the latest version
+        # one record may be referenced to more transaction (credit booking with different accounts)
+        # therefore collect guids in hash
+        # not yet implemented -> datev steigt aus, sobald ein komma getrennter wert erscheint
+        #foreach my $latest_document (@{ $latest_documents }) {
+          die "No file datatype:" . ref $latest_document unless (ref $latest_document eq 'SL::DB::File');
+          my $latest_guid = $latest_document->file_versions_sorted->[-1]->guid;
+
+          $self->{guids}{$latest_guid} = 1;
+          $datev_data{document_guid}  .= $datev_data{document_guid} ?  ',' : '';
+          $datev_data{document_guid}  .= $latest_guid;
+        # }
+      }
+    }
+
+    push(@datev_lines, \%datev_data) if $datev_data{umsatz};
   }
 
   # example of modifying export data:
@@ -1062,347 +1061,6 @@ sub generate_datev_lines {
   #
 
   return \@datev_lines;
-}
-
-
-sub kne_buchungsexport {
-  $main::lxdebug->enter_sub();
-
-  my ($self) = @_;
-
-  my $form = $::form;
-
-  my @filenames;
-
-  my $filename    = "ED00001";
-  my $evfile      = "EV01";
-  my @ed_versionset;
-  my $fileno      = 1;
-  my $ed_filename = $self->export_path . $filename;
-
-  my $fromto = $self->fromto;
-
-  $self->generate_datev_data(from_to => $self->fromto); # fetches data from db, transforms data and fills $self->{DATEV}
-  return if $self->errors;
-
-  my @datev_lines = @{ $self->generate_datev_lines };
-
-
-  my $umsatzsumme = sum map { $_->{umsatz} } @datev_lines;
-
-  # prepare kne file, everything gets stored in ED00001
-  my $header = $self->make_kne_data_header($form);
-  my $kne_file = SL::DATEV::KNEFile->new();
-  $kne_file->add_block($header);
-
-  my $iconv   = $::locale->{iconv_utf8};
-  my %umlaute = ($iconv->convert('ä') => 'ae',
-                 $iconv->convert('ö') => 'oe',
-                 $iconv->convert('ü') => 'ue',
-                 $iconv->convert('Ä') => 'Ae',
-                 $iconv->convert('Ö') => 'Oe',
-                 $iconv->convert('Ü') => 'Ue',
-                 $iconv->convert('ß') => 'sz');
-
-  # add the data from @datev_lines to the kne_file, formatting as needed
-  foreach my $kne ( @datev_lines ) {
-    $kne_file->add_block("+" . $kne_file->format_amount(abs($kne->{umsatz}), 0));
-
-    # only add buchungsschluessel if it was previously defined
-    $kne_file->add_block("\x6C" . $kne->{buchungsschluessel}) if defined $kne->{buchungsschluessel};
-
-    # ($kne->{gegenkonto}) = $kne->{gegenkonto} =~ /^(\d+)/;
-    $kne_file->add_block("a" . trim_leading_zeroes($kne->{gegenkonto}));
-
-    if ( $kne->{belegfeld1} ) {
-      my $invnumber = $kne->{belegfeld1};
-      foreach my $umlaut (keys(%umlaute)) {
-        $invnumber =~ s/${umlaut}/${umlaute{$umlaut}}/g;
-      }
-      $invnumber =~ s/[^0-9A-Za-z\$\%\&\*\+\-\/]//g;
-      $invnumber =  substr($invnumber, 0, 12);
-      $invnumber =~ s/\ *$//;
-      $kne_file->add_block("\xBD" . $invnumber . "\x1C");
-    }
-
-    $kne_file->add_block("\xBE" . &datetofour($kne->{belegfeld2},1) . "\x1C");
-
-    $kne_file->add_block("d" . &datetofour($kne->{datum},0));
-
-    # ($kne->{konto}) = $kne->{konto} =~ /^(\d+)/;
-    $kne_file->add_block("e" . trim_leading_zeroes($kne->{konto}));
-
-    my $name = $kne->{buchungstext};
-    foreach my $umlaut (keys(%umlaute)) {
-      $name =~ s/${umlaut}/${umlaute{$umlaut}}/g;
-    }
-    $name =~ s/[^0-9A-Za-z\$\%\&\*\+\-\ \/]//g;
-    $name =  substr($name, 0, 30);
-    $name =~ s/\ *$//;
-    $kne_file->add_block("\x1E" . $name . "\x1C");
-
-    $kne_file->add_block("\xBA" . $kne->{'ustid'}    . "\x1C") if $kne->{'ustid'};
-
-    $kne_file->add_block("\xB3" . $kne->{'waehrung'} . "\x1C" . "\x79");
-  };
-
-  $umsatzsumme          = $kne_file->format_amount(abs($umsatzsumme), 0);
-  my $mandantenendsumme = "x" . $kne_file->format_amount($umsatzsumme / 100.0, 14) . "\x79\x7a";
-
-  $kne_file->add_block($mandantenendsumme);
-  $kne_file->flush();
-
-  open(ED, ">", $ed_filename) or die "can't open outputfile: $!\n";
-  print(ED $kne_file->get_data());
-  close(ED);
-
-  $ed_versionset[$fileno] = $self->make_ed_versionset($header, $filename, $kne_file->get_block_count());
-
-  #Make EV Verwaltungsdatei
-  my $ev_header   = $self->make_ev_header($form, $fileno);
-  my $ev_filename = $self->export_path . $evfile;
-  push(@filenames, $evfile);
-  open(EV, ">", $ev_filename) or die "can't open outputfile: EV01\n";
-  print(EV $ev_header);
-
-  foreach my $file (@ed_versionset) {
-    print(EV $file);
-  }
-  close(EV);
-  ###
-
-  $self->add_filenames(@filenames);
-
-  $main::lxdebug->leave_sub();
-
-  return { 'download_token' => $self->download_token, 'filenames' => \@filenames };
-}
-
-sub kne_stammdatenexport {
-  $main::lxdebug->enter_sub();
-
-  my ($self) = @_;
-  my $form = $::form;
-
-  $self->get_datev_stamm->{abrechnungsnr} = "99";
-
-  my @filenames;
-
-  my $filename    = "ED00000";
-  my $evfile      = "EV01";
-  my @ed_versionset;
-  my $fileno          = 1;
-  my $i               = 0;
-  my $blockcount      = 1;
-  my $remaining_bytes = 256;
-  my $total_bytes     = 256;
-  my $buchungssatz    = "";
-  $filename++;
-  my $ed_filename = $self->export_path . $filename;
-  push(@filenames, $filename);
-  open(ED, ">", $ed_filename) or die "can't open outputfile: $!\n";
-  my $header = $self->make_kne_data_header($form);
-  $remaining_bytes -= length($header);
-
-  my $fuellzeichen;
-
-  my (@where, @values) = ((), ());
-  if ($self->accnofrom) {
-    push @where, 'c.accno >= ?';
-    push @values, $self->accnofrom;
-  }
-  if ($self->accnoto) {
-    push @where, 'c.accno <= ?';
-    push @values, $self->accnoto;
-  }
-
-  my $where_str = @where ? ' WHERE ' . join(' AND ', map { "($_)" } @where) : '';
-
-  my $query     = qq|SELECT c.accno, c.description
-                     FROM chart c
-                     $where_str
-                     ORDER BY c.accno|;
-
-  my $sth = $self->dbh->prepare($query);
-  $sth->execute(@values) || $form->dberror($query);
-
-  while (my $ref = $sth->fetchrow_hashref("NAME_lc")) {
-    if (($remaining_bytes - length("t" . $ref->{'accno'})) <= 6) {
-      $fuellzeichen = ($blockcount * 256 - length($buchungssatz . $header));
-      $buchungssatz .= "\x00" x $fuellzeichen;
-      $blockcount++;
-      $total_bytes = ($blockcount) * 256;
-    }
-    $buchungssatz .= "t" . $ref->{'accno'};
-    $remaining_bytes = $total_bytes - length($buchungssatz . $header);
-    $ref->{'description'} =~ s/[^0-9A-Za-z\$\%\&\*\+\-\/]//g;
-    $ref->{'description'} = substr($ref->{'description'}, 0, 40);
-    $ref->{'description'} =~ s/\ *$//;
-
-    if (
-        ($remaining_bytes - length("\x1E" . $ref->{'description'} . "\x1C\x79")
-        ) <= 6
-      ) {
-      $fuellzeichen = ($blockcount * 256 - length($buchungssatz . $header));
-      $buchungssatz .= "\x00" x $fuellzeichen;
-      $blockcount++;
-      $total_bytes = ($blockcount) * 256;
-    }
-    $buchungssatz .= "\x1E" . $ref->{'description'} . "\x1C\x79";
-    $remaining_bytes = $total_bytes - length($buchungssatz . $header);
-  }
-
-  $sth->finish;
-  print(ED $header);
-  print(ED $buchungssatz);
-  $fuellzeichen = 256 - (length($header . $buchungssatz . "z") % 256);
-  my $dateiende = "\x00" x $fuellzeichen;
-  print(ED "z");
-  print(ED $dateiende);
-  close(ED);
-
-  #Make EV Verwaltungsdatei
-  $ed_versionset[0] =
-    $self->make_ed_versionset($header, $filename, $blockcount);
-
-  my $ev_header = $self->make_ev_header($form, $fileno);
-  my $ev_filename = $self->export_path . $evfile;
-  push(@filenames, $evfile);
-  open(EV, ">", $ev_filename) or die "can't open outputfile: EV01\n";
-  print(EV $ev_header);
-
-  foreach my $file (@ed_versionset) {
-    print(EV $ed_versionset[$file]);
-  }
-  close(EV);
-
-  $self->add_filenames(@filenames);
-
-  $main::lxdebug->leave_sub();
-
-  return { 'download_token' => $self->download_token, 'filenames' => \@filenames };
-}
-
-sub _format_accno {
-  my ($accno) = @_;
-  return $accno . ('0' x (6 - min(length($accno), 6)));
-}
-
-sub csv_export_for_tax_accountant {
-  my ($self) = @_;
-
-  $self->generate_datev_data(from_to => $self->fromto);
-
-  foreach my $transaction (@{ $self->{DATEV} }) {
-    foreach my $entry (@{ $transaction }) {
-      $entry->{sortkey} = join '-', map { lc } (DateTime->from_kivitendo($entry->{transdate})->strftime('%Y%m%d'), $entry->{name}, $entry->{reference});
-    }
-  }
-
-  my %transactions =
-    partition_by { $_->[0]->{table} }
-    sort_by      { $_->[0]->{sortkey} }
-    grep         { 2 == scalar(@{ $_ }) }
-    @{ $self->{DATEV} };
-
-  my %column_defs = (
-    acc_trans_id      => { 'text' => $::locale->text('ID'), },
-    amount            => { 'text' => $::locale->text('Amount'), },
-    credit_accname    => { 'text' => $::locale->text('Credit Account Name'), },
-    credit_accno      => { 'text' => $::locale->text('Credit Account'), },
-    debit_accname     => { 'text' => $::locale->text('Debit Account Name'), },
-    debit_accno       => { 'text' => $::locale->text('Debit Account'), },
-    invnumber         => { 'text' => $::locale->text('Reference'), },
-    name              => { 'text' => $::locale->text('Name'), },
-    notes             => { 'text' => $::locale->text('Notes'), },
-    tax               => { 'text' => $::locale->text('Tax'), },
-    taxkey            => { 'text' => $::locale->text('Taxkey'), },
-    tax_accname       => { 'text' => $::locale->text('Tax Account Name'), },
-    tax_accno         => { 'text' => $::locale->text('Tax Account'), },
-    transdate         => { 'text' => $::locale->text('Transdate'), },
-    vcnumber          => { 'text' => $::locale->text('Customer/Vendor Number'), },
-  );
-
-  my @columns = qw(
-    acc_trans_id name           vcnumber
-    transdate    invnumber      amount
-    debit_accno  debit_accname
-    credit_accno credit_accname
-    tax
-    tax_accno    tax_accname    taxkey
-    notes
-  );
-
-  my %filenames_by_type = (
-    ar => $::locale->text('AR Transactions'),
-    ap => $::locale->text('AP Transactions'),
-    gl => $::locale->text('GL Transactions'),
-  );
-
-  my @filenames;
-  foreach my $type (qw(ap ar)) {
-    my %csvs = (
-      invoices   => {
-        content  => '',
-        filename => sprintf('%s %s - %s.csv', $filenames_by_type{$type}, $self->from->to_kivitendo, $self->to->to_kivitendo),
-        csv      => Text::CSV_XS->new({
-          binary   => 1,
-          eol      => "\n",
-          sep_char => ";",
-        }),
-      },
-      payments   => {
-        content  => '',
-        filename => sprintf('Zahlungen %s %s - %s.csv', $filenames_by_type{$type}, $self->from->to_kivitendo, $self->to->to_kivitendo),
-        csv      => Text::CSV_XS->new({
-          binary   => 1,
-          eol      => "\n",
-          sep_char => ";",
-        }),
-      },
-    );
-
-    foreach my $csv (values %csvs) {
-      $csv->{out} = IO::File->new($self->export_path . '/' . $csv->{filename}, '>:encoding(utf8)') ;
-      $csv->{csv}->print($csv->{out}, [ map { $column_defs{$_}->{text} } @columns ]);
-
-      push @filenames, $csv->{filename};
-    }
-
-    foreach my $transaction (@{ $transactions{$type} }) {
-      my $is_payment     = any { $_->{link} =~ m{A[PR]_paid} } @{ $transaction };
-      my $csv            = $is_payment ? $csvs{payments} : $csvs{invoices};
-
-      my ($soll, $haben) = map { $transaction->[$_] } ($transaction->[0]->{amount} > 0 ? (1, 0) : (0, 1));
-      my $tax            = defined($soll->{tax_accno})  ? $soll : $haben;
-      my $amount         = defined($soll->{net_amount}) ? $soll : $haben;
-      $haben->{notes}    = ($haben->{memo} || $soll->{memo}) if $is_payment;
-      $haben->{notes}  //= '';
-      $haben->{notes}    =  SL::HTML::Util->strip($haben->{notes});
-      $haben->{notes}    =~ s{\r}{}g;
-      $haben->{notes}    =~ s{\n+}{ }g;
-
-      my %row            = (
-        amount           => $::form->format_amount({ numberformat => '1000,00' }, abs($amount->{amount}), 2),
-        debit_accno      => _format_accno($soll->{accno}),
-        debit_accname    => $soll->{accname},
-        credit_accno     => _format_accno($haben->{accno}),
-        credit_accname   => $haben->{accname},
-        tax              => $::form->format_amount({ numberformat => '1000,00' }, abs($amount->{amount}) - abs($amount->{net_amount}), 2),
-        notes            => $haben->{notes},
-        (map { ($_ => $tax->{$_})                    } qw(taxkey tax_accname tax_accno)),
-        (map { ($_ => ($haben->{$_} // $soll->{$_})) } qw(acc_trans_id invnumber name vcnumber transdate)),
-      );
-
-      $csv->{csv}->print($csv->{out}, [ map { $row{$_} } @columns ]);
-    }
-
-    $_->{out}->close for values %csvs;
-  }
-
-  $self->add_filenames(@filenames);
-
-  return { download_token => $self->download_token, filenames => \@filenames };
 }
 
 sub check_vcnumbers_are_valid_pk_numbers {
@@ -1438,6 +1096,50 @@ SQL
   }
   return 1;
 }
+
+sub check_document_export {
+  my ($self) = @_;
+
+  # no dms enabled and works only for type Filesystem
+  return 0 unless $::instance_conf->get_doc_storage
+               && $::instance_conf->get_doc_storage_for_documents eq 'Filesystem';
+
+  return 1;
+
+}
+
+sub check_all_bookings_have_documents {
+  my $self   = shift;
+  my %params = @_;
+
+  die "Need from date" unless $params{from};
+  die "Need to date"   unless $params{to};
+
+  $self->from($params{from});
+  $self->to($params{to});
+
+  my $fromto = $self->fromto;
+  # not all last month ar ap gl booking have an entry -> rent ?
+  my $query = qq|
+  select distinct trans_id,object_id from acc_trans
+  left join files on files.object_id=trans_id
+  where $fromto
+  and object_id is null
+  and trans_id not in (select id from gl)
+  LIMIT 1|;
+
+  my ($booking_has_no_document)  = selectrow_query($::form, SL::DB->client->dbh, $query);
+  return defined $booking_has_no_document ? 0 : 1;
+
+}
+
+
+
+sub _u8 {
+  my ($value) = @_;
+  return encode('UTF-8', $value // '');
+}
+
 
 sub DESTROY {
   clean_temporary_directories();
@@ -1610,7 +1312,7 @@ Forces a garbage collection on previous exports which will delete all exports th
 
 =item errors
 
-Returns a list of errors that occured. If no errors occured, the export was a success.
+Returns a list of errors that occurred. If no errors occurred, the export was a success.
 
 =item export
 
@@ -1657,6 +1359,17 @@ Returns 1 if all currently booked accounts have only one common number length do
 Will throw an error if more than one distinct size is detected.
 The error message gives a short hint with the value of the (at least)
 two mismatching number length domains.
+
+=item check_document_export
+
+Returns 1 if DMS feature is enabled and Backend is Filesystem
+
+=item check_all_bookings_have_documents
+
+Returns 1 if all ar and ap transactions for this period have a document entry in files.
+Therefore all ar and ap transactions may be exported.
+Note: DATEV accepts only PDF and for some gl bookings a document makes no sense
+
 
 =back
 

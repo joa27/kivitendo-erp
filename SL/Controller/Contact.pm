@@ -1,0 +1,264 @@
+package SL::Controller::Contact;
+
+use strict;
+use parent qw(SL::Controller::Base);
+
+use List::Util qw(first);
+use SL::DB::Contact;
+use SL::DB::ContactDepartment;
+use SL::DB::ContactTitle;
+use SL::Controller::Helper::GetModels;
+use SL::Controller::Helper::ParseFilter;
+use SL::Controller::Helper::ReportGenerator;
+use SL::Locale::String qw(t8);
+use SL::Util qw(trim);
+
+use Rose::Object::MakeMethods::Generic (
+  scalar => [ qw(all_contact_departments all_contact_titles) ],
+  'scalar --get_set_init' => [ qw(contact) ],
+);
+
+__PACKAGE__->run_before(
+  '_instantiate_args',
+  only => [
+    'save',
+    'delete',
+  ]
+);
+
+__PACKAGE__->run_before('_check_auth');
+
+__PACKAGE__->run_before(sub { $::auth->assert('developer') },
+                        only => [ qw(test_page) ]);
+
+sub action_ajaj_autocomplete {
+  my ($self, %params) = @_;
+
+  my ($model, $matches);
+
+  $model   = SL::Controller::Helper::GetModels->new(
+    controller   => $self,
+    model        => 'Contact',
+    sorted => {
+      _default  => {
+        by => 'cp_name',
+        dir  => 1,
+      },
+      cp_name   => t8('Name'),
+    },
+  );
+
+  # if someone types something, and hits enter, assume he entered the full name.
+  # if something matches, treat that as the sole match
+  # unfortunately get_models can't do more than one per package atm, so we do it
+  # the oldfashioned way.
+  if ($::form->{prefer_exact}) {
+    my $exact_matches;
+    if (1 == scalar @{ $exact_matches = SL::DB::Manager::Contact->get_all(
+      query => [
+        or => [
+          cp_name      => { ilike => $::form->{filter}{'all:substr:multi::ilike'} },
+          cp_givenname => { ilike => $::form->{filter}{'all:substr:multi::ilike'} },
+          cp_number    => { ilike => $::form->{filter}{'all:substr:multi::ilike'} },
+          cp_email     => { ilike => $::form->{filter}{'all:substr:multi::ilike'} },
+        ]
+      ],
+      limit => 2,
+    ) }) {
+      $matches = $exact_matches;
+    }
+  }
+
+  $matches //= $model->get;
+
+  my @hashes = map {
+   +{
+     label => (join ' ', grep $_, $_->full_name_dep, $_->cp_email),
+     id    => $_->cp_id,
+    }
+  } @{ $matches };
+
+  $self->render(\ SL::JSON::to_json(\@hashes), { layout => 0, type => 'json', process => 0 });
+}
+
+
+
+sub action_edit {
+  my ($self) = @_;
+
+  $self->_pre_render();
+  $self->render(
+    'contact/form',
+    title => $self->contact->cp_id ? t8('Edit Contact') . ' - ' . $self->contact->full_name : t8('Add Contact'),
+    %{$self->{template_args}}
+  );
+}
+
+sub action_save {
+  my ($self) = @_;
+
+  $self->contact->cp_title(trim($self->contact->cp_title));
+  my $save_contact_title      = $self->contact->cp_title
+    && $::instance_conf->get_contact_titles_use_textfield
+    && SL::DB::Manager::ContactTitle->get_all_count(where => [description => $self->contact->cp_title]) == 0;
+
+  $self->contact->cp_abteilung(trim($self->contact->cp_abteilung));
+  my $save_contact_department = $self->contact->cp_abteilung
+    && $::instance_conf->get_contact_departments_use_textfield
+    && SL::DB::Manager::ContactDepartment->get_all_count(where => [description => $self->contact->cp_abteilung]) == 0;
+
+
+  SL::DB::ContactTitle     ->new(description => $self->contact->cp_title)    ->save if $save_contact_title;
+  SL::DB::ContactDepartment->new(description => $self->contact->cp_abteilung)->save if $save_contact_department;
+
+  $self->contact->save(cascade => 1);
+
+  SL::DB::Manager::ContactTitle     ->delete_unused if $save_contact_title;
+  SL::DB::Manager::ContactDepartment->delete_unused if $save_contact_department;
+
+  # reconcile linked customers and vendors
+  my %old_customer_ids = map { $_->id => 1 } @{$self->contact->customers};
+  my %new_customer_ids = map { $_->{cv_id} => 1 } grep { $_->{cv_db} eq 'customer' } @{$::form->{linked_contacts}};
+  my $new_customers    = %new_customer_ids ? SL::DB::Manager::Customer->get_all(query => [ id => [ keys %new_customer_ids ] ]) : [];
+
+  $_->detach_contact($self->contact) for grep { !$new_customer_ids{$_->id} } $self->contact->customers;
+  $_->link_contact($self->contact)   for grep { !$old_customer_ids{$_->id} } @$new_customers;
+
+  my %old_vendor_ids = map { $_->id => 1 } @{$self->contact->vendors};
+  my %new_vendor_ids = map { $_->{cv_id} => 1 } grep { $_->{cv_db} eq 'vendor' } @{$::form->{linked_contacts}};
+  my $new_vendors    = %new_vendor_ids ? SL::DB::Manager::Vendor->get_all(  query => [ id => [ keys %new_vendor_ids ] ]) : [];
+
+  $_->detach_contact($self->contact) for grep { !$new_vendor_ids{$_->id} } $self->contact->vendors;
+  $_->link_contact($self->contact)   for grep { !$old_vendor_ids{$_->id} } @$new_vendors;
+
+  if ($::form->{link_with_cv_id}) {
+    my $cv_obj = $::form->{link_with_cv_db} eq 'customer'
+      ? SL::DB::Customer->new(id => $::form->{link_with_cv_id})->load
+      : SL::DB::Vendor  ->new(id => $::form->{link_with_cv_id})->load;
+    $cv_obj->link_contact($self->contact);
+  }
+
+  my $redirect_url = $self->url_for(
+    action => 'edit',
+    id     => $self->contact->cp_id,
+  );
+  $self->js->redirect_to($redirect_url)->render;
+}
+
+sub action_delete {
+  my ($self) = @_;
+
+  return $self->js->flash('error', t8('This object is used in records.'))->render if $self->contact->used;
+
+  $self->contact->delete;
+  $self->js->redirect_to($self->url_for(action => 'search_contact', controller => 'ct.pl'))->render;
+}
+
+sub action_add_cv {
+  my ($self) = @_;
+
+  my $class = $::form->{cv_db} eq 'customer' ? 'Customer' : 'Vendor';
+
+  my $cv_obj = "SL::DB::$class"->new(id => $::form->{cv_id})->load;
+
+  my $was_already_linked = first { $_->cp_id == $self->contact->cp_id } @{ $cv_obj->contacts };
+
+  unless ($was_already_linked) {
+    my $row_as_html = $self->p->render('contact/_cv_row', cv => $cv_obj);
+    $self->js->before("#add_$::form->{cv_db}_row", $row_as_html);
+  }
+
+  $self->js->val(".add_$::form->{cv_db}_input", '');
+  $self->js->render();
+}
+
+sub action_add_contact {
+  my ($self) = @_;
+
+  my $class = $::form->{cv_db} eq 'customer' ? 'Customer' : 'Vendor';
+
+  my $cv_obj = "SL::DB::$class"->new(id => $::form->{cv_id})->load;
+
+  my $was_already_linked = first { $_->cp_id == $self->contact->cp_id } @{ $cv_obj->contacts };
+
+  unless ($was_already_linked) {
+    my $row_as_html = $self->p->render('contact/_contact_row', contact => $self->contact,
+      callback => $self->url_for(controller => 'CustomerVendor', action => 'edit', id => $cv_obj->id, db => $::form->{cv_db})
+    );
+    $self->js->before("#add_contact_row", $row_as_html);
+  }
+
+  $self->js->val(".add_contact_input", '');
+  $self->js->render();
+}
+
+sub action_test_page {
+  $_[0]->render('contact/test_page', pre_filled_contact => SL::DB::Manager::Contact->get_first);
+}
+
+sub _pre_render {
+  my ($self) = @_;
+
+  $self->all_contact_titles     (SL::DB::Manager::ContactTitle     ->get_all_sorted);
+  $self->all_contact_departments(SL::DB::Manager::ContactDepartment->get_all_sorted);
+
+  $::request->{layout}->add_javascripts("$_.js") for qw (kivi.Contact);
+
+  $self->_setup_form_action_bar;
+}
+
+sub _check_auth {
+  my ($self, $action) = @_;
+
+  $::auth->assert('customer_vendor_all_edit');
+}
+
+sub init_contact {
+  my ($self) = @_;
+
+  $::form->{id} ? SL::DB::Contact->new(cp_id => $::form->{id})->load()
+                : SL::DB::Contact->new(custom_variables => []);
+}
+
+sub _copy_form_to_cvars {
+  my ($self, %params) = @_;
+
+  foreach my $cvar (@{ $params{target}->cvars_by_config }) {
+    my $value = $params{source}->{$cvar->config->name};
+    $value    = $::form->parse_amount(\%::myconfig, $value) if $cvar->config->type eq 'number';
+
+    $cvar->value($value);
+  }
+}
+
+sub _instantiate_args {
+  my ($self) = @_;
+
+  $self->contact->assign_attributes(%{$::form->{contact}});
+  $self->_copy_form_to_cvars(target => $self->contact, source => $::form->{contact_cvars});
+}
+
+sub _setup_form_action_bar {
+  my ($self) = @_;
+
+  for my $bar ($::request->layout->get('actionbar')) {
+    $bar->add(
+      action => [
+        t8('Save'),
+        call      => [ 'kivi.Contact.save' ],
+        accesskey => 'enter',
+      ],
+
+      action => [
+        t8('Delete'),
+        call     => [ 'kivi.Contact.delete_contact' ],
+        confirm  => t8('Delete the contact? This will also remove the contact from all other customers and vendors.'),
+        disabled => $self->contact->used ? t8('This object is used in records.') :
+                   !$self->contact->cp_id ? t8('This object has not been saved yet.') : undef,
+      ],
+    );
+  }
+}
+
+
+1;

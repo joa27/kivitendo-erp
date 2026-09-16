@@ -58,7 +58,7 @@ sub action_ajax_autocomplete {
 }
 
 sub action_test_page {
-  $_[0]->render('chart/test_page', pre_filled_chart => SL::DB::Manager::Chart->get_first);
+  $_[0]->render('chart/test_page', pre_filled_chart => SL::DB::Manager::Chart->get_first, title => 'Chart Picker Testpage');
 }
 
 sub action_chart_picker_search {
@@ -87,7 +87,6 @@ sub action_show {
 
 sub action_show_report_configuration_overview {
   my ($self) = @_;
-
   my @all_charts = sort { $a->accno cmp $b->accno } @{ SL::DB::Manager::Chart->get_all(inject_results => 1) };
   my @types      = qw(bilanz bwa er eur);
   my %headings   = (
@@ -118,7 +117,7 @@ sub action_show_report_configuration_overview {
     };
   }
 
-  $self->render('chart/report_configuration_overview', DATA => \@data);
+  $self->render('chart/report_configuration_overview', DATA => \@data, title => t8('Chart configuration overview regarding reports'));
 }
 
 sub init_charts {

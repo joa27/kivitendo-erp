@@ -4,9 +4,16 @@
 # interface.
 admin_password = admin123
 
-# Which module to use for authentication. Valid values are 'DB' and
-# 'LDAP'.  If 'LDAP' is used then users cannot change their password
-# via kivitendo.
+# Which modules to use for authentication. Valid values are 'DB',
+# 'LDAP', 'HTTPHeaders'. You can use multiple modules separated by spaces.
+#
+# Multiple LDAP modules with different configurations can be used by
+# postfixing 'LDAP' with the name of the configuration section to use:
+# 'LDAP:ldap_fallback' would use the data from
+# '[authentication/ldap_fallback]'. The name defaults to 'ldap' if it
+# isn't given.
+#
+# Note that the LDAP module doesn't support changing the password.
 module = DB
 
 # The cookie name can be changed if desired.
@@ -43,6 +50,8 @@ password =
 # specified.
 #
 # tls:       Activate encryption via TLS
+# verify:    If 'tls' is used, how to verify the server's certificate.
+#            Can be one of 'require' or 'none'.
 # attribute: Name of the LDAP attribute containing the user's login name
 # base_dn:   Base DN the LDAP searches start from
 # filter:    An optional LDAP filter specification. The string '<%login%>'
@@ -51,6 +60,12 @@ password =
 #            If searching the LDAP tree requires user credentials
 #            (e.g. ActiveDirectory) then these two parameters specify
 #            the user name and password to use.
+# timeout:   Timeout when connecting to the server in seconds.
+#
+# You can specify a fallback LDAP server to use in case the main one
+# isn't reachable by duplicating this whole section as
+# "[authentication/ldap_fallback]".
+#
 host          = localhost
 port          = 389
 tls           = 0
@@ -59,11 +74,30 @@ base_dn       =
 filter        =
 bind_dn       =
 bind_password =
+timeout       = 10
+verify        = require
+
+# For use with module 'HTTPHeaders':
+[authentication/http_basic]
+enabled = 1
+
+# For use with module 'HTTPHeaders':
+[authentication/http_headers]
+enabled = 0
+client_id_header = X-Kivitendo-Client-ID
+user_header = Auth-User
+secret_header = X-Kivitendo-App-Secret
+secret = ...
 
 [system]
 # Set language for login and admin forms. Currently "de" (German)
 # and "en" (English, not perfect) are available.
 language = de
+
+# Set stylesheet for login and admin forms. Supported:
+#  design40 - default
+stylesheet = design40
+
 # MassPrint Timeout
 # must be less than cgi timeout
 #
@@ -80,8 +114,14 @@ default_manager = german
 # processes). If either limit is reached at the end of the request
 # then the kivitendo process will exit.
 #
-# This only makes sense when running under FCGI. The FCGI manager will
-# then automatically start a new process.
+# This only applies for processes under FCGI and the task manager.
+# For CGI configurations the process will be terminated after each request
+# regardless of this setting.
+#
+# Note: this will only terminate processes with too high memory consumption. It
+# is assumed that an external managing service will start new instances. For
+# FCGI this will usually be apache or the wrapper scripts for nginx, for the
+# task server this will have to be the system manager.
 #
 # Numbers can be postfixed with KB, MB, GB. If no number is given or
 # the number is 0 then no checking will be performed.
@@ -131,27 +171,53 @@ security = none
 # that with 'tls' or 'ssl' encryption.
 login =
 password =
+# The hostname sent in the SMTP extended Hello (EHLO) command can be set with 'ehlo' and defaults to 'localhost'.
+#ehlo =
+# SMTP debugging (includes sensitive authentication data) to stderr of the FastCGI process can be turned on by setting 'debug' to 1.
+#debug = 0
+
+[imap_client]
+enabled = 0
+hostname = localhost
+username =
+password =
+# This folder can be managed with kivitendo through the background jobs
+# CleanUpEmailSubfolders and SyncEmailFolder. Create no subfolder in the
+# base folder by hand. Use / for subfolders.
+base_folder = INBOX
+# Port only needs to be changed if it is not the default port.
+# port = 993
+# If SSL is to be used, then set port to 993 or leave empty
+ssl = 1
+
+# Define a server for a specific email (e.g. info@test.de) with
+# '[sent_emails_in_imap/email/info@test.de]'
+[sent_emails_in_imap]
+enabled = 0
+hostname = localhost
+username =
+password =
+# This folder must exist. Use / for subfolders.
+folder = Sent/Kivitendo
+# Port only needs to be changed if it is not the default port.
+# port = 143
+# If SSL is used, default port is 993
+ssl = 1
 
 [applications]
-# Location of OpenOffice.org writer
-openofficeorg_writer = oowriter
-# Location of the X virtual frame buffer used for OpenOffice
-xvfb = Xvfb
+# Location of OpenOffice.org/LibreOffice writer
+openofficeorg_writer = lowriter
 # Location of the html2ps binary
 html2ps = html2ps
 # Location of the Ghostscript binary
 ghostscript = gs
-# Location of the pdflatex (or compatible, e.g. xetex) binary
-latex = pdflatex
+# Location of the program to create PDFs from TeX documents
+latex = latexmk --pdflatex
 # Location of the Python interpreter to use when converting from
 # OpenDocument to PDF. Some distributions compile UNO support only
 # into binaries located in different locations than the main Python
 # binary.
-python_uno = python
-
-# Location of the aqbanking binary to use when converting MT940 files
-# into the kivitendo import format
-aqbanking = /usr/bin/aqbanking-cli
+python_uno = python3
 
 [environment]
 # Add the following paths to the PATH environment variable.
@@ -171,18 +237,23 @@ latex = 1
 excel = 0
 # Enable or disable support for OpenDocument print templates
 opendocument = 1
-# Chose whether or not OpenOffice should remain running after a
+# Chose whether or not OpenOffice/LibreOffice should remain running after a
 # conversion. If yes then the conversion of subsequent documents will
-# be a lot faster. You need to have Python and the Python UNO bindings
-# (part of OpenOffice) installed.
-openofficeorg_daemon = 1
+# be a bit faster. You need to have Python and the Python UNO bindings
+# (part of OpenOffice/LibreOffice) installed.
+openofficeorg_daemon = 0
 openofficeorg_daemon_port = 2002
 
 [task_server]
-# Set to 1 for debug messages in /tmp/kivitendo-debug.log
+# Set to 1 for debug messages in users/kivitendo-debug.log
 debug = 0
 # Chose a system user the daemon should run under when started as root.
 run_as =
+# Task servers can run on multiple machines. Each needs its own unique
+# ID. If unset, it defaults to the host name. All but one task server
+# must have 'only_run_tasks_for_this_node' set to 1.
+node_id =
+only_run_tasks_for_this_node = 0
 
 [task_server/notify_on_failure]
 # If you want email notifications for failed jobs then set this to a
@@ -193,18 +264,21 @@ email_from     = kivitendo Daemon <root@localhost>
 # The subject for said email.
 email_subject  = kivitendo Task-Server: Hintergrundjob fehlgeschlagen
 # The template file used for the email's body.
-email_template = templates/webpages/task_server/failure_notification_email.txt
+email_template = templates/design40_webpages/task_server/failure_notification_email.txt
 
 [periodic_invoices]
-# The user name a report about the posted and printed invoices is sent
-# to.
-send_email_to  = mb
+# The user name or email address a report about the posted and printed
+# invoices is sent to.
+send_email_to  =
 # The "From:" header for said email.
 email_from     = kivitendo Daemon <root@localhost>
 # The subject for said email.
 email_subject  = Benachrichtigung: automatisch erstellte Rechnungen
 # The template file used for the email's body.
-email_template = templates/webpages/oe/periodic_invoices_email.txt
+email_template = templates/design40_webpages/oe/periodic_invoices_email.txt
+# Whether to always send the mail (0), or only if there were errors
+# (1).
+send_for_errors_only = 0
 
 [self_test]
 
@@ -229,6 +303,38 @@ email_subject  = kivitendo self test report
 # template. currently txt and html templates are recognized and correctly mime send.
 email_template = templates/mail/self_test/status_mail.txt
 
+[check_below_minimum_stock]
+# The user name or email address a report about the under stock parts is sent
+# to.
+send_email_to  =
+# The "From:" header for said email.
+email_from     = kivitendo Daemon <root@localhost>
+# The subject for said email.
+email_subject  = Benachrichtigung: Artikel unter Mindestbestand
+# The template file used for the email's body.
+email_template = templates/mail/below_minimum_stock/error_email.html
+
+[follow_up_reminder]
+# Email notifications for due follow ups.
+# The "From:" header for said email.
+email_from     = kivitendo Daemon <root@localhost>
+# The subject for said email.
+email_subject  = kivitendo: fällige Wiedervorlagen
+# The template file used for the email's body.
+# If empty fu/follow_up_reminder_mail.html will be used.
+email_template =
+
+[follow_up_notify]
+# Email notification for new follow ups.
+email_from     = kivitendo Daemon <root@localhost>
+email_subject  = kivitendo: neue Wiedervorlagen für Sie von <%creator_name%>
+email_template = templates/mail/follow_up_notify/email_body.txt
+
+[secrets]
+# Passphase used to encrypt/decrypt secrets stored in the kivitendo client database.
+# While any length is allowed, it will get stretched into a 256bit AES key - more is better.
+master_key =
+
 [console]
 # Automatic login will only work if both "client" and "login" are
 # given.  "client" can be a client's database ID or its name. "login"
@@ -246,9 +352,9 @@ login =
 # location of history file for permanent history
 history_file = users/console_history
 
-# location of a separate log file for the console. everything normally written
-# to the kivitendo log will be put here if triggered from the console
-log_file = /tmp/kivitendo_console_debug.log
+# Location of a separate log file for the console. Everything normally written
+# to the kivitendo log will be put here if triggered from the console.
+log_file = users/kivitendo_console_debug.log
 
 [testing]
 
@@ -335,7 +441,7 @@ keep_temp_files = 0
 restart_fcgi_process_on_changes = 0
 
 # The file name where the debug messages are written to.
-file_name = /tmp/kivitendo-debug.log
+file_name = users/kivitendo-debug.log
 
 # If set to 1 then the installation will be kept unlocked even if a
 # database upgrade fails.
@@ -370,3 +476,20 @@ dial_command =
 external_prefix = 0
 # The prefix for international calls (numbers starting with +).
 international_dialing_prefix = 00
+# Our own country code
+our_country_code = 49
+
+
+## Atlassian Jira Ticket System Integration: OAuth and Cloud config
+#
+#[oauth2_atlassian_jira]
+#
+#client_id     = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#client_secret = xxxxxxx-xxxxx-xxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxx
+#redirect_uri  = http://kiviserver.lan/oauth.pl
+#
+## optional:
+#[atlassian_jira]
+#
+#cloud_id  = xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+#cloud_url = https://firma.atlassian.net

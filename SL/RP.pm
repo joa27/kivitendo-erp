@@ -41,6 +41,7 @@ use SL::DB::Helper::AccountingPeriod qw(get_balance_starting_date);
 use List::Util qw(sum);
 use List::UtilsBy qw(partition_by sort_by);
 use SL::DB;
+use SL::DB::Country;
 
 # use warnings;
 use strict;
@@ -311,7 +312,8 @@ sub get_accounts {
          FROM invoice ac
          JOIN ar a ON (a.id = ac.trans_id)
          JOIN parts p ON (ac.parts_id = p.id)
-         JOIN chart c on (p.income_accno_id = c.id)
+         JOIN taxzone_charts t ON (p.buchungsgruppen_id = t.id)
+         JOIN chart c on (t.income_accno_id = c.id)
          -- use transdate from subwhere
          WHERE (c.category = 'I')
            $subwhere
@@ -332,7 +334,8 @@ sub get_accounts {
          FROM invoice ac
          JOIN ap a ON (a.id = ac.trans_id)
          JOIN parts p ON (ac.parts_id = p.id)
-         JOIN chart c on (p.expense_accno_id = c.id)
+         JOIN taxzone_charts t ON (p.buchungsgruppen_id = t.id)
+         JOIN chart c on (t.expense_accno_id = c.id)
          WHERE (c.category = 'E')
            $subwhere
            $dpt_where
@@ -374,7 +377,8 @@ sub get_accounts {
       FROM invoice ac
       JOIN ar a ON (a.id = ac.trans_id)
       JOIN parts p ON (ac.parts_id = p.id)
-      JOIN chart c on (p.income_accno_id = c.id)
+      JOIN taxzone_charts t ON (p.buchungsgruppen_id = t.id)
+      JOIN chart c on (t.income_accno_id = c.id)
       -- use transdate from subwhere
       WHERE (c.category = 'I')
         $subwhere
@@ -388,7 +392,8 @@ sub get_accounts {
       FROM invoice ac
       JOIN ap a ON (a.id = ac.trans_id)
       JOIN parts p ON (ac.parts_id = p.id)
-      JOIN chart c on (p.expense_accno_id = c.id)
+      JOIN taxzone_charts t ON (p.buchungsgruppen_id = t.id)
+      JOIN chart c on (t.expense_accno_id = c.id)
       WHERE (c.category = 'E')
         $subwhere
         $dpt_where
@@ -572,7 +577,8 @@ sub get_accounts_g {
          FROM invoice ac
          JOIN ar a ON (a.id = ac.trans_id)
          JOIN parts p ON (ac.parts_id = p.id)
-         JOIN chart c on (p.income_accno_id = c.id)
+         JOIN taxzone_charts t ON (p.buchungsgruppen_id = t.id)
+         JOIN chart c on (t.income_accno_id = c.id)
          WHERE (c.category = 'I') $prwhere $dpt_where
            AND ac.trans_id IN ( SELECT trans_id FROM acc_trans a WHERE (a.chart_link LIKE '%AR_paid%') $subwhere)
            $project
@@ -584,7 +590,8 @@ sub get_accounts_g {
          FROM invoice ac
          JOIN ap a ON (a.id = ac.trans_id)
          JOIN parts p ON (ac.parts_id = p.id)
-         JOIN chart c on (p.expense_accno_id = c.id)
+         JOIN taxzone_charts t ON (p.buchungsgruppen_id = t.id)
+         JOIN chart c on (t.expense_accno_id = c.id)
          WHERE (c.category = 'E') $prwhere $dpt_where
            AND ac.trans_id IN ( SELECT trans_id FROM acc_trans a WHERE (a.chart_link LIKE '%AP_paid%') $subwhere)
          $project
@@ -617,7 +624,8 @@ sub get_accounts_g {
         FROM invoice ac
         JOIN ar a ON (a.id = ac.trans_id)
         JOIN parts p ON (ac.parts_id = p.id)
-        JOIN chart c on (p.income_accno_id = c.id)
+        JOIN taxzone_charts t ON (p.buchungsgruppen_id = t.id)
+        JOIN chart c on (t.income_accno_id = c.id)
         WHERE (c.category = 'I')
           $prwhere
           $dpt_where
@@ -630,7 +638,8 @@ sub get_accounts_g {
         FROM invoice ac
         JOIN ap a ON (a.id = ac.trans_id)
         JOIN parts p ON (ac.parts_id = p.id)
-        JOIN chart c on (p.expense_accno_id = c.id)
+        JOIN taxzone_charts t ON (p.buchungsgruppen_id = t.id)
+        JOIN chart c on (t.expense_accno_id = c.id)
         WHERE (c.category = 'E')
           $prwhere
           $dpt_where
@@ -824,14 +833,16 @@ sub trial_balance {
   if ($form->{fromdate} || $form->{todate}) {
     if ($form->{fromdate}) {
       $fromdate = conv_dateq($form->{fromdate});
+      my $fiscal_year_startdate = conv_dateq($self->get_balance_starting_date($form->{fromdate}));
+      # my $date_trunc = "(select date_trunc('year', date $fromdate))";
       $tofrom        .= " AND (ac.transdate >= $fromdate)";
       $subwhere      .= " AND (ac.transdate >= $fromdate)";
-      $sumsubwhere   .= " AND (ac.transdate >= (select date_trunc('year', date $fromdate))) ";
-      $saldosubwhere .= " AND (ac,transdate>=(select date_trunc('year', date $fromdate)))  ";
-      $invwhere      .= " AND (a.transdate >= $fromdate)";
-      $glsaldowhere  .= " AND ac.transdate>=(select date_trunc('year', date $fromdate)) ";
+      $sumsubwhere   .= " AND (ac.transdate >= $fiscal_year_startdate) ";
+      $saldosubwhere .= " AND (ac.transdate >= $fiscal_year_startdate) ";
+      $invwhere      .= " AND (a.transdate  >= $fromdate)";
+      $glsaldowhere  .= " AND (ac.transdate >= $fiscal_year_startdate) ";
       $glwhere        = " AND (ac.transdate >= $fromdate)";
-      $glsumwhere     = " AND (ac.transdate >= (select date_trunc('year', date $fromdate))) ";
+      $glsumwhere     = " AND (ac.transdate >= $fiscal_year_startdate) ";
     }
     if ($form->{todate}) {
       $todate = conv_dateq($form->{todate});
@@ -891,7 +902,8 @@ sub trial_balance {
       FROM invoice ac
       JOIN ar a ON (ac.trans_id = a.id)
       JOIN parts p ON (ac.parts_id = p.id)
-      JOIN chart c ON (p.income_accno_id = c.id)
+      JOIN taxzone_charts t ON (p.buchungsgruppen_id = t.id)
+      JOIN chart c ON (t.income_accno_id = c.id)
       WHERE $invwhere
         $dpt_where
         $customer_where
@@ -904,7 +916,8 @@ sub trial_balance {
       FROM invoice ac
       JOIN ap a ON (ac.trans_id = a.id)
       JOIN parts p ON (ac.parts_id = p.id)
-      JOIN chart c ON (p.expense_accno_id = c.id)
+      JOIN taxzone_charts t ON (p.buchungsgruppen_id = t.id)
+      JOIN chart c ON (t.expense_accno_id = c.id)
       WHERE $invwhere
         $dpt_where
         $customer_no_union
@@ -1017,7 +1030,8 @@ sub trial_balance {
            FROM invoice ac
            JOIN parts p ON (ac.parts_id = p.id)
            JOIN ap a ON (ac.trans_id = a.id)
-           JOIN chart c ON (p.expense_accno_id = c.id)
+           JOIN taxzone_charts t ON (p.buchungsgruppen_id = t.id)
+           JOIN chart c ON (t.expense_accno_id = c.id)
            WHERE $invwhere
              $dpt_where
              $customer_no_union
@@ -1028,7 +1042,8 @@ sub trial_balance {
            FROM invoice ac
            JOIN parts p ON (ac.parts_id = p.id)
            JOIN ar a ON (ac.trans_id = a.id)
-           JOIN chart c ON (p.income_accno_id = c.id)
+           JOIN taxzone_charts t ON (p.buchungsgruppen_id = t.id)
+           JOIN chart c ON (t.income_accno_id = c.id)
            WHERE $invwhere
              $dpt_where
              $customer_where
@@ -1041,7 +1056,6 @@ sub trial_balance {
          $customer_join
          WHERE $saldowhere
            $dpt_where_without_arapgl
-           $dpt_where
            $customer_where
            $project
          AND c.accno = ? AND (NOT ac.ob_transaction OR ac.ob_transaction IS NULL)) AS saldo,
@@ -1052,7 +1066,6 @@ sub trial_balance {
          $customer_join
          WHERE $sumwhere
            $dpt_where_without_arapgl
-           $dpt_where
            $customer_where
            $project
          AND ac.amount > 0
@@ -1063,7 +1076,6 @@ sub trial_balance {
          JOIN chart c ON (ac.chart_id = c.id)
          $customer_join
          WHERE $sumwhere
-           $dpt_where
            $dpt_where_without_arapgl
            $customer_where
            $project
@@ -1085,7 +1097,7 @@ sub trial_balance {
   }
 
 
-  my ($debit, $credit, $saldo, $soll_saldo, $haben_saldo,$soll_kummuliert, $haben_kummuliert, $last_transaction);
+  my ($debit, $credit, $saldo, $soll_saldo, $haben_saldo, $soll_kumuliert, $haben_kumuliert, $last_transaction);
 
   foreach my $accno (sort keys %trb) {
     $ref = {};
@@ -1194,19 +1206,6 @@ sub trial_balance {
   $main::lxdebug->leave_sub();
 }
 
-sub get_storno {
-  $main::lxdebug->enter_sub();
-  my ($self, $dbh, $form) = @_;
-  my $arap = $form->{arap} eq "ar" ? "ar" : "ap";
-  my $query = qq|SELECT invnumber FROM $arap WHERE invnumber LIKE "Storno zu "|;
-  my $sth =  $dbh->prepare($query);
-  while(my $ref = $sth->fetchrow_hashref()) {
-    $ref->{invnumer} =~ s/Storno zu //g;
-    $form->{storno}{$ref->{invnumber}} = 1;
-  }
-  $main::lxdebug->leave_sub();
-}
-
 sub aging {
   $main::lxdebug->enter_sub();
 
@@ -1290,19 +1289,21 @@ sub aging {
     $where .= qq| AND (a.department_id = | . conv_i($department_id, 'NULL') . qq|)|;
     $where_dpt = qq| AND (${arap}.department_id = | . conv_i($department_id, 'NULL') . qq|)|;
   }
+  my $country_description_key = SL::DB::Country->description_column_localized($::myconfig{countrycode});
  my $q_details = qq|
 
     SELECT ${ct}.id AS ctid, ${ct}.name,
-      street, zipcode, city, country, contact, email,
+      street, zipcode, city, countries.$country_description_key AS country, contact, email,
       phone as customerphone, fax as customerfax, ${ct}number,
-      "invnumber", "transdate",
+      "invnumber", "transdate", "type",
       (amount - COALESCE((SELECT sum(amount)*$ml FROM acc_trans WHERE chart_link ilike '%paid%' AND acc_trans.trans_id=${arap}.id AND acc_trans.transdate <= (date $todate)),0)) as "open", "amount",
-      "duedate", invoice, ${arap}.id, date_part('days', now() - duedate) as overduedays,
+      "duedate", invoice, ${arap}.id, date_part('days', now() - duedate) as overduedays, datepaid, (amount - paid) as current_open,
       (SELECT $buysell
        FROM exchangerate
        WHERE (${arap}.currency_id = exchangerate.currency_id)
          AND (exchangerate.transdate = ${arap}.transdate)) AS exchangerate
     FROM ${arap}, ${ct}
+    LEFT JOIN countries ON (${ct}.country_id = countries.id)
     WHERE ((paid != amount) OR (datepaid > (date $todate) AND datepaid is not null))
       AND NOT COALESCE (${arap}.storno, 'f')
       AND (${arap}.${ct}_id = ${ct}.id)
@@ -1363,103 +1364,6 @@ sub get_customer {
        WHERE ct.id = ?|;
   ($form->{ $form->{ct} }, $form->{email}, $form->{cc}, $form->{bcc}) =
     selectrow_query($form, $dbh, $query, $form->{"${ct}_id"});
-
-  $main::lxdebug->leave_sub();
-}
-
-sub tax_report {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $myconfig, $form) = @_;
-
-  my $dbh = SL::DB->client->dbh;
-
-  my ($null, $department_id) = split /--/, $form->{department};
-
-  # build WHERE
-  my $where = "1 = 1";
-
-  if ($department_id) {
-    $where .= qq| AND (a.department_id = | . conv_i($department_id, 'NULL') . qq|) |;
-  }
-
-  my ($accno, $rate);
-
-  if ($form->{accno}) {
-    $accno = $form->{accno};
-    $rate  = $form->{"$form->{accno}_rate"};
-    $accno = qq| AND (ch.accno = | . $dbh->quote($accno) . qq|)|;
-  }
-  $rate *= 1;
-
-  my ($table, $ARAP);
-
-  if ($form->{db} eq 'ar') {
-    $table = "customer";
-    $ARAP  = "AR";
-  } else {
-    $table = "vendor";
-    $ARAP  = "AP";
-  }
-
-  my $arap = lc($ARAP);
-
-  my $transdate = "a.transdate";
-
-  if ($form->{method} eq 'cash') {
-    $transdate = "a.datepaid";
-
-    my $todate = conv_dateq($form->{todate} ? $form->{todate} : $form->current_date($myconfig));
-
-    $where .= qq|
-      AND ac.trans_id IN
-        (
-          SELECT trans_id
-          FROM acc_trans a
-          WHERE (a.chart_link LIKE '%${ARAP}_paid%')
-          AND (transdate <= $todate)
-        )
-      |;
-  }
-
-  # if there are any dates construct a where
-  $where .= " AND ($transdate >= " . conv_dateq($form->{fromdate}) . ") " if ($form->{fromdate});
-  $where .= " AND ($transdate <= " . conv_dateq($form->{todate}) . ") " if ($form->{todate});
-
-  my $ml = ($form->{db} eq 'ar') ? 1 : -1;
-
-  my $sortorder = join ', ', $form->sort_columns(qw(transdate invnumber name));
-  $sortorder = $form->{sort} if ($form->{sort} && grep({ $_ eq $form->{sort} } qw(id transdate invnumber name netamount tax)));
-
-  my $query =
-      qq|SELECT a.id, '0' AS invoice, $transdate AS transdate, a.invnumber, n.name, a.netamount,
-          ac.amount * $ml AS tax
-         FROM acc_trans ac
-         JOIN ${arap} a ON (a.id = ac.trans_id)
-         JOIN chart ch ON (ch.id = ac.chart_id)
-         JOIN $table n ON (n.id = a.${table}_id)
-         WHERE
-           $where
-           $accno
-           AND (a.invoice = '0')
-
-         UNION
-
-         SELECT a.id, '1' AS invoice, $transdate AS transdate, a.invnumber, n.name, i.sellprice * i.qty AS netamount,
-           i.sellprice * i.qty * $rate * $ml AS tax
-         FROM acc_trans ac
-         JOIN ${arap} a ON (a.id = ac.trans_id)
-         JOIN chart ch ON (ch.id = ac.chart_id)
-         JOIN $table n ON (n.id = a.${table}_id)
-         JOIN ${table}tax t ON (t.${table}_id = n.id)
-         JOIN invoice i ON (i.trans_id = a.id)
-         WHERE
-           $where
-           $accno
-           AND (a.invoice = '1')
-         ORDER BY $sortorder|;
-
-  $form->{TR} = selectall_hashref_query($form, $dbh, $query);
 
   $main::lxdebug->leave_sub();
 }

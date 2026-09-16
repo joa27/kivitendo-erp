@@ -1,4 +1,4 @@
-use Test::More tests => 41;
+use Test::More tests => 75;
 
 use strict;
 
@@ -25,11 +25,12 @@ use SL::DB::Unit;
 use SL::Dev::ALL qw(:ALL);
 
 my ($customer, $employee, $payment_do, $unit, @parts, $department);
+my ($transdate);
 
 my $VISUAL_TEST = 0;  # just a sleep to click around
 
 sub clear_up {
-  foreach (qw(DeliveryOrderItem DeliveryOrder InvoiceItem Invoice Part Customer Department PaymentTerm)) {
+  foreach (qw(DeliveryOrderItem DeliveryOrder OrderItem Order InvoiceItem Invoice Part Customer Department PaymentTerm)) {
     "SL::DB::Manager::${_}"->delete_all(all => 1);
   }
   SL::DB::Manager::Employee->delete_all(where => [ login => 'testuser' ]);
@@ -39,6 +40,9 @@ sub reset_state {
   my %params = @_;
 
   clear_up();
+
+  $transdate = DateTime->today_local;
+  $transdate->set_year(2019) if $transdate->year == 2020; # use year 2019 in 2020, because of tax rate change in Germany
 
   $unit     = SL::DB::Manager::Unit->find_by(name => 'kg') || die "Can't find unit 'kg'";
   $customer = new_customer()->save;
@@ -91,6 +95,7 @@ reset_state();
 # we create L20199 with two items
 my $do1 = create_sales_delivery_order(
   'department_id' => $department->id,
+  'transdate'     => $transdate,
   'donumber'      => 'L20199',
   'employee_id'   => $employee->id,
   'intnotes'      => 'some intnotes',
@@ -122,7 +127,8 @@ my $do1 = create_sales_delivery_order(
                     transdate       => '06.03.2015',
                     unit            => $unit->name,
                   )
-                ]
+                ],
+  transaction_description => 'Liefervorgang',
 );
 
 
@@ -144,7 +150,7 @@ is (SL::DB::Manager::DeliveryOrderItem->get_all_count(where => [ delivery_order_
 
 
 # convert this do to invoice
-my $invoice = $do1->convert_to_invoice();
+my $invoice = $do1->convert_to_invoice(transdate => $transdate, attributes => {transaction_description => 'Rechnungsvorgang'});
 
 sleep (300) if $VISUAL_TEST; # we can do a real visual test via gui login
 # test invoice afterwards
@@ -157,48 +163,15 @@ ok ($invoice->notes eq '<ul><li><strong>fett</strong></li><li><strong>und</stron
 ok(($do1->closed) , 'Delivery Order is closed after conversion');
 is($invoice->payment_terms->description, "14Tage 2%Skonto, 30Tage netto", 'payment term description check');
 
-# some test data from original client invoice console (!)
-# my $invoice3 = SL::DB::Manager::Invoice->find_by( ordnumber => 'A16399' );
-# which will fail due to PTC Calculation differs from GUI-Calculation, see issue: http://redmine.kivitendo-premium.de/issues/82
-# pp $invoice3
-# values from gui should be:
-#ok($invoice->amount == 1354.20000, 'amount check');
-#ok($invoice->marge_percent == 50.88666, 'marge percent check');
-#ok($invoice->marge_total == 579.08000, 'marge total check');
-#ok($invoice->netamount == 1137.98000, 'netamount check');
-
-
-# the values change if one reloads the object
-# without reloading we get this failures
-#not ok 17 - amount check
-#   Failed test 'amount check'
-#   at t/db_helper/convert_invoice.t line 272.
-#          got: '1354.17'
-#     expected: '1354.17000'
-#not ok 18 - marge percent check
-#   Failed test 'marge percent check'
-#   at t/db_helper/convert_invoice.t line 273.
-#          got: '50.8857956342929'
-#     expected: '50.88580'
-#not ok 19 - marge total check
-#   Failed test 'marge total check'
-#   at t/db_helper/convert_invoice.t line 274.
-#          got: '579.06'
-#     expected: '579.06000'
-#not ok 20 - netamount check
-#   Failed test 'netamount check'
-#   at t/db_helper/convert_invoice.t line 275.
-#          got: '1137.96'
-#     expected: '1137.96000'
-
 $invoice->load;
 
 is($invoice->cusordnumber            , 'b84da'           , 'cusordnumber check');
+is($invoice->transaction_description,  'Rechnungsvorgang', 'transaction description (changed on conversion) check');
 is($invoice->department->description , "Test Department" , 'department description ok');
-is($invoice->amount                  , '1354.17000'      , 'amount check');
-is($invoice->marge_percent           , '50.88580'        , 'marge percent check');
-is($invoice->marge_total             , '579.06000'       , 'marge total check');
-is($invoice->netamount               , '1137.96000'      , 'netamount check');
+is($invoice->amount                  , '1354.20000'      , 'amount check');
+is($invoice->marge_percent           , '50.88666'        , 'marge percent check');
+is($invoice->marge_total             , '579.08000'       , 'marge total check');
+is($invoice->netamount               , '1137.98000'      , 'netamount check');
 
 # some item checks
 is($invoice->items_sorted->[0]->parts_id         , $parts[0]->id , 'invoiceitem 1 linked with part');
@@ -264,6 +237,120 @@ foreach ( $do1_item1->id, $do1_item2->id ) {
   is($links_record_item1[0]->{to_table}   , 'invoice'              , "record to table check $_");
 }
 
+##############
+# test conversion from order to invoice
+##############
+
+reset_state();
+
+# we create A16399 with two items
+my $o1 = create_sales_order(
+  save            => 1,
+  'department_id' => $department->id,
+  'transdate'     => $transdate,
+  'employee_id'   => $employee->id,
+  'intnotes'      => 'some intnotes',
+  'ordnumber'     => 'A16399',
+  'payment_id'    => $payment_do->id,
+  'salesman_id'   => $employee->id,
+  'shippingpoint' => 'sendtome',
+  'shipvia'       => 'DHL, Versand am 06.03.2015, 1 Paket  17,00 kg',
+  'cusordnumber'  => 'b84da',
+  'customer_id'   => $customer->id,
+  'notes'         => '<ul><li><strong>fett</strong></li><li><strong>und</strong></li><li><strong>mit</strong></li><li><strong>bullets</strong></li><li>&nbsp;</li></ul>',
+  orderitems => [
+                  create_order_item(
+                    part               => $parts[0],
+                    discount           => '0.25',
+                    lastcost           => '49.95000',
+                    longdescription    => "<ol><li>27</li><li>28</li><li>29</li><li><sub>asdf</sub></li><li><sub>asdf</sub></li><li><sup>oben</sup></li></ol><p><s>kommt nicht mehr vor</s></p>",
+                    marge_price_factor => 1,
+                    qty                => '2.00000',
+                    sellprice          => '242.20000',
+                    unit               => $unit->name,
+                  ),
+                  create_order_item(
+                    part            => $parts[1],
+                    discount        => '0.25',
+                    lastcost        => '153.00000',
+                    qty             => '3.00000',
+                    sellprice       => '344.30000',
+                    transdate       => '06.03.2015',
+                    unit            => $unit->name,
+                  )
+  ],
+  transaction_description => 'Auftragsvorgang',
+);
+
+
+# TESTS
+
+my $o1_item1 = $o1->orderitems->[0];
+my $o1_item2 = $o1->orderitems->[1];
+
+# convert this order to invoice
+$invoice = $o1->convert_to_invoice(transdate => $transdate, attributes => {transaction_description => 'Rechnungsvorgang'});
+$invoice->load;
+
+# test invoice afterwards
+ok ($invoice->shipvia eq "DHL, Versand am 06.03.2015, 1 Paket  17,00 kg", "convert form order: ship via check");
+ok ($invoice->shippingpoint eq "sendtome", "convert form order: shipping point check");
+ok ($invoice->ordnumber eq "A16399", "convert form order: ordnumber check");
+ok ($invoice->notes eq '<ul><li><strong>fett</strong></li><li><strong>und</strong></li><li><strong>mit</strong></li><li><strong>bullets</strong></li><li>&nbsp;</li></ul>', "convert form order: do RichText notes saved");
+ok(($o1->closed) , 'convert form order: Order is closed after conversion');
+is($invoice->payment_terms->description, "14Tage 2%Skonto, 30Tage netto", 'convert form order: payment term description check');
+
+is($invoice->cusordnumber,            'b84da',            'convert form order: cusordnumber check');
+is($invoice->transaction_description, 'Rechnungsvorgang', 'convert form order: transaction description (changed on conversion) check');
+is($invoice->department->description, "Test Department",  'convert form order: department description ok');
+is($invoice->amount,                  '1354.20000',       'convert form order: amount check');
+is($invoice->marge_percent,           '50.88666',         'convert form order: marge percent check');
+is($invoice->marge_total,             '579.08000',        'convert form order: marge total check');
+is($invoice->netamount,               '1137.98000',       'convert form order: netamount check');
+
+# some item checks
+is($invoice->items_sorted->[0]->parts_id,         $parts[0]->id , 'convert form order: invoiceitem 1 linked with part');
+is(scalar @{ $invoice->invoiceitems },            2,              'convert form order: two invoice items linked with invoice');
+is($invoice->items_sorted->[0]->position,         1,              "convert form order: position 1 order correct");
+is($invoice->items_sorted->[1]->position,         2,              "convert form order: position 2 order correct");
+is($invoice->items_sorted->[0]->part->partnumber, 'v-519160549' , "convert form order: partnumber 1 correct");
+is($invoice->items_sorted->[1]->part->partnumber, 'v-120160086' , "convert form order: partnumber 2 correct");
+is($invoice->items_sorted->[0]->qty,              '2.00000',      "convert form order: pos 1 qty");
+is($invoice->items_sorted->[1]->qty,              '3.00000',      "convert form order: pos 2 qty");
+is($invoice->items_sorted->[0]->discount,         0.25,           "convert form order: pos 1 discount");
+is($invoice->items_sorted->[1]->discount,         0.25,           "convert form order: pos 2 discount");
+is($invoice->items_sorted->[0]->longdescription , "<ol><li>27</li><li>28</li><li>29</li><li><sub>asdf</sub></li><li><sub>asdf</sub></li><li><sup>oben</sup></li></ol><p><s>kommt nicht mehr vor</s></p>",
+     "convert form order: invoice item1 rich text longdescripition");
+
+# check linked records AND linked items
+@links_record = RecordLinks->get_links('from_table' => 'oe',
+                                       'to_table'   => 'ar',
+                                       'from_id'    => $o1->id,
+);
+
+is($links_record[0]->{from_id},    $o1->id, "convert form order: record from id check");
+is($links_record[0]->{from_table}, 'oe',    "convert form order: record from table check");
+is($links_record[0]->{to_table},   'ar',    "convert form order: record to table check");
+
+my $i = 0;
+foreach ( $o1_item1->id, $o1_item2->id ) {
+  $i++;
+  my @links_record_item = RecordLinks->get_links('from_table' => 'orderitems',
+                                                  'to_table'   => 'invoice',
+                                                  'from_id'    => $_,
+                                                 );
+
+  is($links_record_item[0]->{from_id},    $_ ,          "convert form order: record from id check item $i");
+  is($links_record_item[0]->{from_table}, 'orderitems', "convert form order: record from table check item $i");
+  is($links_record_item[0]->{to_table},   'invoice',    "convert form order: record to table check item $i");
+}
+
 clear_up();
 
 1;
+
+# vim: ft=perl
+# set emacs to perl mode
+# Local Variables:
+# mode: perl
+# End:

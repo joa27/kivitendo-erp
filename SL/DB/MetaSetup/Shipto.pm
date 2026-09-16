@@ -15,7 +15,7 @@ __PACKAGE__->meta->columns(
   shipto_id          => { type => 'integer', not_null => 1, sequence => 'id' },
   shiptocity         => { type => 'text' },
   shiptocontact      => { type => 'text' },
-  shiptocountry      => { type => 'text' },
+  shiptocountry_id   => { type => 'integer' },
   shiptocp_gender    => { type => 'text' },
   shiptodepartment_1 => { type => 'text' },
   shiptodepartment_2 => { type => 'text' },
@@ -33,5 +33,12 @@ __PACKAGE__->meta->primary_key_columns([ 'shipto_id' ]);
 
 __PACKAGE__->meta->allow_inline_column_values(1);
 
+__PACKAGE__->meta->foreign_keys(
+  shiptocountry => {
+    class       => 'SL::DB::Country',
+    key_columns => { shiptocountry_id => 'id' },
+  },
+);
+
 1;
-;
+

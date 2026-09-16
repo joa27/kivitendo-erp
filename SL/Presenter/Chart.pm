@@ -5,47 +5,57 @@ use strict;
 use SL::DB::Chart;
 
 use Exporter qw(import);
-use Data::Dumper;
-our @EXPORT = qw(chart_picker chart);
+our @EXPORT_OK = qw(chart_picker chart);
 
 use Carp;
+use Data::Dumper;
+use SL::Presenter::EscapedText qw(escape is_escaped);
+use SL::Presenter::Tag qw(input_tag name_to_id html_tag link_tag);
 
 sub chart {
-  my ($self, $chart, %params) = @_;
+  my ($chart, %params) = @_;
 
   $params{display} ||= 'inline';
 
   croak "Unknown display type '$params{display}'" unless $params{display} =~ m/^(?:inline|table-cell)$/;
 
-  my $text = join '', (
-    $params{no_link} ? '' : '<a href="am.pl?action=edit_account&id=' . $self->escape($chart->id) . '">',
-    $self->escape($chart->accno),
-    $params{no_link} ? '' : '</a>',
-  );
-  return $self->escaped_text($text);
+  my $text = escape($chart->accno);
+  if (! delete $params{no_link}) {
+    my $href = 'am.pl?action=edit_account&id=' . escape($chart->id);
+    $text = link_tag($href, $text, %params);
+  }
+  is_escaped($text);
 }
 
 sub chart_picker {
-  my ($self, $name, $value, %params) = @_;
-
+  my ($name, $value, %params) = @_;
   $value = SL::DB::Manager::Chart->find_by(id => $value) if $value && !ref $value;
-  my $id = delete($params{id}) || $self->name_to_id($name);
+  my $id = delete($params{id}) || name_to_id($name);
   my $fat_set_item = delete $params{fat_set_item};
 
   my @classes = $params{class} ? ($params{class}) : ();
   push @classes, 'chart_autocomplete';
   push @classes, 'chartpicker_fat_set_item' if $fat_set_item;
 
+  # If there is no 'onClick' parameter, set it to 'this.select()',
+  # so that the user can type directly in the input field
+  # to search another chart.
+  if (!grep { m{onclick}i } keys %params) {
+    $params{onClick} = 'this.select()';
+  }
+
   my $ret =
-    $self->input_tag($name, (ref $value && $value->can('id') ? $value->id : ''), class => "@classes", type => 'hidden', id => $id) .
-    join('', map { $params{$_} ? $self->input_tag("", delete $params{$_}, id => "${id}_${_}", type => 'hidden') : '' } qw(type category choose booked)) .
-    $self->input_tag("", (ref $value && $value->can('displayable_name')) ? $value->displayable_name : '', id => "${id}_name", %params);
+    input_tag($name, (ref $value && $value->can('id') ? $value->id : ''), class => "@classes", type => 'hidden', id => $id) .
+    join('', map { $params{$_} ? input_tag("", delete $params{$_}, id => "${id}_${_}", type => 'hidden') : '' } qw(type category choose booked status)) .
+    input_tag("", (ref $value && $value->can('displayable_name')) ? $value->displayable_name : '', id => "${id}_name", %params);
 
   $::request->layout->add_javascripts('autocomplete_chart.js');
   $::request->presenter->need_reinit_widgets($id);
 
-  $self->html_tag('span', $ret, class => 'chart_picker');
+  html_tag('span', $ret, class => 'chart_picker');
 }
+
+sub picker { goto &chart_picker }
 
 1;
 
@@ -61,7 +71,7 @@ SL::Presenter::Chart - Chart related presenter stuff
 
   # Create an html link for editing/opening a chart
   my $object = SL::DB::Manager::Chart->get_first;
-  my $html   = SL::Presenter->get->chart($object, display => 'inline');
+  my $html   = SL::Presenter::Chart::chart($object, display => 'inline');
 
 see also L<SL::Presenter>
 
@@ -78,15 +88,20 @@ see L<SL::Presenter>
 Returns a rendered version (actually an instance of
 L<SL::Presenter::EscapedText>) of the chart object C<$object>
 
-C<%params> can include:
+Remaining C<%params> are passed to the function
+C<SL::Presenter::Tag::link_tag>. It can include:
 
-=over 4
+=over 2
 
 =item * display
 
-Either C<inline> (the default) or C<table-cell>. At the moment both
-representations are identical and produce the chart's name linked
-to the corresponding 'edit' action.
+Either C<inline> (the default) or C<table-cell>. Is passed to the function
+C<SL::Presenter::Tag::link_tag>.
+
+=item * no_link
+
+If falsish (the default) then the account number will be linked to the "edit"
+dialog.
 
 =back
 
@@ -152,6 +167,13 @@ the item object. There is an example on the test page.
 
 Without fat_set_item only the variables id and name (displayable name) are
 available.
+
+=item * status
+
+If C<%params> contains C<status> only charts of this status will be used
+for autocompletion. C<status> can be one of the following strings:
+C<valid>, C<invalid> or C<all>. C<valid> is the default if C<status> is
+not given.
 
 =back
 

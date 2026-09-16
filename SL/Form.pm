@@ -1,4 +1,4 @@
-#========= ===========================================================
+#=====================================================================
 # LX-Office ERP
 # Copyright (C) 2004
 # Based on SQL-Ledger Version 2.1.9
@@ -42,13 +42,14 @@ use Carp;
 use Data::Dumper;
 
 use Carp;
-use Config;
 use CGI;
 use Cwd;
 use Encode;
 use File::Copy;
+use File::Temp ();
 use IO::File;
 use Math::BigInt;
+use Params::Validate qw(:all);
 use POSIX qw(strftime);
 use SL::Auth;
 use SL::Auth::DB;
@@ -59,7 +60,9 @@ use SL::CVar;
 use SL::DB;
 use SL::DBConnect;
 use SL::DBUtils;
+use SL::DB::AdditionalBillingAddress;
 use SL::DB::Customer;
+use SL::DB::CustomVariableConfig;
 use SL::DB::Default;
 use SL::DB::PaymentTerm;
 use SL::DB::Vendor;
@@ -75,10 +78,12 @@ use SL::Menu;
 use SL::MoreCommon qw(uri_encode uri_decode);
 use SL::OE;
 use SL::PrefixedNumber;
+use SL::Presenter::EscapedText qw();
 use SL::Request;
 use SL::Template;
 use SL::User;
 use SL::Util;
+use SL::Version;
 use SL::X;
 use Template;
 use URI;
@@ -86,19 +91,13 @@ use List::Util qw(first max min sum);
 use List::MoreUtils qw(all any apply);
 use SL::DB::Tax;
 use SL::Helper::File qw(:all);
+use SL::Helper::Number;
 use SL::Helper::CreatePDF qw(merge_pdfs);
 
 use strict;
 
 sub read_version {
-  my ($self) = @_;
-
-  open VERSION_FILE, "VERSION";                 # New but flexible code reads version from VERSION-file
-  my $version =  <VERSION_FILE>;
-  $version    =~ s/[^0-9A-Za-z\.\_\-]//g; # only allow numbers, letters, points, underscores and dashes. Prevents injecting of malicious code.
-  close VERSION_FILE;
-
-  return $version;
+  SL::Version->get_version;
 }
 
 sub new {
@@ -116,16 +115,9 @@ sub new {
 
   bless $self, $type;
 
-  $self->{version} = $self->read_version;
-
   $main::lxdebug->leave_sub();
 
   return $self;
-}
-
-sub read_cgi_input {
-  my ($self) = @_;
-  SL::Request::read_cgi_input($self);
 }
 
 sub _flatten_variables_rec {
@@ -158,7 +150,7 @@ sub _flatten_variables_rec {
           $first_array_entry = 0;
         }
       } else {
-        @result = ({ 'key' => $prefix . $key . ($first_array_entry ? '[+]' : '[]'), 'value' => $element });
+        push @result, { 'key' => $prefix . $key . '[]', 'value' => $element };
       }
     }
   }
@@ -189,7 +181,7 @@ sub flatten_standard_variables {
   $main::lxdebug->enter_sub(2);
 
   my $self      = shift;
-  my %skip_keys = map { $_ => 1 } (qw(login password header stylesheet titlebar version), @_);
+  my %skip_keys = map { $_ => 1 } (qw(login password header stylesheet titlebar), @_);
 
   my @variables;
 
@@ -200,36 +192,6 @@ sub flatten_standard_variables {
   $main::lxdebug->leave_sub(2);
 
   return @variables;
-}
-
-sub debug {
-  $main::lxdebug->enter_sub();
-
-  my ($self) = @_;
-
-  print "\n";
-
-  map { print "$_ = $self->{$_}\n" } (sort keys %{$self});
-
-  $main::lxdebug->leave_sub();
-}
-
-sub dumper {
-  $main::lxdebug->enter_sub(2);
-
-  my $self          = shift;
-  my $password      = $self->{password};
-
-  $self->{password} = 'X' x 8;
-
-  local $Data::Dumper::Sortkeys = 1;
-  my $output                    = Dumper($self);
-
-  $self->{password} = $password;
-
-  $main::lxdebug->leave_sub(2);
-
-  return $output;
 }
 
 sub escape {
@@ -287,7 +249,7 @@ sub hide_form {
 
 sub throw_on_error {
   my ($self, $code) = @_;
-  local $self->{__ERROR_HANDLER} = sub { die SL::X::FormError->new($_[0]) };
+  local $self->{__ERROR_HANDLER} = sub { SL::X::FormError->throw(error => $_[0]) };
   $code->();
 }
 
@@ -349,9 +311,9 @@ sub numtextrows {
 sub dberror {
   my ($self, $msg) = @_;
 
-  die SL::X::DBError->new(
-    msg   => $msg,
-    error => $DBI::errstr,
+  SL::X::DBError->throw(
+    msg      => $msg,
+    db_error => $DBI::errstr,
   );
 }
 
@@ -424,10 +386,12 @@ sub create_http_response {
     my $session_cookie_value = $main::auth->get_session_id();
 
     if ($session_cookie_value) {
-      $session_cookie = $cgi->cookie('-name'   => $main::auth->get_session_cookie_name(),
-                                     '-value'  => $session_cookie_value,
-                                     '-path'   => $uri->path,
-                                     '-secure' => $::request->is_https);
+      $session_cookie = $cgi->cookie('-name'    => $main::auth->get_session_cookie_name(),
+                                     '-value'   => $session_cookie_value,
+                                     '-path'    => $uri->path,
+                                     '-expires' => '+' . $::auth->{session_timeout} . 'm',
+                                     '-secure'  => $::request->is_https);
+      $session_cookie = "$session_cookie; SameSite=strict";
     }
   }
 
@@ -435,7 +399,7 @@ sub create_http_response {
   $cgi_params{'-charset'} = $params{charset} if ($params{charset});
   $cgi_params{'-cookie'}  = $session_cookie  if ($session_cookie);
 
-  map { $cgi_params{'-' . $_} = $params{$_} if exists $params{$_} } qw(content_disposition content_length);
+  map { $cgi_params{'-' . $_} = $params{$_} if exists $params{$_} } qw(content_disposition content_length status);
 
   my $output = $cgi->header(%cgi_params);
 
@@ -470,13 +434,15 @@ sub header {
 
   $layout->use_javascript("$_.js") for (qw(
     jquery jquery-ui jquery.cookie jquery.checkall jquery.download
-    jquery/jquery.form jquery/fixes client_js
+    jquery/jquery.form jquery/fixes namespace client_js
     jquery/jquery.tooltipster.min
     common part_selection
   ), "jquery/ui/i18n/jquery.ui.datepicker-$::myconfig{countrycode}");
 
-  $self->{favicon} ||= "favicon.ico";
-  $self->{titlebar} = join ' - ', grep $_, $self->{title}, $self->{login}, $::myconfig{dbname}, $self->{version} if $self->{title} || !$self->{titlebar};
+  $layout->use_javascript("$_.js") for @{ $params{use_javascripts} // [] };
+
+  $self->{favicon} ||= "image/favicon.ico";
+  $self->{titlebar} = join ' - ', grep $_, $self->{title}, $self->{login}, $::myconfig{dbname}, $self->read_version if $self->{title} || !$self->{titlebar};
 
   # build includes
   if ($self->{refresh_url} || $self->{refresh_time}) {
@@ -489,8 +455,9 @@ sub header {
 
   push @header, map { qq|<link rel="stylesheet" href="${_}${auto_reload_resources_param}" type="text/css" title="Stylesheet">| } $layout->stylesheets;
   push @header, "<style type='text/css'>\@page { size:landscape; }</style> "                     if $self->{landscape};
-  push @header, "<link rel='shortcut icon' href='$self->{favicon}' type='image/x-icon'>"         if -f $self->{favicon};
+  push @header, "<link rel='shortcut icon' href='$self->{favicon}' type='image/x-icon'>"         if -f "public/$self->{favicon}";
   push @header, map { qq|<script type="text/javascript" src="${_}${auto_reload_resources_param}"></script>| }                    $layout->javascripts;
+  push @header, '<meta name="viewport" content="width=device-width, initial-scale=1">';
   push @header, $self->{javascript} if $self->{javascript};
   push @header, map { $_->show_javascript } @{ $self->{AJAX} || [] };
 
@@ -503,7 +470,7 @@ sub header {
 
   # output
   print $self->create_http_response(content_type => 'text/html', charset => 'UTF-8');
-  print $doctypes{$params{doctype} || 'transitional'}, $/;
+  print $doctypes{$params{doctype} || $::request->layout->html_dialect}, $/;
   print <<EOT;
 <html>
  <head>
@@ -570,7 +537,7 @@ sub set_standard_title {
   $::lxdebug->enter_sub;
   my $self = shift;
 
-  $self->{titlebar}  = "kivitendo " . $::locale->text('Version') . " $self->{version}";
+  $self->{titlebar}  = "kivitendo " . $::locale->text('Version') . " " . $self->read_version;
   $self->{titlebar} .= "- $::myconfig{name}"   if $::myconfig{name};
   $self->{titlebar} .= "- $::myconfig{dbname}" if $::myconfig{name};
 
@@ -590,9 +557,13 @@ sub _prepare_html_template {
   }
   $language = "de" unless ($language);
 
-  if (-f "templates/webpages/${file}.html") {
-    $file = "templates/webpages/${file}.html";
+  my $webpages_path     = $::request->layout->webpages_path;
+  my $webpages_fallback = $::request->layout->webpages_fallback_path;
 
+  my @templates = first { -f } map { "${_}/${file}.html" } grep { defined } $webpages_path, $webpages_fallback;
+
+  if (@templates) {
+    $file = $templates[0];
   } elsif (ref $file eq 'SCALAR') {
     # file is a scalarref, use inline mode
   } else {
@@ -741,112 +712,10 @@ sub sort_columns {
   return @columns;
 }
 #
+
 sub format_amount {
-  $main::lxdebug->enter_sub(2);
-
   my ($self, $myconfig, $amount, $places, $dash) = @_;
-  $amount ||= 0;
-  $dash   ||= '';
-  my $neg = $amount < 0;
-  my $force_places = defined $places && $places >= 0;
-
-  $amount = $self->round_amount($amount, abs $places) if $force_places;
-  $neg    = 0 if $amount == 0; # don't show negative zero
-  $amount = sprintf "%.*f", ($force_places ? $places : 10), abs $amount; # 6 is default for %fa
-
-  # before the sprintf amount was a number, afterwards it's a string. because of the dynamic nature of perl
-  # this is easy to confuse, so keep in mind: before this comment no s///, m//, concat or other strong ops on
-  # $amount. after this comment no +,-,*,/,abs. it will only introduce subtle bugs.
-
-  $amount =~ s/0*$// unless defined $places && $places == 0;             # cull trailing 0s
-
-  my @d = map { s/\d//g; reverse split // } my $tmp = $myconfig->{numberformat}; # get delim chars
-  my @p = split(/\./, $amount);                                          # split amount at decimal point
-
-  $p[0] =~ s/\B(?=(...)*$)/$d[1]/g if $d[1];                             # add 1,000 delimiters
-  $amount = $p[0];
-  if ($places || $p[1]) {
-    $amount .= $d[0]
-            .  ( $p[1] || '' )
-            .  (0 x max(abs($places || 0) - length ($p[1]||''), 0));     # pad the fraction
-  }
-
-  $amount = do {
-    ($dash =~ /-/)    ? ($neg ? "($amount)"                            : "$amount" )                              :
-    ($dash =~ /DRCR/) ? ($neg ? "$amount " . $main::locale->text('DR') : "$amount " . $main::locale->text('CR') ) :
-                        ($neg ? "-$amount"                             : "$amount" )                              ;
-  };
-
-  $main::lxdebug->leave_sub(2);
-  return $amount;
-}
-
-sub format_amount_units {
-  $main::lxdebug->enter_sub();
-
-  my $self             = shift;
-  my %params           = @_;
-
-  my $myconfig         = \%main::myconfig;
-  my $amount           = $params{amount} * 1;
-  my $places           = $params{places};
-  my $part_unit_name   = $params{part_unit};
-  my $amount_unit_name = $params{amount_unit};
-  my $conv_units       = $params{conv_units};
-  my $max_places       = $params{max_places};
-
-  if (!$part_unit_name) {
-    $main::lxdebug->leave_sub();
-    return '';
-  }
-
-  my $all_units        = AM->retrieve_all_units;
-
-  if (('' eq ref $conv_units) && ($conv_units =~ /convertible/)) {
-    $conv_units = AM->convertible_units($all_units, $part_unit_name, $conv_units eq 'convertible_not_smaller');
-  }
-
-  if (!scalar @{ $conv_units }) {
-    my $result = $self->format_amount($myconfig, $amount, $places, undef, $max_places) . " " . $part_unit_name;
-    $main::lxdebug->leave_sub();
-    return $result;
-  }
-
-  my $part_unit  = $all_units->{$part_unit_name};
-  my $conv_unit  = ($amount_unit_name && ($amount_unit_name ne $part_unit_name)) ? $all_units->{$amount_unit_name} : $part_unit;
-
-  $amount       *= $conv_unit->{factor};
-
-  my @values;
-  my $num;
-
-  foreach my $unit (@$conv_units) {
-    my $last = $unit->{name} eq $part_unit->{name};
-    if (!$last) {
-      $num     = int($amount / $unit->{factor});
-      $amount -= $num * $unit->{factor};
-    }
-
-    if ($last ? $amount : $num) {
-      push @values, { "unit"   => $unit->{name},
-                      "amount" => $last ? $amount / $unit->{factor} : $num,
-                      "places" => $last ? $places : 0 };
-    }
-
-    last if $last;
-  }
-
-  if (!@values) {
-    push @values, { "unit"   => $part_unit_name,
-                    "amount" => 0,
-                    "places" => 0 };
-  }
-
-  my $result = join " ", map { $self->format_amount($myconfig, $_->{amount}, $_->{places}, undef, $max_places), $_->{unit} } @values;
-
-  $main::lxdebug->leave_sub();
-
-  return $result;
+  SL::Helper::Number::_format_number($amount, $places, %$myconfig, dash => $dash);
 }
 
 sub format_string {
@@ -867,82 +736,11 @@ sub format_string {
 #
 
 sub parse_amount {
-  $main::lxdebug->enter_sub(2);
-
   my ($self, $myconfig, $amount) = @_;
-
-  if (!defined($amount) || ($amount eq '')) {
-    $main::lxdebug->leave_sub(2);
-    return 0;
-  }
-
-  if (   ($myconfig->{numberformat} eq '1.000,00')
-      || ($myconfig->{numberformat} eq '1000,00')) {
-    $amount =~ s/\.//g;
-    $amount =~ s/,/\./g;
-  }
-
-  if ($myconfig->{numberformat} eq "1'000.00") {
-    $amount =~ s/\'//g;
-  }
-
-  $amount =~ s/,//g;
-
-  $main::lxdebug->leave_sub(2);
-
-  # Make sure no code wich is not a math expression ends up in eval().
-  return 0 unless $amount =~ /^ [\s \d \( \) \- \+ \* \/ \. ]* $/x;
-
-  # Prevent numbers from being parsed as octals;
-  $amount =~ s{ (?<! [\d.] ) 0+ (?= [1-9] ) }{}gx;
-
-  return scalar(eval($amount)) * 1 ;
+  SL::Helper::Number::_parse_number($amount, %$myconfig);
 }
 
-sub round_amount {
-  my ($self, $amount, $places, $adjust) = @_;
-
-  return 0 if !defined $amount;
-
-  $places //= 0;
-
-  if ($adjust) {
-    my $precision = $::instance_conf->get_precision || 0.01;
-    return $self->round_amount( $self->round_amount($amount / $precision, 0) * $precision, $places);
-  }
-
-  # We use Perl's knowledge of string representation for
-  # rounding. First, convert the floating point number to a string
-  # with a high number of places. Then split the string on the decimal
-  # sign and use integer calculation for rounding the decimal places
-  # part. If an overflow occurs then apply that overflow to the part
-  # before the decimal sign as well using integer arithmetic again.
-
-  my $int_amount = int(abs $amount);
-  my $str_places = max(min(10, 16 - length("$int_amount") - $places), $places);
-  my $amount_str = sprintf '%.*f', $places + $str_places, abs($amount);
-
-  return $amount unless $amount_str =~ m{^(\d+)\.(\d+)$};
-
-  my ($pre, $post)      = ($1, $2);
-  my $decimals          = '1' . substr($post, 0, $places);
-
-  my $propagation_limit = $Config{i32size} == 4 ? 7 : 18;
-  my $add_for_rounding  = substr($post, $places, 1) >= 5 ? 1 : 0;
-
-  if ($places > $propagation_limit) {
-    $decimals = Math::BigInt->new($decimals)->badd($add_for_rounding);
-    $pre      = Math::BigInt->new($decimals)->badd(1) if substr($decimals, 0, 1) eq '2';
-
-  } else {
-    $decimals += $add_for_rounding;
-    $pre      += 1 if substr($decimals, 0, 1) eq '2';
-  }
-
-  $amount  = ("${pre}." . substr($decimals, 1)) * ($amount <=> 0);
-
-  return $amount;
-}
+sub round_amount { shift; goto &SL::Helper::Number::_round_number; }
 
 sub parse_template {
   $main::lxdebug->enter_sub();
@@ -952,11 +750,18 @@ sub parse_template {
 
   local (*IN, *OUT);
 
-  my $defaults  = SL::DB::Default->get;
-  my $userspath = $::lx_office_conf{paths}->{userspath};
+  my $defaults        = SL::DB::Default->get;
 
-  $self->{"cwd"} = getcwd();
-  $self->{"tmpdir"} = $self->{cwd} . "/${userspath}";
+  my $keep_temp_files = $::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files};
+  $self->{cwd}        = getcwd();
+  my $temp_dir        = File::Temp->newdir(
+    "kivitendo-print-XXXXXX",
+    DIR     => $self->{cwd} . "/" . $::lx_office_conf{paths}->{userspath},
+    CLEANUP => !$keep_temp_files,
+  );
+
+  my $userspath   = File::Spec->abs2rel($temp_dir->dirname);
+  $self->{tmpdir} = $temp_dir->dirname;
 
   my $ext_for_format;
 
@@ -972,13 +777,6 @@ sub parse_template {
   } elsif (($self->{"format"} =~ /html/i) || (!$self->{"format"} && ($self->{"IN"} =~ /html$/i))) {
     $template_type  = 'HTML';
     $ext_for_format = 'html';
-
-  } elsif (($self->{"format"} =~ /xml/i) || (!$self->{"format"} && ($self->{"IN"} =~ /xml$/i))) {
-    $template_type  = 'XML';
-    $ext_for_format = 'xml';
-
-  } elsif ( $self->{"format"} =~ /elster(?:winston|taxbird)/i ) {
-    $template_type = 'XML';
 
   } elsif ( $self->{"format"} =~ /excel/i ) {
     $template_type  = 'Excel';
@@ -1023,7 +821,6 @@ sub parse_template {
 
   # OUT is used for the media, screen, printer, email
   # for postscript we store a copy in a temporary file
-  my $keep_temp_files = $::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files};
 
   my ($temp_fh, $suffix);
   $suffix =  $self->{IN};
@@ -1065,7 +862,10 @@ sub parse_template {
   close OUT if $self->{OUT};
   # check only one flag (webdav_documents)
   # therefore copy to webdav, even if we do not have the webdav feature enabled (just archive)
-  my $copy_to_webdav =  $::instance_conf->get_webdav_documents && !$self->{preview} && $self->{tmpdir} && $self->{tmpfile} && $self->{type};
+  my $copy_to_webdav =  $::instance_conf->get_webdav_documents && !$self->{preview} && $self->{tmpdir} && $self->{tmpfile} && $self->{type}
+                        && $self->{type} ne 'statement';
+
+  $self->{attachment_filename} ||= $self->generate_attachment_filename;
 
   if ( $ext_for_format eq 'pdf' && $self->doc_storage_enabled ) {
     $self->append_general_pdf_attachments(filepath =>  $self->{tmpdir}."/".$self->{tmpfile},
@@ -1073,10 +873,16 @@ sub parse_template {
   }
   if ($self->{media} eq 'file') {
     copy(join('/', $self->{cwd}, $userspath, $self->{tmpfile}), $out =~ m|^/| ? $out : join('/', $self->{cwd}, $out)) if $template->uses_temp_file;
-    Common::copy_file_to_webdav_folder($self)                                                                         if $copy_to_webdav;
-    if (!$self->{preview} && $self->doc_storage_enabled)
+
+    if ($copy_to_webdav) {
+      if (my $error = Common::copy_file_to_webdav_folder($self)) {
+        chdir("$self->{cwd}");
+        $self->error($error);
+      }
+    }
+
+    if (!$self->{preview} && $self->{attachment_type} !~ m{^dunning} && $self->doc_storage_enabled)
     {
-      $self->{attachment_filename} ||= $self->generate_attachment_filename;
       $self->store_pdf($self);
     }
     $self->cleanup;
@@ -1087,14 +893,19 @@ sub parse_template {
     return;
   }
 
-  Common::copy_file_to_webdav_folder($self) if $copy_to_webdav;
+  if ($copy_to_webdav) {
+    if (my $error = Common::copy_file_to_webdav_folder($self)) {
+      chdir("$self->{cwd}");
+      $self->error($error);
+    }
+  }
 
-  if ( !$self->{preview} && $ext_for_format eq 'pdf' && $self->doc_storage_enabled) {
-    $self->{attachment_filename} ||= $self->generate_attachment_filename;
+  if ( !$self->{preview} && $ext_for_format eq 'pdf' && $self->{attachment_type} !~ m{^dunning} && $self->doc_storage_enabled) {
     my $file_obj = $self->store_pdf($self);
     $self->{print_file_id} = $file_obj->id if $file_obj;
   }
-  if ($self->{media} eq 'email') {
+  # dn has its own send email method, but sets media for print templates
+  if ($self->{media} eq 'email' && !$self->{dunning_id}) {
     if ( getcwd() eq $self->{"tmpdir"} ) {
       # in the case of generating pdf we are in the tmpdir, but WHY ???
       $self->{tmpfile} = $userspath."/".$self->{tmpfile};
@@ -1135,23 +946,29 @@ sub send_email {
   my $mail = Mailer->new;
 
   map { $mail->{$_} = $self->{$_} }
-    qw(cc subject message version format);
+    qw(cc subject message format);
+
+  if ($self->{cc_employee}) {
+    my ($user, $my_emp_cc);
+    $user        = SL::DB::Manager::AuthUser->find_by(login => $self->{cc_employee});
+    $my_emp_cc   = $user->get_config_value('email') if ref $user eq 'SL::DB::AuthUser';
+    $mail->{cc} .= ", "       if $mail->{cc};
+    $mail->{cc} .= $my_emp_cc if $my_emp_cc;
+  }
 
   $mail->{bcc}    = $self->get_bcc_defaults($myconfig, $self->{bcc});
   $mail->{to}     = $self->{EMAIL_RECIPIENT} ? $self->{EMAIL_RECIPIENT} : $self->{email};
   $mail->{from}   = qq|"$myconfig->{name}" <$myconfig->{email}>|;
   $mail->{fileid} = time() . '.' . $$ . '.';
+  $mail->{content_type}  =  "text/html";
   my $full_signature     =  $self->create_email_signature();
-  $full_signature        =~ s/\r//g;
 
   $mail->{attachments} =  [];
   my @attfiles;
   # if we send html or plain text inline
   if (($self->{format} eq 'html') && ($self->{sendmode} eq 'inline')) {
-    $mail->{contenttype}    =  "text/html";
     $mail->{message}        =~ s/\r//g;
-    $mail->{message}        =~ s/\n/<br>\n/g;
-    $full_signature         =~ s/\n/<br>\n/g;
+    $mail->{message}        =~ s{\n}{<br>\n}g;
     $mail->{message}       .=  $full_signature;
 
     open(IN, "<", $self->{tmpfile})
@@ -1161,19 +978,48 @@ sub send_email {
 
   } elsif (($self->{attachment_policy} // '') ne 'no_file') {
     my $attachment_name  =  $self->{attachment_filename}  || $self->{tmpfile};
-    $attachment_name     =~ s/\.(.+?)$/.${ext_for_format}/ if ($ext_for_format);
+    $attachment_name     =~ s{\.(.+?)$}{.${ext_for_format}} if ($ext_for_format);
 
     if (($self->{attachment_policy} // '') eq 'old_file') {
-      my ( $attfile ) = SL::File->get_all(object_id   => $self->{id},
-                                          object_type => $self->{formname},
-                                          file_type   => 'document');
+      my ( $attfile ) = SL::File->get_all(object_id     => $self->{id},
+                                          object_type   => $self->{type},
+                                          file_type     => 'document',
+                                          print_variant => $self->{formname},);
 
       if ($attfile) {
         $attfile->{override_file_name} = $attachment_name if $attachment_name;
         push @attfiles, $attfile;
+        $self->{file_id} = $attfile->id;
       }
 
     } else {
+      if ($self->{attachment_policy} eq 'merge_file') {
+        my $id = $::form->{id} ? $::form->{id} : undef;
+        my $latest_documents  = SL::DB::Manager::File->get_all(query =>
+                                [
+                                  object_id   => $id,
+                                  file_type   => 'document',
+                                  mime_type   => 'application/pdf',
+                                  source      => 'uploaded',
+                                  or          => [
+                                                   object_type => 'gl_transaction',
+                                                   object_type => 'purchase_invoice',
+                                                   object_type => 'invoice',
+                                                   object_type => 'credit_note',
+                                                 ],
+                                ],
+                                  sort_by   => 'itime DESC');
+        # if uploaded documents exists, add ALL pdf files for later merging
+        if (scalar @{ $latest_documents }) {
+          my $files;
+          push @{ $files }, $self->{tmpfile};
+          foreach my $latest_document (@{ $latest_documents }) {
+            die "No file datatype:" . ref $latest_document unless (ref $latest_document eq 'SL::DB::File');
+            push @{ $files }, $latest_document->file_versions_sorted->[-1]->get_system_location;
+          }
+          SL::Helper::CreatePDF->merge_pdfs(file_names => $files, out_path => $self->{tmpfile});
+        }
+      }
       push @{ $mail->{attachments} }, { path => $self->{tmpfile},
                                         id   => $self->{print_file_id},
                                         type => "application/pdf",
@@ -1197,19 +1043,22 @@ sub send_email {
   }
 
   $mail->{message}  =~ s/\r//g;
+  my $style = _escape_style_attribute(SL::DB::Default->get->email_paragraph_style_body);
+  $mail->{message}  =~ s{<p>}{<p style="$style">}g if $style;
   $mail->{message} .= $full_signature;
-  $self->{emailerr} = $mail->send();
 
-  if ($self->{emailerr}) {
-    $self->cleanup;
-    $self->error($::locale->text('The email was not sent due to the following error: #1.', $self->{emailerr}));
-  }
+  $self->{emailerr} = $mail->send();
 
   $self->{email_journal_id} = $mail->{journalentry};
   $self->{snumbers}  = "emailjournal" . "_" . $self->{email_journal_id};
   $self->{what_done} = $::form->{type};
   $self->{addition}  = "MAILED";
   $self->save_history;
+
+  if ($self->{emailerr}) {
+    $self->cleanup;
+    $self->error($::locale->text('The email was not sent due to the following error: #1.', $self->{emailerr}));
+  }
 
   #write back for message info and mail journal
   $self->{cc}  = $mail->{cc};
@@ -1275,30 +1124,56 @@ sub get_formname_translation {
   local $::locale = Locale->new($self->{recipient_locale});
 
   my %formname_translations = (
-    bin_list                => $main::locale->text('Bin List'),
-    credit_note             => $main::locale->text('Credit Note'),
-    invoice                 => $main::locale->text('Invoice'),
-    pick_list               => $main::locale->text('Pick List'),
-    proforma                => $main::locale->text('Proforma Invoice'),
-    purchase_order          => $main::locale->text('Purchase Order'),
-    request_quotation       => $main::locale->text('RFQ'),
-    sales_order             => $main::locale->text('Confirmation'),
-    sales_quotation         => $main::locale->text('Quotation'),
-    storno_invoice          => $main::locale->text('Storno Invoice'),
-    sales_delivery_order    => $main::locale->text('Delivery Order'),
-    purchase_delivery_order => $main::locale->text('Delivery Order'),
-    dunning                 => $main::locale->text('Dunning'),
-    dunning1                => $main::locale->text('Payment Reminder'),
-    dunning2                => $main::locale->text('Dunning'),
-    dunning3                => $main::locale->text('Last Dunning'),
-    dunning_invoice         => $main::locale->text('Dunning Invoice'),
-    letter                  => $main::locale->text('Letter'),
-    ic_supply               => $main::locale->text('Intra-Community supply'),
-    statement               => $main::locale->text('Statement'),
+    bin_list                    => $main::locale->text('Bin List'),
+    credit_note                 => $main::locale->text('Credit Note'),
+    invoice                     => $main::locale->text('Invoice'),
+    invoice_copy                => $main::locale->text('Invoice Copy'),
+    invoice_for_advance_payment => $main::locale->text('Invoice for Advance Payment'),
+    final_invoice               => $main::locale->text('Final Invoice'),
+    pick_list                   => $main::locale->text('Pick List'),
+    proforma                    => $main::locale->text('Proforma Invoice'),
+    payment_in_advance          => $main::locale->text('Payment in Advance'),
+    purchase_order              => $main::locale->text('Purchase Order'),
+    purchase_order_confirmation => $main::locale->text('Purchase Order Confirmation'),
+    request_quotation           => $main::locale->text('RFQ'),
+    purchase_quotation_intake   => $main::locale->text('Purchase Quotation Intake'),
+    sales_order_intake          => $main::locale->text('Sales Order Intake'),
+    sales_order                 => $main::locale->text('Confirmation'),
+    sales_quotation             => $main::locale->text('Quotation'),
+    sales_estimate              => $main::locale->text('Estimate of Cost'),
+    storno_invoice              => $main::locale->text('Storno Invoice'),
+    sales_delivery_order        => $main::locale->text('Delivery Order'),
+    purchase_delivery_order     => $main::locale->text('Delivery Order'),
+    supplier_delivery_order     => $main::locale->text('Supplier Delivery Order'),
+    rma_delivery_order          => $main::locale->text('RMA Delivery Order'),
+    sales_reclamation           => $main::locale->text('Sales Reclamation'),
+    purchase_reclamation        => $main::locale->text('Purchase Reclamation'),
+    dunning                     => $main::locale->text('Dunning'),
+    dunning1                    => $main::locale->text('Payment Reminder'),
+    dunning2                    => $main::locale->text('Dunning'),
+    dunning3                    => $main::locale->text('Last Dunning'),
+    dunning_invoice             => $main::locale->text('Dunning Invoice'),
+    letter                      => $main::locale->text('Letter'),
+    ic_supply                   => $main::locale->text('Intra-Community supply'),
+    statement                   => $main::locale->text('Statement'),
   );
 
   $main::lxdebug->leave_sub();
   return $formname_translations{$formname};
+}
+
+sub get_cusordnumber_translation {
+  $main::lxdebug->enter_sub();
+  my ($self, $formname) = @_;
+
+  $formname ||= $self->{formname};
+
+  $self->{recipient_locale} ||=  Locale->lang_to_locale($self->{language});
+  local $::locale = Locale->new($self->{recipient_locale});
+
+
+  $main::lxdebug->leave_sub();
+  return $main::locale->text('Your Order');
 }
 
 sub get_number_prefix_for_type {
@@ -1306,14 +1181,14 @@ sub get_number_prefix_for_type {
   my ($self) = @_;
 
   my $prefix =
-      (first { $self->{type} eq $_ } qw(invoice credit_note)) ? 'inv'
-    : ($self->{type} =~ /_quotation$/)                        ? 'quo'
-    : ($self->{type} =~ /_delivery_order$/)                   ? 'do'
-    : ($self->{type} =~ /letter/)                             ? 'letter'
-    :                                                           'ord';
+      (first { $self->{type} eq $_ } qw(invoice invoice_for_advance_payment final_invoice credit_note)) ? 'inv'
+    : ($self->{type} =~ /_quotation/)                                                                   ? 'quo'
+    : ($self->{type} =~ /_delivery_order$/)                                                             ? 'do'
+    : ($self->{type} =~ /letter/)                                                                       ? 'letter'
+    :                                                                                                     'ord';
 
   # better default like this?
-  # : ($self->{type} =~ /(sales|purcharse)_order/           :  'ord';
+  # : ($self->{type} =~ /(sales|purchase)_order/           :  'ord';
   # :                                                           'prefix_undefined';
 
   $main::lxdebug->leave_sub();
@@ -1345,7 +1220,7 @@ sub generate_attachment_filename {
   my $attachment_filename = $main::locale->unquote_special_chars('HTML', $self->get_formname_translation());
   my $prefix              = $self->get_number_prefix_for_type();
 
-  if ($self->{preview} && (first { $self->{type} eq $_ } qw(invoice credit_note))) {
+  if ($self->{preview} && (first { $self->{type} eq $_ } qw(invoice invoice_for_advance_payment final_invoice credit_note))) {
     $attachment_filename .= ' (' . $recipient_locale->text('Preview') . ')' . $self->get_extension_for_format();
 
   } elsif ($attachment_filename && $self->{"${prefix}number"}) {
@@ -1369,11 +1244,22 @@ sub generate_email_subject {
   $main::lxdebug->enter_sub();
   my ($self) = @_;
 
+  my $defaults = SL::DB::Default->get;
+
+  my $sep = ' / ';
   my $subject = $main::locale->unquote_special_chars('HTML', $self->get_formname_translation());
   my $prefix  = $self->get_number_prefix_for_type();
 
   if ($subject && $self->{"${prefix}number"}) {
     $subject .= " " . $self->{"${prefix}number"}
+  }
+
+  if ($self->{cusordnumber}) {
+    $subject = $self->get_cusordnumber_translation() . ' ' . $self->{cusordnumber} . $sep . $subject;
+  }
+
+  if ($defaults->email_subject_transaction_description) {
+    $subject .=  $sep . $self->{transaction_description} if $self->{transaction_description};
   }
 
   $main::lxdebug->leave_sub();
@@ -1382,7 +1268,7 @@ sub generate_email_subject {
 
 sub generate_email_body {
   $main::lxdebug->enter_sub();
-  my ($self) = @_;
+  my ($self, %params) = @_;
   # simple german and english will work grammatically (most european languages as well)
   # Dear Mr Alan Greenspan:
   # Sehr geehrte Frau Meyer,
@@ -1390,7 +1276,7 @@ sub generate_email_body {
   # Gentile Signora Ferrari,
   my $body = '';
 
-  if ($self->{cp_id}) {
+  if ($self->{cp_id} && !$params{record_email}) {
     my $givenname = SL::DB::Contact->load_cached($self->{cp_id})->cp_givenname; # for qw(gender givename name);
     my $name      = SL::DB::Contact->load_cached($self->{cp_id})->cp_name; # for qw(gender givename name);
     my $gender    = SL::DB::Contact->load_cached($self->{cp_id})->cp_gender; # for qw(gender givename name);
@@ -1401,12 +1287,15 @@ sub generate_email_body {
     $body  = GenericTranslations->get(translation_type => "salutation_general", language_id => $self->{language_id});
   }
 
-  return undef unless $body;
+  $body .= GenericTranslations->get(translation_type => "salutation_punctuation_mark", language_id => $self->{language_id});
+  # Salutations are plain-text fields and must be HTML quoted
+  $body  = '<p>' . $::locale->quote_special_chars('HTML', $body) . '</p>';
 
-  $body   .= GenericTranslations->get(translation_type =>"salutation_punctuation_mark", language_id => $self->{language_id}) . "\n";
-  $body   .= GenericTranslations->get(translation_type =>"preset_text_$self->{formname}", language_id => $self->{language_id});
-
-  $body = $main::locale->unquote_special_chars('HTML', $body);
+  my $translation_type = $params{translation_type} // "preset_text_$self->{formname}";
+  my $main_body        = GenericTranslations->get(translation_type => $translation_type,                  language_id => $self->{language_id});
+  $main_body           = GenericTranslations->get(translation_type => $params{fallback_translation_type}, language_id => $self->{language_id}) if !$main_body && $params{fallback_translation_type};
+  # The main body is HTML and must be appended as-is (and not quoted)
+  $body               .= $main_body;
 
   $main::lxdebug->leave_sub();
   return $body;
@@ -1580,22 +1469,31 @@ sub update_balance {
 sub update_exchangerate {
   $main::lxdebug->enter_sub();
 
-  my ($self, $dbh, $curr, $transdate, $buy, $sell) = @_;
+  validate_pos(@_,
+                 { isa  => 'Form'},
+                 { isa  => 'DBI::db'},
+                 { type => SCALAR, callbacks  => { is_fx_currency     => sub { shift ne $_[1]->[0]->{defaultcurrency} } } }, # should be ISO three letter codes for currency identification (ISO 4217)
+                 { type => SCALAR, callbacks  => { is_valid_kivi_date => sub { shift =~ m/\d+\d+\d+/ } } }, # we have three numers
+                 { type => SCALAR, callbacks  => { is_null_or_ar_int  => sub {    $_[0] == 0
+                                                                               || $_[0] >  0
+                                                                               && $_[1]->[0]->{script} =~ m/cp\.pl|ar\.pl|is\.pl/ } } }, # value buy fxrate
+                 { type => SCALAR, callbacks  => { is_null_or_ap_int  => sub {    $_[0] == 0
+                                                                               || $_[0] >  0
+                                                                               && $_[1]->[0]->{script} =~ m/cp\.pl|ap\.pl|ir\.pl/  } } }, # value sell fxrate
+                 { type => SCALAR, callbacks  => { is_current_form_id => sub { $_[0] == $_[1]->[0]->{id} } },              optional => 1 },
+                 { type => SCALAR, callbacks  => { is_valid_fx_table  => sub { shift =~ m/(ar|ap|bank_transactions)/  } }, optional => 1 }
+              );
+
+  my ($self, $dbh, $curr, $transdate, $buy, $sell, $id, $record_table) = @_;
+
+  # record has a exchange rate and should be updated
+  if ($record_table && $id) {
+    do_query($self, $dbh, qq|UPDATE $record_table SET exchangerate = ? WHERE id = ?|, $buy || $sell, $id);
+    $main::lxdebug->leave_sub();
+    return;
+  }
+
   my ($query);
-  # some sanity check for currency
-  if ($curr eq '') {
-    $main::lxdebug->leave_sub();
-    return;
-  }
-  $query = qq|SELECT name AS curr FROM currencies WHERE id=(SELECT currency_id FROM defaults)|;
-
-  my ($defaultcurrency) = selectrow_query($self, $dbh, $query);
-
-  if ($curr eq $defaultcurrency) {
-    $main::lxdebug->leave_sub();
-    return;
-  }
-
   $query = qq|SELECT e.currency_id FROM exchangerate e
                  WHERE e.currency_id = (SELECT cu.id FROM currencies cu WHERE cu.name=?) AND e.transdate = ?
                  FOR UPDATE|;
@@ -1621,6 +1519,7 @@ sub update_exchangerate {
   }
 
   if ($sth->fetchrow_array) {
+    # die "this never happens never"; # except for credit or debit bookings
     $query = qq|UPDATE exchangerate
                 SET $set
                 WHERE currency_id = (SELECT id FROM currencies WHERE name = ?)
@@ -1636,80 +1535,34 @@ sub update_exchangerate {
   $main::lxdebug->leave_sub();
 }
 
-sub save_exchangerate {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $myconfig, $currency, $transdate, $rate, $fld) = @_;
-
-  SL::DB->client->with_transaction(sub {
-    my $dbh = SL::DB->client->dbh;
-
-    my ($buy, $sell);
-
-    $buy  = $rate if $fld eq 'buy';
-    $sell = $rate if $fld eq 'sell';
-
-
-    $self->update_exchangerate($dbh, $currency, $transdate, $buy, $sell);
-    1;
-  }) or do { die SL::DB->client->error };
-
-  $main::lxdebug->leave_sub();
-}
-
-sub get_exchangerate {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $dbh, $curr, $transdate, $fld) = @_;
-  my ($query);
-
-  unless ($transdate && $curr) {
-    $main::lxdebug->leave_sub();
-    return 1;
-  }
-
-  $query = qq|SELECT name AS curr FROM currencies WHERE id = (SELECT currency_id FROM defaults)|;
-
-  my ($defaultcurrency) = selectrow_query($self, $dbh, $query);
-
-  if ($curr eq $defaultcurrency) {
-    $main::lxdebug->leave_sub();
-    return 1;
-  }
-
-  $query = qq|SELECT e.$fld FROM exchangerate e
-                 WHERE e.currency_id = (SELECT id FROM currencies WHERE name = ?) AND e.transdate = ?|;
-  my ($exchangerate) = selectrow_query($self, $dbh, $query, $curr, $transdate);
-
-
-
-  $main::lxdebug->leave_sub();
-
-  return $exchangerate;
-}
-
 sub check_exchangerate {
   $main::lxdebug->enter_sub();
 
-  my ($self, $myconfig, $currency, $transdate, $fld) = @_;
-
-  if ($fld !~/^buy|sell$/) {
-    $self->error('Fatal: check_exchangerate called with invalid buy/sell argument');
-  }
-
-  unless ($transdate) {
-    $main::lxdebug->leave_sub();
-    return "";
-  }
-
-  my ($defaultcurrency) = $self->get_default_currency($myconfig);
-
-  if ($currency eq $defaultcurrency) {
-    $main::lxdebug->leave_sub();
-    return 1;
-  }
+  validate_pos(@_,
+                 { isa  => 'Form'},
+                 { type => HASHREF, callbacks => { has_yy_in_dateformat => sub { $_[0]->{dateformat} =~ m/yy/ } } },
+                 { type => SCALAR, callbacks  => { is_fx_currency       => sub { shift ne $_[1]->[0]->{defaultcurrency} } } }, # should be ISO three letter codes for currency identification (ISO 4217)
+                 { type => SCALAR | HASHREF, callbacks  => { is_valid_kivi_date   => sub { shift =~ m/\d+.\d+.\d+/ } } }, # we have three numbers. Either DateTime or form scalar
+                 { type => SCALAR, callbacks  => { is_buy_or_sell_rate  => sub { shift =~ m/^(buy|sell)$/ } } },
+                 { type => SCALAR | UNDEF,   callbacks  => { is_current_form_id   => sub { $_[0] == $_[1]->[0]->{id} } },              optional => 1 },
+                 { type => SCALAR, callbacks  => { is_valid_fx_table    => sub { shift =~ m/^(ar|ap)$/  } }, optional => 1 }
+              );
+  my ($self, $myconfig, $currency, $transdate, $fld, $id, $record_table) = @_;
 
   my $dbh   = $self->get_standard_dbh($myconfig);
+
+  # callers wants a check if record has a exchange rate and should be fetched instead
+  if ($record_table && $id) {
+    my ($record_exchange_rate) = selectrow_query($self, $dbh, qq|SELECT exchangerate FROM $record_table WHERE id = ?|, $id);
+    if ($record_exchange_rate && $record_exchange_rate > 0) {
+
+      $main::lxdebug->leave_sub();
+      # second param indicates record exchange rate
+      return ($record_exchange_rate, 1);
+    }
+  }
+
+  # fetch default from exchangerate table
   my $query = qq|SELECT e.$fld FROM exchangerate e
                  WHERE e.currency_id = (SELECT id FROM currencies WHERE name = ?) AND e.transdate = ?|;
 
@@ -1826,9 +1679,11 @@ sub set_payment_options {
   $self->{payment_terms} =~ s/<\%mandator_id\%>/$self->{mandator_id}/g;
 
   map { $self->{payment_terms} =~ s/<%${_}%>/$formatted_amounts{$_}/g; } keys %formatted_amounts;
-
-  $self->{skonto_in_percent} = $formatted_amounts{skonto_in_percent};
-
+  # put amounts in form for print template
+  foreach (keys %formatted_amounts) {
+    next if $_  =~ m/(^total$|^invtotal$)/;
+    $self->{$_} = $formatted_amounts{$_};
+  }
 }
 
 sub get_template_language {
@@ -1897,8 +1752,8 @@ sub add_shipto {
   my $shipto;
   my @values;
 
-  foreach my $item (qw(name department_1 department_2 street zipcode city country gln
-                       contact cp_gender phone fax email)) {
+  foreach my $item (qw(name department_1 department_2 street zipcode city country_id gln
+                       contact phone fax email)) {
     if ($self->{"shipto$item"}) {
       $shipto = 1 if ($self->{$item} ne $self->{"shipto$item"});
     }
@@ -1906,6 +1761,12 @@ sub add_shipto {
   }
 
   return if !$shipto;
+
+  # shiptocp_gender only makes sense, if any other shipto attribute is set.
+  # Because shiptocp_gender is set to 'm' by default in forms
+  # it must not be considered above to decide if shiptos has to be added or
+  # updated, but must be inserted or updated as well in case.
+  push(@values, $self->{shiptocp_gender});
 
   my $shipto_id = $self->{shipto_id};
 
@@ -1917,13 +1778,13 @@ sub add_shipto {
                      shiptostreet = ?,
                      shiptozipcode = ?,
                      shiptocity = ?,
-                     shiptocountry = ?,
+                     shiptocountry_id = ?,
                      shiptogln = ?,
                      shiptocontact = ?,
-                     shiptocp_gender = ?,
                      shiptophone = ?,
                      shiptofax = ?,
-                     shiptoemail = ?
+                     shiptoemail = ?,
+                     shiptocp_gender = ?
                    WHERE shipto_id = ?|;
     do_query($self, $dbh, $query, @values, $self->{shipto_id});
   } else {
@@ -1934,21 +1795,21 @@ sub add_shipto {
                      shiptostreet = ? AND
                      shiptozipcode = ? AND
                      shiptocity = ? AND
-                     shiptocountry = ? AND
+                     shiptocountry_id = ? AND
                      shiptogln = ? AND
                      shiptocontact = ? AND
-                     shiptocp_gender = ? AND
                      shiptophone = ? AND
                      shiptofax = ? AND
                      shiptoemail = ? AND
+                     shiptocp_gender = ? AND
                      module = ? AND
                      trans_id = ?|;
     my $insert_check = selectfirst_hashref_query($self, $dbh, $query, @values, $module, $id);
     if(!$insert_check){
       my $insert_query =
         qq|INSERT INTO shipto (trans_id, shiptoname, shiptodepartment_1, shiptodepartment_2,
-                               shiptostreet, shiptozipcode, shiptocity, shiptocountry, shiptogln,
-                               shiptocontact, shiptocp_gender, shiptophone, shiptofax, shiptoemail, module)
+                               shiptostreet, shiptozipcode, shiptocity, shiptocountry_id, shiptogln,
+                               shiptocontact, shiptophone, shiptofax, shiptoemail, shiptocp_gender, module)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)|;
       do_query($self, $dbh, $insert_query, $id, @values, $module);
 
@@ -2022,30 +1883,6 @@ sub get_employee_data {
   $main::lxdebug->leave_sub();
 }
 
-sub _get_contacts {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $dbh, $id, $key) = @_;
-
-  $key = "all_contacts" unless ($key);
-
-  if (!$id) {
-    $self->{$key} = [];
-    $main::lxdebug->leave_sub();
-    return;
-  }
-
-  my $query =
-    qq|SELECT cp_id, cp_cv_id, cp_name, cp_givenname, cp_abteilung | .
-    qq|FROM contacts | .
-    qq|WHERE cp_cv_id = ? | .
-    qq|ORDER BY lower(cp_name)|;
-
-  $self->{$key} = selectall_hashref_query($self, $dbh, $query, $id);
-
-  $main::lxdebug->leave_sub();
-}
-
 sub _get_projects {
   $main::lxdebug->enter_sub();
 
@@ -2096,26 +1933,6 @@ sub _get_projects {
   $main::lxdebug->leave_sub();
 }
 
-sub _get_shipto {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $dbh, $vc_id, $key) = @_;
-
-  $key = "all_shipto" unless ($key);
-
-  if ($vc_id) {
-    # get shipping addresses
-    my $query = qq|SELECT * FROM shipto WHERE trans_id = ?|;
-
-    $self->{$key} = selectall_hashref_query($self, $dbh, $query, $vc_id);
-
-  } else {
-    $self->{$key} = [];
-  }
-
-  $main::lxdebug->leave_sub();
-}
-
 sub _get_printers {
   $main::lxdebug->enter_sub();
 
@@ -2149,36 +1966,6 @@ sub _get_charts {
     qq|          WHERE taxkeys.chart_id = c.id AND startdate <= $transdate | .
     qq|          ORDER BY startdate DESC LIMIT 1)) | .
     qq|ORDER BY c.accno|;
-
-  $self->{$key} = selectall_hashref_query($self, $dbh, $query);
-
-  $main::lxdebug->leave_sub();
-}
-
-sub _get_taxcharts {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $dbh, $params) = @_;
-
-  my $key = "all_taxcharts";
-  my @where;
-
-  if (ref $params eq 'HASH') {
-    $key = $params->{key} if ($params->{key});
-    if ($params->{module} eq 'AR') {
-      push @where, 'chart_categories ~ \'[ACILQ]\'';
-
-    } elsif ($params->{module} eq 'AP') {
-      push @where, 'chart_categories ~ \'[ACELQ]\'';
-    }
-
-  } elsif ($params) {
-    $key = $params;
-  }
-
-  my $where = @where ? ' WHERE ' . join(' AND ', map { "($_)" } @where) : '';
-
-  my $query = qq|SELECT * FROM tax $where ORDER BY taxkey, rate|;
 
   $self->{$key} = selectall_hashref_query($self, $dbh, $query);
 
@@ -2250,20 +2037,6 @@ sub _get_languages {
   $key = "all_languages" unless ($key);
 
   my $query = qq|SELECT * FROM language ORDER BY id|;
-
-  $self->{$key} = selectall_hashref_query($self, $dbh, $query);
-
-  $main::lxdebug->leave_sub();
-}
-
-sub _get_dunning_configs {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $dbh, $key) = @_;
-
-  $key = "all_dunning_configs" unless ($key);
-
-  my $query = qq|SELECT * FROM dunning_config ORDER BY dunning_level|;
 
   $self->{$key} = selectall_hashref_query($self, $dbh, $query);
 
@@ -2398,44 +2171,16 @@ sub _get_simple {
   $main::lxdebug->leave_sub();
 }
 
-#sub _get_groups {
-#  $main::lxdebug->enter_sub();
-#
-#  my ($self, $dbh, $key) = @_;
-#
-#  $key ||= "all_groups";
-#
-#  my $groups = $main::auth->read_groups();
-#
-#  $self->{$key} = selectall_hashref_query($self, $dbh, $query);
-#
-#  $main::lxdebug->leave_sub();
-#}
-
 sub get_lists {
   $main::lxdebug->enter_sub();
 
   my $self = shift;
   my %params = @_;
 
+  croak "get_lists: shipto is no longer supported" if $params{shipto};
+
   my $dbh = $self->get_standard_dbh(\%main::myconfig);
   my ($sth, $query, $ref);
-
-  my ($vc, $vc_id);
-  if ($params{contacts} || $params{shipto}) {
-    $vc = 'customer' if $self->{"vc"} eq "customer";
-    $vc = 'vendor'   if $self->{"vc"} eq "vendor";
-    die "invalid use of get_lists, need 'vc'" unless $vc;
-    $vc_id = $self->{"${vc}_id"};
-  }
-
-  if ($params{"contacts"}) {
-    $self->_get_contacts($dbh, $vc_id, $params{"contacts"});
-  }
-
-  if ($params{"shipto"}) {
-    $self->_get_shipto($dbh, $vc_id, $params{"shipto"});
-  }
 
   if ($params{"projects"} || $params{"all_projects"}) {
     $self->_get_projects($dbh, $params{"all_projects"} ?
@@ -2455,10 +2200,6 @@ sub get_lists {
     $self->_get_charts($dbh, $params{"charts"});
   }
 
-  if ($params{"taxcharts"}) {
-    $self->_get_taxcharts($dbh, $params{"taxcharts"});
-  }
-
   if ($params{"taxzones"}) {
     $self->_get_taxzones($dbh, $params{"taxzones"});
   }
@@ -2473,10 +2214,6 @@ sub get_lists {
 
   if ($params{"business_types"}) {
     $self->_get_business_types($dbh, $params{"business_types"});
-  }
-
-  if ($params{"dunning_configs"}) {
-    $self->_get_dunning_configs($dbh, $params{"dunning_configs"});
   }
 
   if($params{"currencies"}) {
@@ -2510,10 +2247,6 @@ sub get_lists {
   if ($params{warehouses}) {
     $self->_get_warehouses($dbh, $params{warehouses});
   }
-
-#  if ($params{groups}) {
-#    $self->_get_groups($dbh, $params{groups});
-#  }
 
   if ($params{partsgroup}) {
     $self->get_partsgroup(\%main::myconfig, { all => 1, target => $params{partsgroup} });
@@ -2744,16 +2477,17 @@ sub create_links {
 
   my $extra_columns = '';
   $extra_columns   .= 'a.direct_debit, ' if ($module eq 'AR') || ($module eq 'AP');
+  $extra_columns   .= 'a.buyer_id, '     if ($module eq 'AP');
 
   if ($self->{id}) {
     $query =
       qq|SELECT
-           a.cp_id, a.invnumber, a.transdate, a.${table}_id, a.datepaid,
-           a.duedate, a.ordnumber, a.taxincluded, (SELECT cu.name FROM currencies cu WHERE cu.id=a.currency_id) AS currency, a.notes,
+           a.cp_id, a.invnumber, a.transdate, a.${table}_id, a.datepaid, a.deliverydate,
+           a.duedate, a.tax_point, a.ordnumber, a.taxincluded, (SELECT cu.name FROM currencies cu WHERE cu.id=a.currency_id) AS currency, a.notes,
            a.mtime, a.itime,
            a.intnotes, a.department_id, a.amount AS oldinvtotal,
            a.paid AS oldtotalpaid, a.employee_id, a.gldate, a.type,
-           a.globalproject_id, ${extra_columns}
+           a.globalproject_id, a.transaction_description, ${extra_columns}
            c.name AS $table,
            d.description AS department,
            e.name AS employee
@@ -2814,26 +2548,40 @@ sub create_links {
            c.accno, c.description,
            a.acc_trans_id, a.source, a.amount, a.memo, a.transdate, a.gldate, a.cleared, a.project_id, a.taxkey, a.chart_id,
            p.projectnumber,
-           t.rate, t.id
+           t.rate, t.id,
+           a.fx_transaction
          FROM acc_trans a
          LEFT JOIN chart c ON (c.id = a.chart_id)
          LEFT JOIN project p ON (p.id = a.project_id)
          LEFT JOIN tax t ON (t.id= a.tax_id)
          WHERE a.trans_id = ?
-         AND a.fx_transaction = '0'
          ORDER BY a.acc_trans_id, a.transdate|;
     $sth = $dbh->prepare($query);
     do_statement($self, $sth, $query, $self->{id});
 
     # get exchangerate for currency
-    $self->{exchangerate} =
-      $self->get_exchangerate($dbh, $self->{currency}, $self->{transdate}, $fld);
+    ($self->{exchangerate}, $self->{record_forex}) = $self->check_exchangerate($myconfig, $self->{currency}, $self->{transdate}, $fld,
+                                                                               $self->{id}, $arap);
+
     my $index = 0;
+    my @fx_transaction_entries;
 
     # store amounts in {acc_trans}{$key} for multiple accounts
     while (my $ref = $sth->fetchrow_hashref("NAME_lc")) {
+      # skip fx_transaction entries and add them for post processing
+      if ($ref->{fx_transaction}) {
+        die "first entry in a record transaction should not be fx_transaction" unless @fx_transaction_entries;
+        push @{ $fx_transaction_entries[-1] }, $ref;
+        next;
+      } else {
+        push @fx_transaction_entries, [ $ref ];
+      }
+
+
+      # credit and debit bookings calc fx rate for positions
+      # also used as exchangerate_$i for payments - exchangerate here can come from frontend or from bank transactions
       $ref->{exchangerate} =
-        $self->get_exchangerate($dbh, $self->{currency}, $ref->{transdate}, $fld);
+        $self->check_exchangerate($myconfig, $self->{currency}, $ref->{transdate}, $fld);
       if (!($xkeyref{ $ref->{accno} } =~ /tax/)) {
         $index++;
       }
@@ -2843,6 +2591,36 @@ sub create_links {
       $ref->{index} = $index;
 
       push @{ $self->{acc_trans}{ $xkeyref{ $ref->{accno} } } }, $ref;
+    }
+
+    # post process fx_transactions.
+    # old bin/mozilla code first posts the intended foreign currency amount and then the correction for exchange flagged as fx_transaction
+    # for example: when posting 20 USD on a system in EUR with an exchangerate of 1.1, the resulting acc_trans will say:
+    #   +20 no fx (intended: 20 USD)
+    #    +2    fx (but it's actually 22 EUR)
+    #
+    # for payments this is followed by the fxgain/loss. when paying the above invoice with 20 USD at 1.3 exchange:
+    #   -20 no fx (intended: 20 USD)
+    #    -6    fx (but it's actually 26 EUR)
+    #    +4    fx (but 4 of them go to fxgain)
+    #
+    # bin/mozilla/ controllers will display the intended amount as is, but would have to guess at the actual book value
+    # without the extra fields
+    #
+    # bank transactions however will convert directly into internal currency, so a foreign currency invoice might end up
+    # having non-fxtransactions. to make sure that these are roundtrip safe, flag the fx-transaction payments as fx and give the
+    # intendended internal amount
+    #
+    # this still operates on the cached entries of form->{acc_trans}
+    for my $fx_block (@fx_transaction_entries) {
+      my ($ref, @fx_entries) = @$fx_block;
+      for my $fx_ref (@fx_entries) {
+        if ($fx_ref->{chart_id} == $ref->{chart_id}) {
+          $ref->{defaultcurrency_paid} //= $ref->{amount};
+          $ref->{defaultcurrency_paid} += $fx_ref->{amount};
+          $ref->{fx_transaction} = 1;
+        }
+      }
     }
 
     $sth->finish;
@@ -2874,21 +2652,11 @@ sub create_links {
     $ref = selectfirst_hashref_query($self, $dbh, $query);
     map { $self->{$_} = $ref->{$_} } keys %$ref;
 
-    if ($self->{"$self->{vc}_id"}) {
-
-      # only setup currency
-      ($self->{currency}) = $self->{defaultcurrency} if !$self->{currency};
-
-    } else {
-
-      $self->lastname_used($dbh, $myconfig, $table, $module);
-
-      # get exchangerate for currency
-      $self->{exchangerate} =
-        $self->get_exchangerate($dbh, $self->{currency}, $self->{transdate}, $fld);
-
-    }
-
+    # failsafe, set currency if caller has not yet assigned one
+    $self->lastname_used($dbh, $myconfig, $table, $module) unless ($self->{"$self->{vc}_id"});
+    $self->{currency} = $self->{defaultcurrency}           unless $self->{currency};
+    $self->{exchangerate} =
+      $self->check_exchangerate($myconfig, $self->{currency}, $self->{transdate}, $fld);
   }
 
   $main::lxdebug->leave_sub();
@@ -2950,19 +2718,48 @@ sub lastname_used {
 }
 
 sub get_variable_content_types {
-  my %html_variables  = (
-      longdescription => 'html',
-      partnotes       => 'html',
-      notes           => 'html',
-      orignotes       => 'html',
-      notes1          => 'html',
-      notes2          => 'html',
-      notes3          => 'html',
-      notes4          => 'html',
-      header_text     => 'html',
-      footer_text     => 'html',
+  my ($self) = @_;
+
+  my %html_variables = (
+    longdescription  => 'html',
+    partnotes        => 'html',
+    notes            => 'html',
+    orignotes        => 'html',
+    notes1           => 'html',
+    notes2           => 'html',
+    notes3           => 'html',
+    notes4           => 'html',
+    header_text      => 'html',
+    footer_text      => 'html',
   );
-  return \%html_variables;
+
+  return {
+    %html_variables,
+    $self->get_variable_content_types_for_cvars,
+  };
+}
+
+sub get_variable_content_types_for_cvars {
+  my ($self)       = @_;
+  my $html_configs = SL::DB::Manager::CustomVariableConfig->get_all(where => [ type => 'htmlfield' ]);
+  my %types;
+
+  if (@{ $html_configs }) {
+    my %prefix_by_module = (
+      Contacts => 'cp_cvar_',
+      CT       => 'vc_cvar_',
+      IC       => 'ic_cvar_',
+      Projects => 'project_cvar_',
+      ShipTo   => 'shiptocvar_',
+    );
+
+    foreach my $cfg (@{ $html_configs }) {
+      my $prefix = $prefix_by_module{$cfg->module};
+      $types{$prefix . $cfg->name} = 'html' if $prefix;
+    }
+  }
+
+  return %types;
 }
 
 sub current_date {
@@ -3140,20 +2937,28 @@ sub save_status {
 # $main::locale->text('ELSE')
 # $main::locale->text('SAVED FOR DUNNING')
 # $main::locale->text('DUNNING STARTED')
+# $main::locale->text('PREVIEWED')
 # $main::locale->text('PRINTED')
 # $main::locale->text('MAILED')
 # $main::locale->text('SCREENED')
 # $main::locale->text('CANCELED')
 # $main::locale->text('IMPORT')
+# $main::locale->text('UNDO TRANSFER')
 # $main::locale->text('UNIMPORT')
 # $main::locale->text('invoice')
+# $main::locale->text('invoice_for_advance_payment')
+# $main::locale->text('final_invoice')
 # $main::locale->text('proforma')
+# $main::locale->text('storno_invoice')
+# $main::locale->text('sales_order_intake')
 # $main::locale->text('sales_order')
 # $main::locale->text('pick_list')
 # $main::locale->text('purchase_order')
+# $main::locale->text('purchase_order_confirmation')
 # $main::locale->text('bin_list')
 # $main::locale->text('sales_quotation')
 # $main::locale->text('request_quotation')
+# $main::locale->text('purchase_quotation_intake')
 
 sub save_history {
   $main::lxdebug->enter_sub();
@@ -3191,7 +2996,7 @@ sub get_history {
       qq|SELECT h.employee_id, h.itime::timestamp(0) AS itime, h.addition, h.what_done, emp.name, h.snumbers, h.trans_id AS id | .
       qq|FROM history_erp h | .
       qq|LEFT JOIN employee emp ON (emp.id = h.employee_id) | .
-      qq|WHERE (trans_id = | . $trans_id . qq|) $restriction | .
+      qq|WHERE (trans_id = | . $dbh->quote($trans_id) . qq|) $restriction | .
       $order;
 
     my $sth = $dbh->prepare($query) || $self->dberror($query);
@@ -3227,31 +3032,11 @@ sub get_partsgroup {
                  JOIN parts p ON (p.partsgroup_id = pg.id) |;
   my @values;
 
-  if ($p->{searchitems} eq 'part') {
-    $query .= qq|WHERE p.part_type = 'part'|;
-  }
-  if ($p->{searchitems} eq 'service') {
-    $query .= qq|WHERE p.part_type = 'service'|;
-  }
-  if ($p->{searchitems} eq 'assembly') {
-    $query .= qq|WHERE p.part_type = 'assembly'|;
-  }
-
   $query .= qq|ORDER BY partsgroup|;
 
   if ($p->{all}) {
     $query = qq|SELECT id, partsgroup FROM partsgroup
                 ORDER BY partsgroup|;
-  }
-
-  if ($p->{language_code}) {
-    $query = qq|SELECT DISTINCT pg.id, pg.partsgroup,
-                  t.description AS translation
-                FROM partsgroup pg
-                JOIN parts p ON (p.partsgroup_id = pg.id)
-                LEFT JOIN translation t ON ((t.trans_id = pg.id) AND (t.language_code = ?))
-                ORDER BY translation|;
-    @values = ($p->{language_code});
   }
 
   $self->{$target} = selectall_hashref_query($self, $dbh, $query, @values);
@@ -3364,19 +3149,6 @@ sub prepare_for_printing {
     $self->{"employee_${_}"} = $defaults->$_   for qw(address businessnumber co_ustid company duns sepa_creditor_id taxnumber);
   }
 
-  # Load shipping address from database. If shipto_id is set then it's
-  # one from the customer's/vendor's master data. Otherwise look an a
-  # customized address linking back to the current record.
-  my $shipto_module = $self->{type} =~ /_delivery_order$/                                             ? 'DO'
-                    : $self->{type} =~ /sales_order|sales_quotation|request_quotation|purchase_order/ ? 'OE'
-                    :                                                                                   'AR';
-  my $shipto        = $self->{shipto_id} ? SL::DB::Shipto->new(shipto_id => $self->{shipto_id})->load
-                    :                      SL::DB::Manager::Shipto->get_first(where => [ module => $shipto_module, trans_id => $self->{id} ]);
-  if ($shipto) {
-    $self->{$_} = $shipto->$_ for grep { m{^shipto} } map { $_->name } @{ $shipto->meta->columns };
-    $self->{"shiptocvar_" . $_->config->name} = $_->value_as_text for @{ $shipto->cvars_by_config };
-  }
-
   my $language = $self->{language} ? '_' . $self->{language} : '';
 
   my ($language_tc, $output_numberformat, $output_dateformat, $output_longdates);
@@ -3397,11 +3169,15 @@ sub prepare_for_printing {
 
   if ($self->{type} =~ /_delivery_order$/) {
     DO->order_details(\%::myconfig, $self);
-  } elsif ($self->{type} =~ /sales_order|sales_quotation|request_quotation|purchase_order/) {
+  } elsif ($self->{type} =~ /sales_order|sales_quotation|request_quotation|purchase_order|purchase_quotation_intake/) {
     OE->order_details(\%::myconfig, $self);
+  } elsif ($self->{type} =~ /reclamation/) {
+    # skip reclamation here, legacy template arrays are added in the reclamation controller
   } else {
     IS->invoice_details(\%::myconfig, $self, $::locale);
   }
+
+  $self->set_addition_billing_address_print_variables;
 
   # Chose extension & set source file name
   my $extension = 'html';
@@ -3425,7 +3201,7 @@ sub prepare_for_printing {
 
   # Format dates.
   $self->format_dates($output_dateformat, $output_longdates,
-                      qw(invdate orddate quodate pldate duedate reqdate transdate shippingdate deliverydate validitydate paymentdate datepaid
+                      qw(invdate orddate quodate pldate duedate reqdate transdate tax_point shippingdate deliverydate validitydate paymentdate datepaid
                          transdate_oe deliverydate_oe employee_startdate employee_enddate),
                       grep({ /^(?:datepaid|transdate_oe|reqdate|deliverydate|deliverydate_oe|transdate)_\d+$/ } keys(%{$self})));
 
@@ -3445,6 +3221,14 @@ sub prepare_for_printing {
     $self->reformat_numbers($output_numberformat, $precision, @{ $field_list });
   }
 
+  # Translate units
+  if (($self->{language} // '') ne '') {
+    my $template_arrays = $self->{TEMPLATE_ARRAYS} || $self;
+    for my $idx (0..scalar(@{ $template_arrays->{unit} || [] }) - 1) {
+      $template_arrays->{unit}->[$idx] = AM->translate_units($self, $self->{language}, $template_arrays->{unit}->[$idx], $template_arrays->{qty}->[$idx])
+    }
+  }
+
   $self->{template_meta} = {
     formname  => $self->{formname},
     language  => SL::DB::Manager::Language->find_by_or_create(id => $self->{language_id} || undef),
@@ -3454,6 +3238,46 @@ sub prepare_for_printing {
     printer   => SL::DB::Manager::Printer->find_by_or_create(id => $self->{printer_id} || undef),
     today     => DateTime->today,
   };
+
+  if ($defaults->print_interpolate_variables_in_positions) {
+    $self->substitute_placeholders_in_template_arrays({ field => 'description', type => 'text' }, { field => 'longdescription', type => 'html' });
+  }
+
+  return $self;
+}
+
+sub set_addition_billing_address_print_variables {
+  my ($self) = @_;
+
+  return if !$self->{billing_address_id};
+
+  my $address = SL::DB::Manager::AdditionalBillingAddress->find_by(id => $self->{billing_address_id});
+  return if !$address;
+
+  my $language_code = $self->{language_id} ? SL::DB::Language->new(id => $self->{language_id})->load->template_code : undef;
+  $self->{billing_address_country} = $address->country->description_localized($language_code) if $address->country;
+
+  $self->{"billing_address_${_}"} = $address->$_ for map { $_->name } @{ $address->meta->columns };
+}
+
+sub substitute_placeholders_in_template_arrays {
+  my ($self, @fields) = @_;
+
+  foreach my $spec (@fields) {
+    $spec     = { field => $spec, type => 'text' } if !ref($spec);
+    my $field = $spec->{field};
+
+    next unless exists $self->{TEMPLATE_ARRAYS} && exists $self->{TEMPLATE_ARRAYS}->{$field};
+
+    my $tag_start = $spec->{type} eq 'html' ? '&lt;%' : '<%';
+    my $tag_end   = $spec->{type} eq 'html' ? '%&gt;' : '%>';
+    my $formatter = $spec->{type} eq 'html' ? sub { $::locale->quote_special_chars('html', $_[0] // '') } : sub { $_[0] };
+
+    $self->{TEMPLATE_ARRAYS}->{$field} = [
+      apply { s{${tag_start}(.+?)${tag_end}}{ $formatter->($self->{$1}) }eg }
+        @{ $self->{TEMPLATE_ARRAYS}->{$field} }
+    ];
+  }
 
   return $self;
 }
@@ -3502,9 +3326,7 @@ sub calculate_arap {
     my $tax_id = $self->{"tax_id_$i"};
 
     my $selected_tax = SL::DB::Manager::Tax->find_by(id => "$tax_id");
-
-    if ( $selected_tax ) {
-
+    if ( $selected_tax && !$selected_tax->reverse_charge_chart_id) {
       if ( $buysell eq 'sell' ) {
         $self->{AR_amounts}{"tax_$i"} = $selected_tax->chart->accno if defined $selected_tax->chart;
       } else {
@@ -3514,6 +3336,8 @@ sub calculate_arap {
       $self->{"taxkey_$i"} = $selected_tax->taxkey;
       $self->{"taxrate_$i"} = $selected_tax->rate;
     };
+
+    $self->{"taxkey_$i"} = $selected_tax->taxkey if ($selected_tax && $selected_tax->reverse_charge_chart_id);
 
     ($self->{"amount_$i"}, $self->{"tax_$i"}) = $self->calculate_tax($self->{"amount_$i"},$self->{"taxrate_$i"},$taxincluded,$roundplaces);
 
@@ -3608,42 +3432,19 @@ sub reformat_numbers {
   $::myconfig{numberformat} = $saved_numberformat;
 }
 
-sub create_email_signature {
+sub _escape_style_attribute { SL::Presenter::EscapedText::escape($_[0]); }
 
+sub create_email_signature {
   my $client_signature = $::instance_conf->get_signature;
   my $user_signature   = $::myconfig{signature};
+  my $style;
 
-  my $signature = '';
-  if ( $client_signature or $user_signature ) {
-    $signature  = "\n\n-- \n";
-    $signature .= $user_signature   . "\n" if $user_signature;
-    $signature .= $client_signature . "\n" if $client_signature;
-  };
-  return $signature;
+  $style = _escape_style_attribute(SL::DB::Default->get->email_paragraph_style_employee_signature);
+  $user_signature   =~ s{<p>}{<p style="$style">}g if $style;
+  $style = _escape_style_attribute(SL::DB::Default->get->email_paragraph_style_company_signature);
+  $client_signature =~ s{<p>}{<p style="$style">}g if $style;
 
-};
-
-sub layout {
-  my ($self) = @_;
-  $::lxdebug->enter_sub;
-
-  my %style_to_script_map = (
-    v3  => 'v3',
-    neu => 'new',
-  );
-
-  my $menu_script = $style_to_script_map{$::myconfig{menustyle}} || '';
-
-  package main;
-  require "bin/mozilla/menu$menu_script.pl";
-  package Form;
-  require SL::Controller::FrameHeader;
-
-
-  my $layout = SL::Controller::FrameHeader->new->action_header . ::render();
-
-  $::lxdebug->leave_sub;
-  return $layout;
+  return join '', grep { $_ } ($user_signature, $client_signature);
 }
 
 sub calculate_tax {
@@ -3761,6 +3562,36 @@ Can be called wit C<option> mail to generate a different error message.
 
 Returns undef if no save operation has been done yet ($self->{id} not present).
 Returns undef if no concurrent write process is detected otherwise a error message.
+
+=back
+
+=over 4
+
+=item C<check_exchangerate>  $myconfig, $currency, $transdate, $fld, $id, $record_table
+
+Needs a local myconfig, a currency string, a date of the transaction, a field (fld) which
+has to be either the buy or sell exchangerate and checks if there is already a buy or
+sell exchangerate for this date.
+Returns 0 or (NULL) if no entry is found or the already stored exchangerate.
+If the optional parameter id and record_table is passed, the method tries to look up
+a custom exchangerate for a record with id. record_table can either be ar, ap or bank_transactions.
+If none is found the default (daily) entry will be checked.
+The method is very strict about the parameters and tries to fail if anything does
+not look like the expected type.
+
+=item C<update_exchangerate> $dbh, $curr, $transdate, $buy, $sell, $id, $record_table
+
+Needs a dbh connection, a currency string, a date of the transaction, buy (0|1), sell (0|1) which
+determines if either the buy or sell or both exchangerates should be updated and updates
+the exchangerate for this currency for this date.
+If the optional parameter id and record_table is passed, the method saves
+a custom exchangerate for a record with id. record_table can either be ar, ap or bank_transactions.
+
+The method is very strict about the parameters and tries to fail if anything does not look
+like the expected type.
+
+
+
 
 =back
 

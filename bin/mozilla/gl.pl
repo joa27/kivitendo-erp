@@ -38,17 +38,24 @@ use strict;
 use POSIX qw(strftime);
 use List::Util qw(first sum);
 
+use SL::DB::ApGl;
 use SL::DB::RecordTemplate;
+use SL::DB::ReconciliationLink;
+use SL::DB::BankTransactionAccTrans;
 use SL::DB::Tax;
+use SL::DB::ValidityToken;
+use SL::DB::GLTransaction;
 use SL::FU;
 use SL::GL;
-use SL::Helper::Flash qw(flash);
+use SL::Helper::Flash qw(flash flash_later);
 use SL::IS;
 use SL::ReportGenerator;
 use SL::DBUtils qw(selectrow_query selectall_hashref_query);
 use SL::Webdav;
 use SL::Locale::String qw(t8);
 use SL::Helper::GlAttachments qw(count_gl_attachments);
+use SL::Presenter::Tag;
+use SL::Presenter::Chart;
 require "bin/mozilla/common.pl";
 require "bin/mozilla/reportgenerator.pl";
 
@@ -92,11 +99,21 @@ sub load_record_template {
 
   die "invalid template type" unless $template->template_type eq 'gl_transaction';
 
-  $template->substitute_variables;
+  my $reference_date = $::form->{form_defaults}{valutadate} ? $::locale->parse_date_to_object($::form->{form_defaults}{valutadate}) : undef;
+  $template->substitute_variables($reference_date);
   my $payment_suggestion =  $::form->{form_defaults}->{amount_1};
 
   # Clean the current $::form before rebuilding it from the template.
   my $form_defaults = delete $::form->{form_defaults};
+
+
+  # check sign for bank_transactions source and switch sign if necessary
+  my $switch_sign;
+  if ($form_defaults->{bt_id}) {
+    my $wrong_sign  = first { $_->{chart_id} == $form_defaults->{bt_chart_id} } @{ $template->items };
+    $switch_sign    =    ($wrong_sign->{amount2} != 0 && $form_defaults->{amount_1_signed} > 0)
+                      || ($wrong_sign->{amount1} != 0 && $form_defaults->{amount_1_signed} < 0);
+  }
   delete @{ $::form }{ grep { !m{^(?:script|login)$}i } keys %{ $::form } };
 
   my $dummy_form = {};
@@ -109,13 +126,25 @@ sub load_record_template {
   $::form->{duedate}          = $today->to_kivitendo;
   $::form->{rowcount}         = @{ $template->items };
   $::form->{paidaccounts}     = 1;
-  $::form->{$_}               = $template->$_     for qw(department_id taxincluded ob_transaction cb_transaction reference description show_details);
+  $::form->{$_}               = $template->$_     for qw(department_id taxincluded ob_transaction cb_transaction reference description show_details transaction_description bank_import_template);
   $::form->{$_}               = $dummy_form->{$_} for qw(closedto revtrans previous_id previous_gldate);
 
   my $row = 0;
   foreach my $item (@{ $template->items }) {
-    $row++;
+    my $amount1_is_set = ($item->amount1 > 0 || $item->amount1 < 0);
+    my $amount2_is_set = ($item->amount2 > 0 || $item->amount2 < 0);
 
+    # In the past, GL record templates including item rows without amounts have
+    # been saved, specifically the last empty row used to enter a new item.
+    # These rows are no longer saved in templates. To be consistent, we ignore them.
+    next unless $amount1_is_set || $amount2_is_set;
+
+    if ($switch_sign) {
+      $amount1_is_set = !$amount1_is_set;
+      $amount2_is_set = !$amount2_is_set;
+    }
+
+    $row++;
     my $active_taxkey = $item->chart->get_active_taxkey;
     my $taxes         = SL::DB::Manager::Tax->get_all(
       where   => [ chart_categories => { like => '%' . $item->chart->category . '%' }],
@@ -133,8 +162,8 @@ sub load_record_template {
 
     $::form->{"accno_id_${row}"}          = $item->chart_id;
     $::form->{"previous_accno_id_${row}"} = $item->chart_id;
-    $::form->{"debit_${row}"}             = $::form->format_amount(\%::myconfig, ($payment_suggestion ? $payment_suggestion : $item->amount1), 2) if $item->amount1 * 1;
-    $::form->{"credit_${row}"}            = $::form->format_amount(\%::myconfig, ($payment_suggestion ? $payment_suggestion : $item->amount2), 2) if $item->amount2 * 1;
+    $::form->{"debit_${row}"}             = $::form->format_amount(\%::myconfig, ($payment_suggestion ? $payment_suggestion : $item->amount1), 2) if $amount1_is_set;
+    $::form->{"credit_${row}"}            = $::form->format_amount(\%::myconfig, ($payment_suggestion ? $payment_suggestion : $item->amount2), 2) if $amount2_is_set;
     $::form->{"taxchart_${row}"}          = $item->tax_id . '--' . $tax->rate;
     $::form->{"${_}_${row}"}              = $item->$_ for qw(source memo project_id);
   }
@@ -142,9 +171,12 @@ sub load_record_template {
   $::form->{$_} = $form_defaults->{$_} for keys %{ $form_defaults // {} };
 
   flash('info', $::locale->text("The record template '#1' has been loaded.", $template->template_name));
+  flash('info', $::locale->text("Debit and Credit have been switched.")) if $switch_sign;
+
+  $::form->{form_validity_token} = SL::DB::ValidityToken->create(scope => SL::DB::ValidityToken::SCOPE_GL_TRANSACTION_POST())->token;
 
   update(
-    keep_rows_without_amount => 1,
+    keep_rows_without_amount => 0,
     dont_add_new_row         => 1,
   );
 }
@@ -155,11 +187,21 @@ sub save_record_template {
   my $template = $::form->{record_template_id} ? SL::DB::RecordTemplate->new(id => $::form->{record_template_id})->load : SL::DB::RecordTemplate->new;
   my $js       = SL::ClientJS->new(controller => SL::Controller::Base->new);
   my $new_name = $template->template_name_to_use($::form->{record_template_new_template_name});
-
   $js->dialog->close('#record_template_dialog');
 
+
+  # bank transactions need amounts for assignment
+  my ($has_debit, $has_credit);
+  foreach my $i (1 .. $::form->{rowcount}) {
+    $has_debit  = 1 if $::form->{"debit_$i"};
+    $has_credit = 1 if $::form->{"credit_$i"};
+  }
+  return $js->flash('error', t8('Can only save template if amounts, i.e. 1 for debit and credit are set.'))->render
+    unless $has_debit && $has_credit;
+
   my @items = grep {
-    $_->{chart_id} && (($_->{tax_id} // '') ne '')
+       $_->{chart_id}     && (($_->{tax_id} // '') ne '')
+    && ($_->{amount1} != 0 || $_->{amount2} != 0)
   } map {
     +{ chart_id   => $::form->{"accno_id_${_}"},
        amount1    => $::form->parse_amount(\%::myconfig, $::form->{"debit_${_}"}),
@@ -175,15 +217,17 @@ sub save_record_template {
     template_type  => 'gl_transaction',
     template_name  => $new_name,
 
-    currency_id    => $::instance_conf->get_currency_id,
-    department_id  => $::form->{department_id}    || undef,
-    project_id     => $::form->{globalproject_id} || undef,
-    taxincluded    => $::form->{taxincluded}     ? 1 : 0,
-    ob_transaction => $::form->{ob_transaction}  ? 1 : 0,
-    cb_transaction => $::form->{cb_transaction}  ? 1 : 0,
-    reference      => $::form->{reference},
-    description    => $::form->{description},
-    show_details   => $::form->{show_details},
+    currency_id             => $::instance_conf->get_currency_id,
+    department_id           => $::form->{department_id}    || undef,
+    project_id              => $::form->{globalproject_id} || undef,
+    taxincluded             => $::form->{taxincluded}     ? 1 : 0,
+    ob_transaction          => $::form->{ob_transaction}  ? 1 : 0,
+    cb_transaction          => $::form->{cb_transaction}  ? 1 : 0,
+    reference               => $::form->{reference},
+    description             => $::form->{description},
+    show_details            => $::form->{show_details},
+    transaction_description => $::form->{transaction_description},
+    bank_import_template    => $::form->{bank_import_template},
 
     items          => \@items,
   );
@@ -224,13 +268,35 @@ sub add {
   $form->{credit} = 0;
   $form->{tax}    = 0;
 
-  $::form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
-
   $form->{show_details} = $myconfig{show_form_details} unless defined $form->{show_details};
+
+  if (!$form->{form_validity_token}) {
+    $form->{form_validity_token} = SL::DB::ValidityToken->create(scope => SL::DB::ValidityToken::SCOPE_GL_TRANSACTION_POST())->token;
+  }
 
   &display_form(1);
   $main::lxdebug->leave_sub();
 
+}
+
+sub add_from_email_journal {
+  die "No 'email_journal_id' was given." unless ($::form->{email_journal_id});
+  &add;
+}
+
+sub load_record_template_from_email_journal {
+  die "No 'email_journal_id' was given." unless ($::form->{email_journal_id});
+  &load_record_template;
+}
+
+sub edit_with_email_journal_workflow {
+  my ($self) = @_;
+  die "No 'email_journal_id' was given." unless ($::form->{email_journal_id});
+  $::form->{workflow_email_journal_id}    = delete $::form->{email_journal_id};
+  $::form->{workflow_email_attachment_id} = delete $::form->{email_attachment_id};
+  $::form->{workflow_email_callback}      = delete $::form->{callback};
+
+  &edit;
 }
 
 sub prepare_transaction {
@@ -244,8 +310,6 @@ sub prepare_transaction {
   GL->transaction(\%myconfig, \%$form);
 
   $form->{amount} = $form->format_amount(\%myconfig, $form->{amount}, 2);
-
-  $::form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
 
   my $i        = 1;
   my $tax      = 0;
@@ -340,6 +404,7 @@ sub search {
 
   setup_gl_search_action_bar();
 
+  $::form->{title} = t8('Journal');
   $::form->header;
   print $::form->parse_html_template('gl/search', {
     employee_label => sub { "$_[0]{id}--$_[0]{name}" },
@@ -416,31 +481,38 @@ sub generate_report {
   my $ml = ($form->{ml} =~ /(A|E|Q)/) ? -1 : 1;
 
   my @columns = qw(
-    transdate      gldate   id      reference      description
-    notes          source   doccnt  debit          debit_accno
-    credit         credit_accno     debit_tax      debit_tax_accno
-    credit_tax     credit_tax_accno projectnumbers balance employee
+    transdate     gldate              id                         reference
+    description   notes               transaction_description    source
+    doccnt        debit               debit_accno
+    credit        credit_accno        debit_tax                  debit_tax_accno
+    credit_tax    credit_tax_accno    balance                    projectnumbers
+    department    employee
   );
 
   # add employee here, so that variable is still known and passed in url when choosing a different sort order in resulting table
-  my @hidden_variables = qw(accno source reference description notes project_id datefrom dateto employee_id datesort category l_subtotal department_id);
+  my @hidden_variables = qw(accno source reference description notes project_id datefrom dateto employee_id datesort category l_subtotal department_id transaction_description);
   push @hidden_variables, map { "l_${_}" } @columns;
 
   my $employee = $form->{employee_id} ? SL::DB::Employee->new(id => $form->{employee_id})->load->name : '';
 
   my (@options, @date_options);
-  push @options,      $locale->text('Account')     . " : $form->{accno} $form->{account_description}" if ($form->{accno});
-  push @options,      $locale->text('Source')      . " : $form->{source}"                             if ($form->{source});
-  push @options,      $locale->text('Reference')   . " : $form->{reference}"                          if ($form->{reference});
-  push @options,      $locale->text('Description') . " : $form->{description}"                        if ($form->{description});
-  push @options,      $locale->text('Notes')       . " : $form->{notes}"                              if ($form->{notes});
-  push @options,      $locale->text('Employee')    . " : $employee"                                   if $employee;
+  push @options,      $locale->text('Account')                 . " : $form->{accno} $form->{account_description}" if ($form->{accno});
+  push @options,      $locale->text('Source')                  . " : $form->{source}"                             if ($form->{source});
+  push @options,      $locale->text('Reference')               . " : $form->{reference}"                          if ($form->{reference});
+  push @options,      $locale->text('Description')             . " : $form->{description}"                        if ($form->{description});
+  push @options,      $locale->text('Notes')                   . " : $form->{notes}"                              if ($form->{notes});
+  push @options,      $locale->text('Transaction description') . " : $form->{transaction_description}"            if $form->{transaction_description};
+  push @options,      $locale->text('Employee')                . " : $employee"                                   if $employee;
   my $datesorttext = $form->{datesort} eq 'transdate' ? $locale->text('Transdate') :  $locale->text('Gldate');
   push @date_options,      "$datesorttext"                              if ($form->{datesort} and ($form->{datefrom} or $form->{dateto}));
   push @date_options, $locale->text('From'), $locale->date(\%myconfig, $form->{datefrom}, 1)          if ($form->{datefrom});
   push @date_options, $locale->text('Bis'),  $locale->date(\%myconfig, $form->{dateto},   1)          if ($form->{dateto});
   push @options,      join(' ', @date_options)                                                        if (scalar @date_options);
 
+  if ($form->{project_id}) {
+    my $project = SL::DB::Manager::Project->find_by( id => $form->{project_id} );
+    push @options, $locale->text('Project') . " : " . $project->displayable_name;
+  }
   if ($form->{department_id}) {
     my $department = SL::DB::Manager::Department->find_by( id => $form->{department_id} );
     push @options, $locale->text('Department') . " : " . $department->description;
@@ -460,28 +532,30 @@ sub generate_report {
   $form->{l_doccnt}           = $form->{l_source} ? 'Y' : '';
 
   my %column_defs = (
-    'id'               => { 'text' => $locale->text('ID'), },
-    'transdate'        => { 'text' => $locale->text('Transdate'), },
-    'gldate'           => { 'text' => $locale->text('Gldate'), },
-    'reference'        => { 'text' => $locale->text('Reference'), },
-    'source'           => { 'text' => $locale->text('Source'), },
-    'doccnt'           => { 'text' => $locale->text('Document Count'), },
-    'description'      => { 'text' => $locale->text('Description'), },
-    'notes'            => { 'text' => $locale->text('Notes'), },
-    'debit'            => { 'text' => $locale->text('Debit'), },
-    'debit_accno'      => { 'text' => $locale->text('Debit Account'), },
-    'credit'           => { 'text' => $locale->text('Credit'), },
-    'credit_accno'     => { 'text' => $locale->text('Credit Account'), },
-    'debit_tax'        => { 'text' => $locale->text('Debit Tax'), },
-    'debit_tax_accno'  => { 'text' => $locale->text('Debit Tax Account'), },
-    'credit_tax'       => { 'text' => $locale->text('Credit Tax'), },
-    'credit_tax_accno' => { 'text' => $locale->text('Credit Tax Account'), },
-    'balance'          => { 'text' => $locale->text('Balance'), },
-    'projectnumbers'   => { 'text' => $locale->text('Project Numbers'), },
-    'employee'         => { 'text' => $locale->text('Employee'), },
+    'id'                      => { 'text' => $locale->text('ID'), },
+    'transdate'               => { 'text' => $locale->text('Transdate'), },
+    'gldate'                  => { 'text' => $locale->text('Gldate'), },
+    'reference'               => { 'text' => $locale->text('Reference'), },
+    'source'                  => { 'text' => $locale->text('Source'), },
+    'doccnt'                  => { 'text' => $locale->text('Document Count'), },
+    'description'             => { 'text' => $locale->text('Description'), },
+    'notes'                   => { 'text' => $locale->text('Notes'), },
+    'debit'                   => { 'text' => $locale->text('Debit'), },
+    'debit_accno'             => { 'text' => $locale->text('Debit Account'), },
+    'credit'                  => { 'text' => $locale->text('Credit'), },
+    'credit_accno'            => { 'text' => $locale->text('Credit Account'), },
+    'debit_tax'               => { 'text' => $locale->text('Debit Tax'), },
+    'debit_tax_accno'         => { 'text' => $locale->text('Debit Tax Account'), },
+    'credit_tax'              => { 'text' => $locale->text('Credit Tax'), },
+    'credit_tax_accno'        => { 'text' => $locale->text('Credit Tax Account'), },
+    'balance'                 => { 'text' => $locale->text('Balance'), },
+    'projectnumbers'          => { 'text' => $locale->text('Project Numbers'), },
+    'department'              => { 'text' => $locale->text('Department'), },
+    'employee'                => { 'text' => $locale->text('Employee'), },
+    'transaction_description' => { 'text' => $locale->text('Transaction description'), },
   );
 
-  foreach my $name (qw(id transdate gldate reference description debit_accno credit_accno debit_tax_accno credit_tax_accno)) {
+  foreach my $name (qw(id transdate gldate reference description debit_accno credit_accno debit_tax_accno credit_tax_accno department transaction_description)) {
     my $sortname                = $name =~ m/accno/ ? 'accno' : $name;
     my $sortdir                 = $sortname eq $form->{sort} ? 1 - $form->{sortdir} : $form->{sortdir};
     $column_defs{$name}->{link} = $callback . "&sort=$sortname&sortdir=$sortdir";
@@ -569,7 +643,7 @@ sub generate_report {
     $row->{balance}->{data}        = $data;
     $row->{projectnumbers}->{data} = join ", ", sort { lc($a) cmp lc($b) } keys %{ $ref->{projectnumbers} };
 
-    map { $row->{$_}->{data} = $ref->{$_} } qw(id reference description notes gldate employee);
+    map { $row->{$_}->{data} = $ref->{$_} } qw(id reference description notes gldate employee department transaction_description);
 
     map { $row->{$_}->{data} = \@{ $rows{$_} }; } qw(transdate debit credit debit_accno credit_accno debit_tax_accno credit_tax_accno source);
 
@@ -579,7 +653,9 @@ sub generate_report {
 
     map { $row->{$_}->{data} = \@{ $rows{$_} } if ($ref->{"${_}_accno"} ne "") } qw(debit_tax credit_tax);
 
-    $row->{reference}->{link} = build_std_url("script=$ref->{module}.pl", 'action=edit', 'id=' . E($ref->{id}), 'callback');
+    $row->{reference}->{link} = ($::instance_conf->get_feature_experimental_invoice && $ref->{module} eq 'is' || $ref->{module} eq 'ir')
+                              ? build_std_url('script=controller.pl', 'action=Invoice/edit', 'type=' . ($ref->{module} eq 'is' ? 'invoice' : 'purchase_invoice') . '&id=' . E($ref->{id}), 'callback')
+                              : build_std_url("script=$ref->{module}.pl", 'action=edit', 'id=' . E($ref->{id}), 'callback');
 
     my $row_set = [ $row ];
 
@@ -632,7 +708,7 @@ sub generate_report {
 
   $report->set_options('raw_bottom_info_text' => $raw_bottom_info_text);
 
-  setup_gl_transactions_action_bar(num_rows => scalar(@{$form->{GL}}));
+  setup_gl_transactions_action_bar();
 
   $report->generate_with_headers();
 
@@ -642,6 +718,7 @@ sub generate_report {
 sub show_draft {
   $::form->{transdate} = DateTime->today_local->to_kivitendo if !$::form->{transdate};
   $::form->{gldate}    = $::form->{transdate} if !$::form->{gldate};
+  $::form->{form_validity_token} = SL::DB::ValidityToken->create(scope => SL::DB::ValidityToken::SCOPE_GL_TRANSACTION_POST())->token;
   update();
 }
 
@@ -670,7 +747,7 @@ sub update {
   my $zerotaxes  = selectall_hashref_query($form, $dbh, "SELECT id FROM tax WHERE rate = 0", );
 
   my @flds =
-    qw(accno debit credit projectnumber fx_transaction source memo tax taxchart);
+    qw(accno_id debit credit projectnumber fx_transaction source memo tax taxchart);
 
   for my $i (1 .. $form->{rowcount}) {
     $form->{"${_}_$i"} = $form->parse_amount(\%myconfig, $form->{"${_}_$i"}) for qw(debit credit tax);
@@ -704,10 +781,10 @@ sub update {
       $form->{debitlock} = 1;
     }
     if ($debitcredit && $credittax) {
-      $form->{"taxchart_$i"} = "$notax_id--0.00";
+      $form->{"taxchart_$i"} = "$notax_id--0.00000";
     }
     if (!$debitcredit && $debittax) {
-      $form->{"taxchart_$i"} = "$notax_id--0.00";
+      $form->{"taxchart_$i"} = "$notax_id--0.00000";
     }
     $amount =
       ($form->{"debit_$i"} == 0)
@@ -715,7 +792,7 @@ sub update {
       : $form->{"debit_$i"};
     my $j = $#a;
     if (($debitcredit && $credittax) || (!$debitcredit && $debittax)) {
-      $form->{"taxchart_$i"} = "$notax_id--0.00";
+      $form->{"taxchart_$i"} = "$notax_id--0.00000";
       $form->{"tax_$i"}      = 0;
     }
     my ($taxkey, $rate) = split(/--/, $form->{"taxchart_$i"});
@@ -789,16 +866,10 @@ sub display_rows {
   $form->{totaldebit}  = 0;
   $form->{totalcredit} = 0;
 
-  my %project_labels = ();
-  my @project_values = ("");
-  foreach my $item (@{ $form->{"ALL_PROJECTS"} }) {
-    push(@project_values, $item->{"id"});
-    $project_labels{$item->{"id"}} = $item->{"projectnumber"};
-  }
-
   my %charts_by_id  = map { ($_->{id} => $_) } @{ $::form->{ALL_CHARTS} };
   my $default_chart = $::form->{ALL_CHARTS}[0];
   my $transdate     = $::form->{transdate} ? DateTime->from_kivitendo($::form->{transdate}) : DateTime->today_local;
+  my $deliverydate  = $::form->{deliverydate} ? DateTime->from_kivitendo($::form->{deliverydate}) : undef;
 
   my ($source, $memo, $source_hidden, $memo_hidden);
   for my $i (1 .. $form->{rowcount}) {
@@ -822,22 +893,28 @@ sub display_rows {
     $accno_id    = $chart->{id};
     my ($first_taxchart, $default_taxchart, $taxchart_to_use);
 
-    foreach my $item ( GL->get_active_taxes_for_chart($accno_id, $transdate) ) {
+    my $used_tax_id;
+    if ( $form->{"taxchart_$i"} ) {
+      ($used_tax_id) = split(/--/, $form->{"taxchart_$i"});
+    }
+
+    my $taxdate = $deliverydate ? $deliverydate : $transdate;
+    foreach my $item ( GL->get_active_taxes_for_chart($accno_id, $taxdate, $used_tax_id) ) {
       my $key             = $item->id . "--" . $item->rate;
       $first_taxchart   //= $item;
       $default_taxchart   = $item if $item->{is_default};
       $taxchart_to_use    = $item if $key eq $form->{"taxchart_$i"};
 
       push(@taxchart_values, $key);
-      $taxchart_labels{$key} = $item->taxdescription . " " . $item->rate * 100 . ' %';
+      $taxchart_labels{$key} = $item->taxkey . " - " . $item->taxdescription . " " . $item->rate * 100 . ' %';
     }
 
     $taxchart_to_use    //= $default_taxchart // $first_taxchart;
     my $selected_taxchart = $taxchart_to_use->id . '--' . $taxchart_to_use->rate;
 
     my $accno = qq|<td>| .
-      $::request->presenter->chart_picker("accno_id_$i", $accno_id, style => "width: 300px") .
-      $::request->presenter->hidden_tag("previous_accno_id_$i", $accno_id)
+      SL::Presenter::Chart::picker("accno_id_$i", $accno_id, style => "width: 300px") .
+      SL::Presenter::Tag::hidden_tag("previous_accno_id_$i", $accno_id)
       . qq|</td>|;
     my $tax_ddbox = qq|<td>| .
       NTI($cgi->popup_menu('-name' => "taxchart_$i",
@@ -884,7 +961,6 @@ sub display_rows {
       <td><input type=hidden name="fx_transaction_$i" value="$checked">$x</td>
     |;
         }
-        $form->hide_form("accno_$i");
 
       } else {
         if ($form->{transfer}) {
@@ -904,16 +980,17 @@ sub display_rows {
       }
     }
 
-    my $projectnumber =
-      NTI($cgi->popup_menu('-name' => "project_id_$i",
-                           '-values' => \@project_values,
-                           '-labels' => \%project_labels,
-                           '-default' => $form->{"project_id_$i"} ));
-    my $projectnumber_hidden = qq|
-    <input type="hidden" name="project_id_$i" value="$form->{"project_id_$i"}">|;
+    my $projectnumber = SL::Presenter::Project::picker("project_id_$i", $form->{"project_id_$i"});
+    my $projectnumber_hidden = SL::Presenter::Tag::hidden_tag("project_id_$i", $form->{"project_id_$i"});
 
     my $copy2credit = $i == 1 ? 'onkeyup="copy_debit_to_credit()"' : '';
     my $balance     = $form->format_amount(\%::myconfig, $balances{$accno_id} // 0, 2, 'DRCR');
+
+    # if we have a bt_chart_id we disallow changing the amount of the bank account
+    if ($form->{bt_chart_id}) {
+      $debitreadonly = $creditreadonly = "readonly" if ($form->{"accno_id_$i"} eq $form->{bt_chart_id});
+      $copy2credit   = '' if $i == 1;   # and disallow copy2credit
+    }
 
     print qq|<tr valign=top>
     $accno
@@ -924,6 +1001,14 @@ sub display_rows {
     <td><input type="hidden" name="tax_$i" value="$form->{"tax_$i"}">$form->{"tax_$i"}</td>
     $tax_ddbox|;
 
+    if ($i < $form->{rowcount}) {
+      print qq|
+  <td class="hidden">
+|;
+      $form->hide_form("accno_$i");
+      print qq|  </td>|;
+    }
+
     if ($form->{show_details}) {
       print qq|
     $source
@@ -932,9 +1017,11 @@ sub display_rows {
 |;
     } else {
     print qq|
+    <td class="hidden">
     $source_hidden
     $memo_hidden
     $projectnumber_hidden
+    </td>
     |;
     }
     print qq|
@@ -942,7 +1029,13 @@ sub display_rows {
 |;
   }
 
+  print qq|  <tr class="hidden">
+   <td>
+  |;
   $form->hide_form(qw(rowcount selectaccno));
+  print qq|   </td>
+  </tr>
+  |;
 
   $main::lxdebug->leave_sub();
 
@@ -957,6 +1050,49 @@ sub setup_gl_action_bar {
   my $form   = $::form;
   my $change_never            = $::instance_conf->get_gl_changeable == 0;
   my $change_on_same_day_only = $::instance_conf->get_gl_changeable == 2 && ($form->current_date(\%::myconfig) ne $form->{gldate});
+  my ($is_linked_bank_transaction, $is_linked_ap_transaction, $is_reconciled_bank_transaction);
+
+  if ($form->{id} && SL::DB::Manager::BankTransactionAccTrans->find_by(gl_id => $form->{id})) {
+    $is_linked_bank_transaction = 1;
+  }
+  if ($form->{id} && SL::DB::Manager::ApGl->find_by(gl_id => $form->{id})) {
+    $is_linked_ap_transaction = 1;
+  }
+  # dont edit reconcilated bookings!
+  if ($form->{id}) {
+    my @acc_trans = map { $_->acc_trans_id } @{ SL::DB::Manager::AccTransaction->get_all( where => [ trans_id => $form->{id} ] ) };
+    if (scalar @acc_trans && scalar @{ SL::DB::Manager::ReconciliationLink->get_all(where => [ acc_trans_id  => [ @acc_trans ] ]) }) {
+      $is_reconciled_bank_transaction = 1;
+    }
+  }
+  my $create_post_action = sub {
+    # $_[0]: description
+    # $_[1]: after_action
+    action => [
+      $_[0],
+      submit   => [ '#form', { action => 'post', after_action => $_[1] } ],
+      disabled => $form->{locked}                           ? t8('The billing period has already been locked.')
+                : $form->{storno}                           ? t8('A canceled general ledger transaction cannot be posted.')
+                : ($form->{id} && $change_never)            ? t8('Changing general ledger transaction has been disabled in the configuration.')
+                : ($form->{id} && $change_on_same_day_only) ? t8('General ledger transactions can only be changed on the day they are posted.')
+                : $is_linked_bank_transaction               ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
+                : $is_linked_ap_transaction                 ? t8('This transaction is linked with a AP transaction. Please undo and redo the AP transaction booking if needed.')
+                : $is_reconciled_bank_transaction           ? t8('This transaction is reconciled with a bank transaction. Please undo the reconciliation if needed.')
+                : undef,
+    ],
+  };
+
+  my %post_entry;
+  if ($::instance_conf->get_gl_add_doc && $::instance_conf->get_doc_storage) {
+    %post_entry = (combobox => [ $create_post_action->(t8('Post'), 'doc-tab'),
+                                 $create_post_action->(t8('Post and new booking')) ]);
+  } elsif ($::instance_conf->get_doc_storage) {
+    %post_entry = (combobox => [ $create_post_action->(t8('Post')),
+                                 $create_post_action->(t8('Post and upload document'), 'doc-tab') ]);
+  } else {
+    %post_entry = $create_post_action->(t8('Post'));
+  }
+  push @{$post_entry{combobox}}, $create_post_action->(t8('Post and Close'), 'callback');
 
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
@@ -966,20 +1102,17 @@ sub setup_gl_action_bar {
         id        => 'update_button',
         accesskey => 'enter',
       ],
-      action => [
-        t8('Post'),
-        submit   => [ '#form', { action => 'post' } ],
-        disabled => $form->{locked}                           ? t8('The billing period has already been locked.')
-                  : $form->{storno}                           ? t8('A canceled general ledger transaction cannot be posted.')
-                  : ($form->{id} && $change_never)            ? t8('Changing general ledger transaction has been disabled in the configuration.')
-                  : ($form->{id} && $change_on_same_day_only) ? t8('General ledger transactions can only be changed on the day they are posted.')
-                  :                                             undef,
-        ],
+      %post_entry,
       combobox => [
         action => [ t8('Storno'),
           submit   => [ '#form', { action => 'storno' } ],
           confirm  => t8('Do you really want to cancel this general ledger transaction?'),
-          disabled => !$form->{id} ? t8('This general ledger transaction has not been posted yet.') : undef,
+          disabled => !$form->{id}                ? t8('This general ledger transaction has not been posted yet.')
+                    : $form->{storno}             ? t8('A canceled general ledger transaction cannot be canceled again.')
+                    : $is_linked_bank_transaction ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
+                    : $is_linked_ap_transaction   ? t8('This transaction is linked with a AP transaction. Please undo and redo the AP transaction booking if needed.')
+                    : $is_reconciled_bank_transaction ? t8('This transaction is reconciled with a bank transaction. Please undo the reconciliation if needed.')
+                    : undef,
         ],
         action => [ t8('Delete'),
           submit   => [ '#form', { action => 'delete' } ],
@@ -988,15 +1121,30 @@ sub setup_gl_action_bar {
                     : $form->{locked}          ? t8('The billing period has already been locked.')
                     : $change_never            ? t8('Changing invoices has been disabled in the configuration.')
                     : $change_on_same_day_only ? t8('Invoices can only be changed on the day they are posted.')
-                    :                            undef,
+                    : $is_linked_bank_transaction ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
+                    : $is_linked_ap_transaction   ? t8('This transaction is linked with a AP transaction. Please undo and redo the AP transaction booking if needed.')
+                    : $is_reconciled_bank_transaction ? t8('This transaction is reconciled with a bank transaction. Please undo the reconciliation if needed.')
+                    : $form->{storno}             ? t8('A canceled general ledger transaction cannot be deleted.')
+                    : undef,
         ],
       ], # end of combobox "Storno"
+
+      combobox => [
+        action => [ t8('Workflow') ],
+        action => [
+          t8('Use As New'),
+          submit   => [ '#form', { action => "use_as_new" } ],
+          checks   => [ 'kivi.validate_form' ],
+          disabled => !$form->{id} ? t8('This general ledger transaction has not been posted yet.')
+                    : undef,
+        ],
+      ], # end of combobox "Workflow"
 
       combobox => [
         action => [ t8('more') ],
         action => [
           t8('History'),
-          call     => [ 'set_history_window', $form->{id} * 1, 'id' ],
+          call     => [ 'set_history_window', $form->{id} * 1, 'glid' ],
           disabled => !$form->{id} ? t8('This invoice has not been posted yet.') : undef,
         ],
         action => [
@@ -1013,7 +1161,7 @@ sub setup_gl_action_bar {
           call     => [ 'kivi.Draft.popup', 'gl', 'unknown', $form->{draft_id}, $form->{draft_description} ],
           disabled => $form->{id}     ? t8('This invoice has already been posted.')
                     : $form->{locked} ? t8('The billing period has already been locked.')
-                    :                   undef,
+                    : undef,
         ],
       ], # end of combobox "more"
     );
@@ -1072,16 +1220,11 @@ sub form_header {
 
   my ($init) = @_;
 
-  $::request->layout->add_javascripts("autocomplete_chart.js", "kivi.File.js", "kivi.GL.js", "kivi.RecordTemplate.js");
+  $::request->layout->add_javascripts("autocomplete_chart.js", "autocomplete_project.js", "kivi.File.js", "kivi.GL.js", "kivi.RecordTemplate.js", "kivi.Validator.js", "show_history.js");
 
-  my @old_project_ids = grep { $_ } map{ $::form->{"project_id_$_"} } 1..$::form->{rowcount};
-
-  $::form->get_lists("projects"  => { "key"       => "ALL_PROJECTS",
-                                    "all"       => 0,
-                                    "old_id"    => \@old_project_ids },
-
-                   "charts"    => { "key"       => "ALL_CHARTS",
-                                    "transdate" => $::form->{transdate} });
+  $::form->get_lists(
+    "charts"    => { "key" => "ALL_CHARTS", "transdate" => $::form->{transdate} },
+  );
 
   # we cannot book on charttype header
   @{ $::form->{ALL_CHARTS} } = grep { $_->{charttype} ne 'H' }  @{ $::form->{ALL_CHARTS} };
@@ -1168,9 +1311,10 @@ sub post_transaction {
   my $locale   = $main::locale;
 
   # check if there is something in reference and date
-  $form->isblank("reference",   $locale->text('Reference missing!'));
-  $form->isblank("transdate",   $locale->text('Transaction Date missing!'));
-  $form->isblank("description", $locale->text('Description missing!'));
+  $form->isblank("reference",               $locale->text('Reference missing!'));
+  $form->isblank("transdate",               $locale->text('Transaction Date missing!'));
+  $form->isblank("description",             $locale->text('Description missing!'));
+  $form->isblank("transaction_description", $locale->text('A transaction description is required.')) if $::instance_conf->get_require_transaction_description_ps;
 
   my $transdate = $form->datetonum($form->{transdate}, \%myconfig);
   my $closedto  = $form->datetonum($form->{closedto},  \%myconfig);
@@ -1188,7 +1332,7 @@ sub post_transaction {
   my ($notax_id) = selectrow_query($form, $dbh, "SELECT id FROM tax WHERE taxkey = 0 LIMIT 1", );
   my $zerotaxes  = selectall_hashref_query($form, $dbh, "SELECT id FROM tax WHERE rate = 0", );
 
-  my @flds = qw(accno debit credit projectnumber fx_transaction source memo tax taxchart);
+  my @flds = qw(accno_id debit credit projectnumber fx_transaction source memo tax taxchart);
 
   for my $i (1 .. $form->{rowcount}) {
     next if $form->{"debit_$i"} eq "" && $form->{"credit_$i"} eq "";
@@ -1228,17 +1372,17 @@ sub post_transaction {
       $form->{debitlock} = 1;
     }
     if ($debitcredit && $credittax) {
-      $form->{"taxchart_$i"} = "$notax_id--0.00";
+      $form->{"taxchart_$i"} = "$notax_id--0.00000";
     }
     if (!$debitcredit && $debittax) {
-      $form->{"taxchart_$i"} = "$notax_id--0.00";
+      $form->{"taxchart_$i"} = "$notax_id--0.00000";
     }
     my $amount = ($form->{"debit_$i"} == 0)
             ? $form->{"credit_$i"}
             : $form->{"debit_$i"};
     my $j = $#a;
     if (($debitcredit && $credittax) || (!$debitcredit && $debittax)) {
-      $form->{"taxchart_$i"} = "$notax_id--0.00";
+      $form->{"taxchart_$i"} = "$notax_id--0.00000";
       $form->{"tax_$i"}      = 0;
     }
     my ($taxkey, $rate) = split(/--/, $form->{"taxchart_$i"});
@@ -1309,30 +1453,73 @@ sub post_transaction {
     $form->error($locale->text('Empty transaction!'));
   }
 
-  if ((my $errno = GL->post_transaction(\%myconfig, \%$form)) <= -1) {
-    $errno *= -1;
-    my @err;
-    $err[1] = $locale->text('Cannot have a value in both Debit and Credit!');
-    $err[2] = $locale->text('Debit and credit out of balance!');
-    $err[3] = $locale->text('Cannot post a transaction without a value!');
 
-    $form->error($err[$errno]);
-  }
-  # saving the history
-  if(!exists $form->{addition} && $form->{id} ne "") {
-    $form->{snumbers} = qq|gltransaction_| . $form->{id};
-    $form->{addition} = "POSTED";
-    $form->{what_done} = "gl transaction";
-    $form->save_history;
-  }
-  # /saving the history
+  # start transaction (post + history + (optional) banktrans)
+  SL::DB->client->with_transaction(sub {
 
-  if ($form->{callback} =~ /BankTransaction/) {
-    print $form->redirect_header($form->{callback});
-    $form->redirect($locale->text('GL transaction posted.') . ' ' . $locale->text('ID') . ': ' . $form->{id});
-  }
-  # remove or clarify
-  undef($form->{callback});
+    if ((my $errno = GL->post_transaction(\%myconfig, \%$form)) <= -1) {
+      $errno *= -1;
+      my @err;
+      $err[1] = $locale->text('Cannot have a value in both Debit and Credit!');
+      $err[2] = $locale->text('Debit and credit out of balance!');
+      $err[3] = $locale->text('Cannot post a transaction without a value!');
+
+      die $err[$errno];
+    }
+    # saving the history
+    if(!exists $form->{addition} && $form->{id} ne "") {
+      $form->{snumbers} = qq|gltransaction_| . $form->{id};
+      $form->{addition} = "POSTED";
+      $form->{what_done} = "gl transaction";
+      $form->save_history;
+    }
+
+    # Case BankTransaction: update RecordLink and BankTransaction
+    if ($form->{callback} =~ /BankTransaction/ && $form->{bt_id}) {
+      # set invoice_amount - we only rely on bt_id in form, do all other stuff ui independent
+      # die if we have a unlogic or NYI case and abort the whole transaction
+      my ($bt, $chart_id, $payment);
+      require SL::DB::Manager::BankTransaction;
+
+      $bt = SL::DB::Manager::BankTransaction->find_by(id => $::form->{bt_id});
+      die "No bank transaction found" unless $bt;
+
+      $chart_id = SL::DB::Manager::BankAccount->find_by(id => $bt->local_bank_account_id)->chart_id;
+      die "no chart id" unless $chart_id;
+
+      $payment = SL::DB::Manager::AccTransaction->get_all(where => [ trans_id => $::form->{id},
+                                                                     chart_link => { like => '%_paid%' },
+                                                                     chart_id => $chart_id                  ]);
+      die "guru meditation error: Can only assign amount to one bank account booking" if scalar @{ $payment } > 1;
+
+      # credit/debit * -1 matches the sign for bt.amount and bt.invoice_amount
+
+      die "Can only assign the full (partial) bank amount to a single general ledger booking: " . $bt->not_assigned_amount . " " .  ($payment->[0]->amount * -1)
+        unless (abs($bt->not_assigned_amount - ($payment->[0]->amount * -1)) < 0.001);
+
+      $bt->update_attributes(invoice_amount => $bt->invoice_amount + ($payment->[0]->amount * -1));
+
+      # create record_link
+      my %props = (
+        from_table => 'bank_transactions',
+        from_id    => $::form->{bt_id},
+        to_table   => 'gl',
+        to_id      => $::form->{id},
+      );
+      SL::DB::RecordLink->new(%props)->save;
+      # and tighten holy acc_trans_id for this bank_transaction
+      my  %props_acc = (
+        acc_trans_id        => $payment->[0]->acc_trans_id,
+        bank_transaction_id => $bt->id,
+        gl_id               => $payment->[0]->trans_id,
+      );
+      my $bta = SL::DB::BankTransactionAccTrans->new(%props_acc);
+      $bta->save;
+
+    }
+    1;
+  }) or do { die SL::DB->client->error };
+
   $main::lxdebug->leave_sub();
 }
 
@@ -1352,29 +1539,46 @@ sub post {
   $form->{storno} = 0;
 
   post_transaction();
+
   if ($::instance_conf->get_webdav) {
     SL::Webdav->new(type     => 'general_ledger',
                     number   => $form->{id},
                    )->webdav_path;
   }
 
-  $form->{callback} = build_std_url("action=add", "show_details");
-  $form->redirect($::locale->text("General ledger transaction '#1' posted", $form->{reference}));
+  if ($form->{email_journal_id} && $form->{id} ne "") {
+    my $ar_transaction = SL::DB::GLTransaction->new(id => $form->{id})->load;
+    my $email_journal = SL::DB::EmailJournal->new(
+      id => delete $form->{email_journal_id}
+    )->load;
+    $email_journal->link_to_record_with_attachment($ar_transaction, delete $::form->{email_attachment_id});
+  }
+
+  my $msg = $::locale->text("General ledger transaction '#1' posted (ID: #2)", $form->{reference}, $form->{id});
+  if ($form->{callback} =~ /BankTransaction/ && $form->{bt_id}) {
+    SL::Helper::Flash::flash_later('info', $msg) if $msg;
+    print $::form->redirect_header($form->{callback});
+  } elsif ('doc-tab' eq $form->{after_action}) {
+    # Redirect with callback containing a fragment does not work (by now)
+    # because the callback info is stored in the session an parsing the
+    # callback parameters does not support fragments (see SL::Form::redirect).
+    # So use flash_later for the message and redirect_headers for redirecting.
+    my $add_doc_url = build_std_url("script=gl.pl", 'action=edit', 'id=' . E($form->{id}), 'fragment=ui-tabs-docs');
+    SL::Helper::Flash::flash_later('info', $msg);
+    print $form->redirect_header($add_doc_url);
+    $::dispatcher->end_request;
+  } elsif ('callback' eq $form->{after_action}) {
+    my $callback = $form->{callback}
+      || "controller.pl?action=LoginScreen/user_login";
+    SL::Helper::Flash::flash_later('info', $msg);
+    print $form->redirect_header($callback);
+    $::dispatcher->end_request;
+  } else {
+    $form->{callback} = build_std_url("action=add", "show_details");
+    $form->redirect($msg);
+  }
 
   $main::lxdebug->leave_sub();
-}
-
-sub post_as_new {
-  $main::lxdebug->enter_sub();
-
-  $main::auth->assert('gl_transactions');
-
-  my $form     = $main::form;
-
-  $form->{id} = 0;
-  &add;
-  $main::lxdebug->leave_sub();
-
 }
 
 sub storno {
@@ -1408,13 +1612,31 @@ sub storno {
   $main::lxdebug->leave_sub();
 }
 
+sub use_as_new {
+  $::auth->assert('gl_transactions');
+
+  $::form->{email_journal_id}    = delete $::form->{workflow_email_journal_id};
+  $::form->{email_attachment_id} = delete $::form->{workflow_email_attachment_id};
+  $::form->{callback}            = delete $::form->{workflow_email_callback};
+
+  delete $::form->{$_} for qw(id gldate tax_point deliverydate storno);
+
+  $::form->{title}     = "Add";
+  $::form->{transdate} = DateTime->today_local->to_kivitendo;
+
+  $::form->{form_validity_token} = SL::DB::ValidityToken->create(scope => SL::DB::ValidityToken::SCOPE_GL_TRANSACTION_POST())->token;
+
+  update();
+}
+
 sub continue {
   call_sub($main::form->{nextsub});
 }
 
 sub get_tax_dropdown {
-  my $transdate    = $::form->{transdate} ? DateTime->from_kivitendo($::form->{transdate}) : DateTime->today_local;
-  my @tax_accounts = GL->get_active_taxes_for_chart($::form->{accno_id}, $transdate);
+  my $transdate    = $::form->{transdate}    ? DateTime->from_kivitendo($::form->{transdate}) : DateTime->today_local;
+  my $deliverydate = $::form->{deliverydate} ? DateTime->from_kivitendo($::form->{deliverydate}) : undef;
+  my @tax_accounts = GL->get_active_taxes_for_chart($::form->{accno_id}, $deliverydate // $transdate);
   my $html         = $::form->parse_html_template("gl/update_tax_accounts", { TAX_ACCOUNTS => \@tax_accounts });
 
   print $::form->ajax_response_header, $html;

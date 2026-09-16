@@ -10,6 +10,7 @@ __PACKAGE__->meta->table('ar');
 
 __PACKAGE__->meta->columns(
   amount                    => { type => 'numeric', default => '0', not_null => 1, precision => 15, scale => 5 },
+  billing_address_id        => { type => 'integer' },
   cp_id                     => { type => 'integer' },
   currency_id               => { type => 'integer', not_null => 1 },
   cusordnumber              => { type => 'text' },
@@ -25,6 +26,7 @@ __PACKAGE__->meta->columns(
   duedate                   => { type => 'date' },
   dunning_config_id         => { type => 'integer' },
   employee_id               => { type => 'integer' },
+  exchangerate              => { type => 'numeric', precision => 15, scale => 5 },
   gldate                    => { type => 'date', default => 'now' },
   globalproject_id          => { type => 'integer' },
   id                        => { type => 'integer', not_null => 1, sequence => 'glid' },
@@ -43,14 +45,20 @@ __PACKAGE__->meta->columns(
   ordnumber                 => { type => 'text' },
   paid                      => { type => 'numeric', default => '0', not_null => 1, precision => 15, scale => 5 },
   payment_id                => { type => 'integer' },
+  qr_reference              => { type => 'text' },
+  qr_unstructured_message   => { type => 'text' },
+  qrbill_without_amount     => { type => 'boolean', default => 'false' },
   quodate                   => { type => 'date' },
   quonumber                 => { type => 'text' },
+  record_type               => { type => 'enum', check_in => [ 'ar_transaction', 'ar_transaction_storno', 'invoice', 'invoice_storno', 'invoice_for_advance_payment', 'invoice_for_advance_payment_storno', 'final_invoice', 'credit_note', 'credit_note_storno' ], db_type => 'invoice_types', not_null => 1 },
   salesman_id               => { type => 'integer' },
   shippingpoint             => { type => 'text' },
   shipto_id                 => { type => 'integer' },
   shipvia                   => { type => 'text' },
   storno                    => { type => 'boolean', default => 'false' },
   storno_id                 => { type => 'integer' },
+  tax_point                 => { type => 'date' },
+  tax_point_start           => { type => 'date' },
   taxincluded               => { type => 'boolean' },
   taxzone_id                => { type => 'integer', not_null => 1 },
   transaction_description   => { type => 'text' },
@@ -63,6 +71,11 @@ __PACKAGE__->meta->primary_key_columns([ 'id' ]);
 __PACKAGE__->meta->allow_inline_column_values(1);
 
 __PACKAGE__->meta->foreign_keys(
+  billing_address => {
+    class       => 'SL::DB::AdditionalBillingAddress',
+    key_columns => { billing_address_id => 'id' },
+  },
+
   contact => {
     class       => 'SL::DB::Contact',
     key_columns => { cp_id => 'cp_id' },
@@ -135,4 +148,4 @@ __PACKAGE__->meta->foreign_keys(
 );
 
 1;
-;
+

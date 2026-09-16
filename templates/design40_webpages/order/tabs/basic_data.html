@@ -1,0 +1,512 @@
+[% USE T8 %]
+[% USE HTML %]
+[% USE LxERP %]
+[% USE L %]
+[% USE P %]
+
+[% INCLUDE 'generic/set_longdescription.html' %]
+
+<div id="ui-tabs-basic-data">
+<!-- PENDENT: EXPERIMENTELL -->
+
+[% IF FORM.email_attachment_id || FORM.workflow_email_attachment_id%]
+  <div class="wrapper" id="email_attachment_wrapper">
+    [%
+      BLOCK panel_1;
+        P.email_journal.attachment_preview(
+             FORM.email_attachment_id || FORM.workflow_email_attachment_id,
+             style="height:600px"
+             );
+      END;
+      INCLUDE 'common/toggle_panel.html'
+        block_name='panel_1'
+        button_closed  = LxERP.t8('Show Attachment')
+        button_open    = LxERP.t8('Hide Attachment')
+        ;
+    %]
+  </div>
+[% END %]
+
+<div class="wrapper" id="wrapper-1">
+[% INCLUDE 'generic/toggle_wrapper.html' %]
+
+<div class="col">
+
+  <table class="tbl-horizontal col">
+    <caption>[% 'Customer & Order Information' | $T8 %]</caption>
+    <colgroup><col class="wi-mediumsmall"><col class="wi-lightwide"></colgroup>
+    <tbody>
+      <tr>
+        <th>[%- SELF.cv == "customer" ? LxERP.t8('Customer') : LxERP.t8('Vendor') -%]</th>
+        [% SET cv_id = SELF.cv _ '_id' %]
+        <td class="wi-lightwide">
+          [% P.customer_vendor.picker("order.${SELF.cv}" _ '_id', SELF.order.$cv_id, type=SELF.cv, show_details="1") %]
+        </td>
+      </tr>
+      <tr id='cp_row' [% IF !SELF.cv_assigned_contacts.size %]style='display:none'[% END %]>
+        <th>[% 'Contact Person' | $T8 %]</th>
+        <td>[% L.select_tag('order.cp_id',
+                            SELF.cv_assigned_contacts,
+                            default=SELF.order.cp_id,
+                            title_key='full_name_dep',
+                            value_key='cp_id',
+                            with_empty=1,
+                            class='wi-lightwide') %]</td>
+      </tr>
+      <tr>
+        <th>[% 'Shipping Address' | $T8 %]</th>
+        <td>
+          <span id='shipto_selection' [% IF !SELF.order.${SELF.cv}.shipto.size %]style='display:none'[% END %]>
+            [% shiptos = [ { shipto_id => "", displayable_id => LxERP.t8("No/individual shipping address") } ] ;
+               FOREACH s = SELF.order.${SELF.cv}.shipto ;
+                 shiptos.push(s) ;
+               END ;
+               L.select_tag('order.shipto_id',
+                             shiptos,
+                             default=SELF.order.shipto_id,
+                             title_key='displayable_id',
+                             value_key='shipto_id',
+                             with_empty=0,
+                             class='wi-lightwide') %]
+          </span>
+          [% L.button_tag("kivi.Order.edit_custom_shipto()",
+                          LxERP.t8("Custom shipto"),
+                          class='button neutral below wi-lightwide') %]
+        </td>
+      </tr>
+      [%- IF SELF.cv == "customer" %]
+      <tr id="billing_address_row"[% IF !SELF.order.customer.additional_billing_addresses.as_list.size %]style="display:none"[% END %]>
+        <th>[% 'Custom Billing Address' | $T8 %]</th>
+        <td>
+          [% L.select_tag('order.billing_address_id',
+                           SELF.order.customer.additional_billing_addresses,
+                           default=SELF.order.billing_address_id,
+                           title_key='displayable_id',
+                           value_key='id',
+                           with_empty=1,
+                           class='wi-lightwide') %]
+        </td>
+      </tr>
+      [%- END %]
+      [% PROCESS order/tabs/_business_info_row.html SELF=SELF %]
+      <tr>
+        <th>[% 'Steuersatz' | $T8 %]</th>
+        <td>[% L.select_tag('order.taxzone_id', SELF.all_taxzones, default=SELF.order.taxzone_id, title_key='description', class='recalc wi-lightwide') %]</td>
+      </tr>
+      [% SET currency_id = SELF.order.currency_id || INSTANCE_CONF.get_currency_id  # use default currency for new order %]
+      [% SET show_exchangerate = (SELF.order.currency_id != INSTANCE_CONF.get_currency_id) %]
+      <tr id="currency_settings">
+        <th>[% 'Currency' | $T8 %]</th>
+        <td>[% L.select_tag('order.currency_id', SELF.all_currencies, default=currency_id, value_key='id', title_key='name', class='wi-lightwide') %]</td>
+      </tr>
+      <tr id="exchangerate_settings" [%- IF !show_exchangerate %]style='display:none'[%- END %]>
+        <th>[% 'Exchangerate' | $T8 %]</th>
+        <td> 1 <span id="currency_name">[% SELF.order.currency.name %]</span> =
+          [% L.input_tag('order.exchangerate_as_null_number', SELF.order.exchangerate_as_null_number, 'data-validate'=show_exchangerate ? 'required' : '', class="reformat_number_as_null_number numeric wi-small") %]
+          [% INSTANCE_CONF.default_currency %]
+          [% L.hidden_tag('old_currency_id', currency_id) %]
+          [% L.hidden_tag('old_exchangerate', SELF.order.exchangerate_as_null_number) %]
+        </td>
+      </tr>
+      [% IF SELF.all_languages.size %]
+        <tr>
+          <th>[% 'Language' | $T8 %]</th>
+          <td>
+            [% L.select_tag('order.language_id', SELF.all_languages, default=SELF.order.language_id, title_key='description', with_empty=1, class='wi-lightwide') %]
+          </td>
+        </tr>
+      [% END %]
+      [% IF SELF.all_departments.size %]
+        <tr>
+          <th>[% 'Department' | $T8 %]</th>
+          <td>
+            [% L.select_tag('order.department_id', SELF.all_departments, default=SELF.order.department_id, title_key='description', with_empty=1, class='wi-lightwide') %]
+          </td>
+        </tr>
+      [% END %]
+      <tr>
+        <th>[% 'Shipping Point' | $T8 %]</th>
+        <td>[% L.input_tag('order.shippingpoint', SELF.order.shippingpoint, class='wi-lightwide') %]</td>
+      </tr>
+      <tr>
+        <th>[% 'Ship via' | $T8 %]</th>
+        <td>[% L.input_tag('order.shipvia', SELF.order.shipvia, class='wi-lightwide') %]</td>
+      </tr>
+      <tr>
+        <th>[% 'Transaction description' | $T8 %]</th>
+        <td>[% L.input_tag('order.transaction_description', SELF.order.transaction_description, 'data-validate'=INSTANCE_CONF.get_require_transaction_description_ps ? 'required' : '', class='wi-lightwide') %]</td>
+      </tr>
+      <tr>
+        <th>[% 'Project Number' | $T8 %]</th>
+        <td>[% P.project.picker('order.globalproject_id', SELF.order.globalproject_id, class='wi-lightwide') %]</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <table class="tbl-horizontal col">
+    <caption>[% 'Terms' | $T8 %]</caption>
+    <colgroup><col class="wi-mediumsmall"><col class="wi-lightwide"></colgroup>
+    <tbody>
+      <tr>
+        <td colspan="2">
+          <span class="label above">[% 'Payment Terms' | $T8 %]</span>
+          [% L.select_tag('order.payment_id',
+                            SELF.all_payment_terms,
+                            default = SELF.order.payment_id,
+                            with_empty = 1,
+                            title_key = 'description',
+                            class = 'wi-mediumsmall-lightwide') %]
+        </td>
+      </tr>
+      <tr>
+        <td colspan="2">
+          <span class="label above">[% 'Delivery Terms' | $T8 %]</span>
+          [% L.select_tag('order.delivery_term_id',
+                            SELF.all_delivery_terms,
+                            default = SELF.order.delivery_term_id,
+                            with_empty = 1,
+                            title_key = 'description',
+                            class = 'wi-mediumsmall-lightwide') %]
+        </td>
+      </tr>
+      <tr id="taxincluded_row_id" [% IF !SELF.taxes.size %]class="hidden"[% END %]>
+        <th><label for="order.taxincluded">[% 'Tax Included' | $T8 %]</label></th>
+        <td>[% L.yes_no_tag('order.taxincluded', SELF.order.taxincluded, class='recalc') %]</td>
+      </tr>
+      [% IF SELF.type == "sales_order" %]
+        <tr>
+          <th>[% 'Periodic Invoices' | $T8 %]</th>
+          <td>
+            <span id='periodic_invoices_status' class="data wi-normal wi-lightwide">[% SELF.periodic_invoices_status %]</span>
+            <span class="button-inline">
+              [% L.button_tag('kivi.Order.show_periodic_invoices_config_dialog()', LxERP.t8('Configure'), class='neutral inline below') %]
+              <a href="doc/html/ch03.html#features.periodic-invoices.variables" target="_blank" class="button wi-tiny neutral" title="[% 'Documentation about periodic invoices in a new window/tab' | $T8 %]">?</a>
+            </span>
+          </td>
+        </tr>
+      [% END %]
+    </tbody>
+  </table>
+
+</div><!-- /.col -->
+
+<table class="tbl-horizontal col">
+  <caption>[% 'Notes' | $T8 %]</caption>
+  <colgroup><col class="wi-wide"></colgroup>
+  <tbody>
+    <tr>
+      <td class="wi-wide">[% L.textarea_tag('order.notes', SELF.order.notes, rows=7, class="texteditor wi-wide") %]</td>
+    </tr>
+    <tr>
+      <td><span class="label above">[% 'Internal Notes' | $T8 %]</span>[% L.textarea_tag('order.intnotes', SELF.order.intnotes, class="wi-wide") %]</td>
+    </tr>
+  </tbody>
+</table>
+
+<table class="tbl-horizontal col">
+  <caption>[% 'Handling, Numbers & Dates' | $T8 %]</caption>
+  <colgroup> <col class="wi-mediumsmall"><col class="wi-lightwide"> </colgroup>
+  <tbody>
+    [% IF SELF.order.id %]
+    <tr>
+    <th><label for="order.delivered">[% 'Delivery Order(s) for full qty created' | $T8 %]</label></th>
+    <td>[% L.yes_no_tag('order.delivered', SELF.order.delivered, class='wi-small') %]</td>
+    </tr>
+    <tr>
+      <th><label for="order.closed">[% 'Closed' | $T8 %]</label></th>
+      <td>[% L.yes_no_tag('order.closed', SELF.order.closed, class='wi-small') %]</td>
+    </tr>
+    [% END %]
+
+    [%- IF SELF.all_statuses.size %]
+    <tr>
+      <th>[% 'Status' | $T8 %]</th>
+      <td>[% L.select_tag('order.order_status_id',
+        SELF.all_statuses,
+        default=SELF.order.order_status_id,
+        with_empty=1,
+        title_key='name') %]</td>
+    </tr>
+    [%- END -%]
+
+    <tr>
+      <th>[% 'Employee' | $T8 %]</th>
+      <td>[% L.select_tag('order.employee_id',
+        SELF.all_employees,
+        default=(SELF.order.employee_id ? SELF.order.employee_id : SELF.current_employee_id),
+        class='wi-normal',
+        title_key='safe_name') %]</td>
+    </tr>
+    [% IF SELF.cv == 'customer' %]
+      <tr>
+        <th>[% 'Salesman' | $T8 %]</th>
+        <td>[% L.select_tag('order.salesman_id',
+          SELF.all_salesmen,
+          default=(SELF.order.salesman_id ? SELF.order.salesman_id : SELF.current_employee_id),
+          class='wi-normal',
+          title_key='safe_name') %]</td>
+      </tr>
+    [% ELSE %]
+      <tr>
+        <th>[% 'Buyer' | $T8 %]</th>
+        <td>[% L.select_tag('order.buyer_id',
+          SELF.all_employees,
+          default=( SELF.order.buyer_id ? SELF.order.buyer_id : SELF.current_employee_id),
+          class='wi-normal',
+          title_key='safe_name') %]</td>
+      </tr>
+    [% END %]
+    [% IF (SELF.type == "sales_order_intake" || SELF.type == "sales_order" || SELF.type == "purchase_order" || SELF.type == "purchase_order_confirmation") %]
+      <tr>
+        <th>
+          [% IF (SELF.type == "sales_order" || SELF.type == "purchase_order_confirmation") %]
+            [% 'Order Confirmation Number' | $T8 %]
+          [% ELSE %]
+            [% 'Order Number' | $T8 %]
+          [% END %]
+        </th>
+        <td>
+          [%- IF INSTANCE_CONF.get_sales_purchase_record_numbers_changeable %]
+            [% L.input_tag('order.ordnumber', SELF.order.ordnumber, class='number-for-title wi-normal') %]
+          [%- ELSIF SELF.order.id %]
+            <span class="data wi-normal">[% HTML.escape(SELF.order.ordnumber) %]</span>
+            [% L.hidden_tag("order.ordnumber", SELF.order.ordnumber, class='number-for-title') %]
+          [% ELSE %]
+            <span class="data wi-normal">[% LxERP.t8("will be set upon saving") %]</span>
+          [%- END %]
+        </td>
+      </tr>
+    [% END %]
+
+    [% IF SELF.type == "sales_order" %]
+      <tr>
+        <th>[% 'Order Number' | $T8 %]</th>
+        [%-
+          numbers = [];
+          FOREACH p = SELF.order.preceding_sales_order_intakes();
+            numbers.push(HTML.escape(p.ordnumber));
+          END;
+        %]
+        <td><span class="data wi-normal">[% numbers.join(', ') %]</span></td>
+      </tr>
+    [% END %]
+
+    [% IF SELF.type == "purchase_order_confirmation" %]
+      <tr>
+        <th>[% 'Order Number' | $T8 %]</th>
+        [%-
+          numbers = [];
+          FOREACH p = SELF.order.preceding_purchase_orders();
+            numbers.push(HTML.escape(p.ordnumber));
+          END;
+        %]
+        <td><span class="data wi-normal">[% numbers.join(', ') %]</span></td>
+      </tr>
+    [% END %]
+
+    [% IF (SELF.type == "request_quotation") %]
+      [% SET quo_nr_txt = 'RFQ Number' %]
+    [% ELSE %]
+      [% SET quo_nr_txt = 'Quotation Number' %]
+    [% END %]
+    <tr>
+      <th>[% quo_nr_txt | $T8 %]</th>
+      <td>
+        [%- IF (SELF.type == "sales_order_intake" || SELF.type == "sales_order" || SELF.type == "purchase_order" || SELF.type == "purchase_order_confirmation") -%]
+          [% L.input_tag('order.quonumber', SELF.order.quonumber, class='wi-normal') %]
+        [%- ELSIF INSTANCE_CONF.get_sales_purchase_record_numbers_changeable %]
+          [% L.input_tag('order.quonumber', SELF.order.quonumber, class='number-for-title wi-normal') %]
+        [%- ELSIF SELF.order.id %]
+          [% HTML.escape(SELF.order.quonumber) %]
+          [% L.hidden_tag("order.quonumber", SELF.order.quonumber, class='number-for-title') %]
+        [% ELSE %]
+          [% LxERP.t8("will be set upon saving") %]
+        [%- END %]
+      </td>
+    </tr>
+    [% IF (SELF.type == "purchase_quotation_intake" || SELF.type == "purchase_order" || SELF.type == "purchase_order_confirmation") %]
+      <tr>
+        <th>[% 'RFQ Number' | $T8 %]</th>
+        [%-
+          numbers = [];
+          FOREACH p = SELF.order.preceding_request_quotations();
+            numbers.push(HTML.escape(p.quonumber));
+          END;
+        %]
+        <td><span class="data wi-normal">[% numbers.join(', ') %]</span></td>
+      </tr>
+    [% END %]
+    [% IF (SELF.type == "purchase_order_confirmation") -%]
+      <tr>
+        <th>[% 'Vendor Confirmation Number' | $T8 %]</th>
+        <td>[% L.input_tag('order.vendor_confirmation_number', SELF.order.vendor_confirmation_number, class='wi-normal') %]</td>
+      </tr>
+    [%- END %]
+    [% IF (SELF.type == "sales_order_intake" || SELF.type == "sales_order" || SELF.type == "purchase_order" || SELF.type == "purchase_order_confirmation") %]
+      <tr>
+        <th>[% 'Customer Order Number' | $T8 %]</th>
+        <td>[% L.input_tag('order.cusordnumber', SELF.order.cusordnumber, class='wi-normal') %]</td>
+      </tr>
+    [% END %]
+    [% IF (SELF.type == "sales_order_intake" || SELF.type == "purchase_order") %]
+      [% SET transdate_txt = 'Order Date' %]
+    [% ELSIF SELF.type == "sales_order" || SELF.type == "purchase_order_confirmation" -%]
+      [%- SET transdate_txt = 'Confirmation Date' -%]
+    [% ELSIF (SELF.type == "sales_quotation" || SELF.type == "purchase_quotation_intake") %]
+      [% SET transdate_txt = 'Quotation Date' %]
+    [% ELSE %]
+      [% SET transdate_txt = 'RFQ Date' %]
+    [% END %]
+    <tr>
+      <th>[% transdate_txt | $T8 %]</th>
+      <td>[% L.date_tag('order.transdate_as_date', SELF.order.transdate_as_date, class='wi-date') %]</td>
+    </tr>
+    <tr>
+      <th>
+        [% 'Invoicing Date or Period' | $T8 %]
+        [% P.context_help_tag(LxERP.t8('To specify an invoicing date, only set the period end date. To specify an invoicing period, set both dates. The date or period is exported to ZUGFeRD invoices.')) %]
+      </th>
+      <td>
+        [% L.date_tag('order.tax_point_start_as_date', SELF.order.tax_point_start_as_date, class='wi-date recalc',
+                      placeholder=LxERP.t8('From'), title=LxERP.t8('Invoicing period start')) %]–
+        [% L.date_tag('order.tax_point_as_date', SELF.order.tax_point_as_date, class='wi-date recalc',
+                      placeholder=LxERP.t8('Until'), title=LxERP.t8('Invoicing period end')) %]
+      </td>
+    </tr>
+    [% IF (SELF.type == "sales_order_intake" || SELF.type == "sales_order" || SELF.type == "purchase_order" || SELF.type == "purchase_order_confirmation") %]
+      [% SET reqdate_txt = 'Reqdate'; SET reqdate_class = 'recalc' %]
+    [% ELSIF SELF.type == "sales_quotation" %]
+      [% SET reqdate_txt = 'Valid until'; SET reqdate_class = '' %]
+    [% ELSE %]
+      [% SET reqdate_txt = 'Required by'; SET reqdate_class = 'recalc' %]
+    [% END %]
+    <tr>
+      <th>[% reqdate_txt | $T8 %]</th>
+      <td>[% L.date_tag('order.reqdate_as_date', SELF.order.reqdate_as_date, class='wi-date ' _ reqdate_class) %]</td>
+    </tr>
+    [% IF SELF.type == "sales_quotation" %]
+      <tr>
+        <th>[% 'Order probability' | $T8 %]</th>
+        <td>[% L.select_tag('order.order_probability', SELF.order_probabilities, value_key='id', title_key='title', default=SELF.order.order_probability) %]</td>
+      </tr>
+      <tr>
+        <th>[% 'Expected billing date' | $T8 %]</th>
+        <td>[% L.date_tag('order.expected_billing_date_as_date', SELF.order.expected_billing_date_as_date, class='wi-date') %]</td>
+      </tr>
+    [% END %]
+    <tr>
+      <th>[% 'Insert Date' | $T8 %]</th>
+      <td><span class="data wi-normal">[% SELF.order.itime_as_date %]</span></td>
+    </tr>
+  </tbody>
+</table>
+
+</div><!-- /.wrapper -->
+
+[%- IF order_item_input_position == 0 -%]
+  [% PROCESS order/tabs/_item_input.html SELF=SELF %]
+[%- END -%]
+
+[%- IF SELF.positions_scrollbar_height -%]
+  [%- SET scroll_style = 'style="overflow-y: auto; height:' _ SELF.positions_scrollbar_height _ 'vh;"' -%]
+[%- ELSE -%]
+  [%- SET scroll_style = '' -%]
+[%- END -%]
+<div id="row_table_scroll_id" class="wrapper horizontal-scroll-wrapper" [%- scroll_style -%]>
+
+<table id="row_table_id" class="tbl-list">
+  <caption>[% 'Articles' | $T8 %]</caption>
+  <thead>
+    <tr>
+      <th class="center">
+        [% IF MYCONFIG.show_form_details %]
+          [% L.img_tag(src="image/collapse.svg", alt=LxERP.t8('Hide all details'), title=LxERP.t8('Hide all details'), id='expand_all', class='row-icon', "data-expanded"="1") %]
+        [% ELSE %]
+          [% L.img_tag(src="image/expand.svg", alt=LxERP.t8('Show all details'), title=LxERP.t8('Show all details'), id='expand_all', class='row-icon') %]
+        [% END %]
+      </th>
+      <th>[% 'position'     | $T8 %] </th>
+      <th style='text-align:center'><img src="image/updown.png" alt="[% LxERP.t8('reorder item') %]"></th>
+      <th style='text-align:center'><img src="image/close.png" alt="[% LxERP.t8('delete item') %]" class="close"></th>
+      [%- IF SELF.show_update_button -%]
+      <th class="listheading" style='text-align:center' nowrap width="1">
+        [%- L.img_tag(src="image/rotate_cw.svg",
+                      alt=LxERP.t8('Update from master data'),
+                      title= LxERP.t8('Update from master data'),
+                      onclick="if (!confirm('" _ LxERP.t8("Are you sure to update all positions from master data?") _ "')) return false; kivi.Order.update_all_rows_from_master_data();",
+                      id='update_from_master', class='row-icon') %]
+      </th>
+      [%- END %]
+      <th id="partnumber_header_id"><a href='#' onClick='javascript:kivi.Order.reorder_items("partnumber")'> [% 'Partnumber'  | $T8 %]</a></th>
+      [%- IF SELF.search_cvpartnumber -%]
+      <th id="cvpartnumber_header_id"><a href='#' onClick='javascript:kivi.Order.reorder_items("cvpartnumber")'>[%- SELF.cv == "customer" ? LxERP.t8('Customer Part Number') : LxERP.t8('Model') %]</a></th>
+      [%- END -%]
+      <th id="partclass_header_id">[% 'Type'  | $T8 %]</th>
+      <th id="description_header_id"><a href='#' onClick='javascript:kivi.Order.reorder_items("description")'>[% 'Description' | $T8 %]</a></th>
+      [%- IF (SELF.type == "sales_order_intake" || SELF.type == "sales_order" || SELF.type == "purchase_order" || SELF.type == "purchase_order_confirmation") -%]
+      <th id="shipped_qty_header_id"><a href='#' onClick='javascript:kivi.Order.reorder_items("shipped_qty")'>[% 'Delivered' | $T8 %]</a></th>
+      [%- END -%]
+      <th id="qty_header_id"><a href='#' onClick='javascript:kivi.Order.reorder_items("qty")'>        [% 'Qty'         | $T8 %]</a></th>
+      <th >[% 'Price Factor' | $T8 %]</th>
+      <th >[% 'Unit'         | $T8 %]</th>
+      <th >[% 'Price Source' | $T8 %]</th>
+      <th id="sellprice_header_id"><a href='#' onClick='javascript:kivi.Order.reorder_items("sellprice")'> [% 'Price'       | $T8 %]</a></th>
+      <th id="discount_header_id" ><a href='#' onClick='javascript:kivi.Order.reorder_items("discount")'>  [% 'Discount'    | $T8 %]</a></th>
+      <th>[% 'Extended'     | $T8 %]</th>
+    </tr>
+  </thead>
+  [% FOREACH item = SELF.order.items_sorted %]
+    [% PROCESS order/tabs/_row.html ITEM=item ID=(item.id||item.new_fake_id) %]
+  [% END %]
+  <tfoot id="row_table_footer">
+    [%- IF order_item_input_position == 1 -%]
+      [% PROCESS order/tabs/_item_below_input.html SELF=SELF %]
+    [%- END -%]
+
+    [% IF (SELF.type == "sales_quotation") || (SELF.type == "request_quotation")  || (SELF.type == "purchase_quotation_intake") %]
+      [% SET add_col = 0 %]
+    [% ELSE %]
+      [% SET add_col = 1 %]
+    [% END %]
+    [% IF SELF.search_cvpartnumber %]
+      [% SET add_col = add_col + 1 %]
+    [% END %]
+    <tr id="subtotal_row_id">
+      <td colspan="[%- 10 + add_col %]"></td>
+      [%- IF SELF.show_update_button -%]
+      <td></td>
+      [%- END -%]
+      <th colspan="3">[% IF !SELF.order.taxincluded %][% 'Subtotal' | $T8 %][% END %]</th>
+      <td class="numeric">[% IF !SELF.order.taxincluded %][% L.div_tag(SELF.order.netamount_as_number, id='netamount_id') %][% END %]</td>
+    </tr>
+    [% FOREACH tax = SELF.taxes %]
+      [% PROCESS order/tabs/_tax_row.html TAX=tax TAXINCLUDED=SELF.order.taxincluded QUOTATION=SELF.order.quotation %]
+    [% END %]
+    <tr id="amount_row_id">
+      [%- IF (SELF.type == "sales_order_intake" || SELF.type == "sales_order" || SELF.type == "sales_quotation") -%]
+      [%- SET marge_class = ((SELF.order.marge_total || 0) < 0) ? 'plus0' : '' -%]
+      <th colspan="2">[% 'Ertrag' | $T8 %]</th>
+      <td colspan="2" class="numeric">[%- L.div_tag(SELF.order.marge_total_as_number, id='marge_total_id', class=marge_class) %]</td>
+      <th colspan="2">[% 'Ertrag prozentual' | $T8 %]</th>
+      <td class="numeric">[%- LxERP.format_amount(SELF.order.marge_percent, 2) %] %</td>
+      [%- ELSE -%]
+      <td colspan="7"></td>
+      [%- END -%]
+      [%- IF SELF.show_update_button -%]
+      <td></td>
+      [%- END -%]
+      <td colspan="[%- 3 + add_col %]"></td>
+      <th colspan="3">[% 'Total' | $T8 %]</th>
+      <td class="numeric">[% L.div_tag(SELF.order.amount_as_number, id='amount_id') %]</td>
+    </tr>
+  </tfoot>
+</table>
+[% IF order_item_input_position == 1 %]
+  [% L.button_tag('kivi.Order.open_multi_items_dialog()', LxERP.t8('Add multiple items')) %]
+[%- END -%]
+
+</div><!-- /#row_table_scroll_id /.wrapper -->
+
+</div><!-- /#ui-tabs-basic-data -->
+
+[% L.sortable_element('#row_table_id') %]

@@ -1,0 +1,24 @@
+[%- USE T8 %]
+[%- USE LxERP %]
+[%- USE L %]
+[%- USE HTML %]
+<div id="dun_statistic">
+  <table class="tbl-list wi-moderate">
+    <thead>
+      <tr>
+        <th>[% 'Month/Year' | $T8 %]</th>
+        <th>[% 'Dunnings' | $T8 %]</th>
+        <th>[% 'Highest Dunninglevel' | $T8 %]</th>
+      </tr>
+    </thead>
+    <tbody>
+      [%- FOREACH row = SELF.dun_statistic %]
+      <tr class="listrow[% loop.count % 2 %]">
+        <td>[% row.date_part | html %]</td>
+        <td>[% row.count | html %]</td>
+        <td>[% row.max | html %]</td>
+      </tr>
+      [% END %]
+    </tbody>
+  </table>
+</div>

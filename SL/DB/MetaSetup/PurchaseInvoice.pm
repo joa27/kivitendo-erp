@@ -10,6 +10,7 @@ __PACKAGE__->meta->table('ap');
 
 __PACKAGE__->meta->columns(
   amount                  => { type => 'numeric', default => '0', not_null => 1, precision => 15, scale => 5 },
+  buyer_id                => { type => 'integer' },
   cp_id                   => { type => 'integer' },
   currency_id             => { type => 'integer', not_null => 1 },
   datepaid                => { type => 'date' },
@@ -19,12 +20,14 @@ __PACKAGE__->meta->columns(
   direct_debit            => { type => 'boolean', default => 'false' },
   duedate                 => { type => 'date' },
   employee_id             => { type => 'integer' },
+  exchangerate            => { type => 'numeric', precision => 15, scale => 5 },
   gldate                  => { type => 'date', default => 'now' },
   globalproject_id        => { type => 'integer' },
   id                      => { type => 'integer', not_null => 1, sequence => 'glid' },
   intnotes                => { type => 'text' },
   invnumber               => { type => 'text', not_null => 1 },
   invoice                 => { type => 'boolean', default => 'false' },
+  is_sepa_blocked         => { type => 'boolean', default => 'false' },
   itime                   => { type => 'timestamp', default => 'now()' },
   language_id             => { type => 'integer' },
   mtime                   => { type => 'timestamp' },
@@ -34,11 +37,15 @@ __PACKAGE__->meta->columns(
   ordnumber               => { type => 'text' },
   paid                    => { type => 'numeric', default => '0', not_null => 1, precision => 15, scale => 5 },
   payment_id              => { type => 'integer' },
+  qrbill_data             => { type => 'text' },
   quodate                 => { type => 'date' },
   quonumber               => { type => 'text' },
+  record_type             => { type => 'enum', check_in => [ 'ap_transaction', 'ap_transaction_storno', 'purchase_invoice', 'purchase_invoice_storno', 'purchase_credit_note', 'purchase_credit_note_storno' ], db_type => 'purchase_invoice_types' },
   shipvia                 => { type => 'text' },
   storno                  => { type => 'boolean', default => 'false' },
   storno_id               => { type => 'integer' },
+  tax_point               => { type => 'date' },
+  tax_point_start         => { type => 'date' },
   taxincluded             => { type => 'boolean', default => 'false' },
   taxzone_id              => { type => 'integer', not_null => 1 },
   transaction_description => { type => 'text' },
@@ -52,6 +59,11 @@ __PACKAGE__->meta->primary_key_columns([ 'id' ]);
 __PACKAGE__->meta->allow_inline_column_values(1);
 
 __PACKAGE__->meta->foreign_keys(
+  buyer => {
+    class       => 'SL::DB::Employee',
+    key_columns => { buyer_id => 'id' },
+  },
+
   contact => {
     class       => 'SL::DB::Contact',
     key_columns => { cp_id => 'cp_id' },
@@ -109,4 +121,4 @@ __PACKAGE__->meta->foreign_keys(
 );
 
 1;
-;
+

@@ -2,16 +2,21 @@ package SL::SEPA;
 
 use strict;
 
+use IPC::Run qw();
 use POSIX qw(strftime);
+use Time::HiRes qw(usleep gettimeofday);
 
 use Data::Dumper;
 use SL::DBUtils;
 use SL::DB::Invoice;
+use SL::DB::SepaExportsAccTrans;
 use SL::DB::PurchaseInvoice;
 use SL::DB;
+use SL::Helper::ISO4217;
 use SL::Locale::String qw(t8);
 use DateTime;
 use Carp;
+use List::Util qw(sum);
 
 sub retrieve_open_invoices {
   $main::lxdebug->enter_sub();
@@ -28,31 +33,33 @@ sub retrieve_open_invoices {
   my $vc_vc_id = $params{vc} eq 'customer' ? 'c_vendor_id' : 'v_customer_id';
 
   my $mandate  = $params{vc} eq 'customer' ? " AND COALESCE(vc.mandator_id, '') <> '' AND vc.mandate_date_of_signature IS NOT NULL " : '';
+  my $is_sepa_blocked = $params{vc} eq 'customer' ? 'FALSE' : "${arap}.is_sepa_blocked";
+  my $only_approved   = $params{payment_approval} ? ' AND ap.id IN (SELECT ap_id from payment_approvals) ' : '';
+  # has to be ON and don't edit payments manually (UNDO SEPA Export if needed at all)
+  my $p_credit_notes  = $params{vc} eq 'vendor' && $::instance_conf->get_sepa_subtract_credit_notes
+                                                && SL::DB::Default->get->payments_changeable == 0
+                        ? " OR (${arap}.amount < 0 AND ${arap}.amount <> ${arap}.paid) " : undef;
 
-  # in query: for customers, use payment terms from invoice, for vendors use
-  # payment terms from vendor settings
-  # currently there is no option in vendor invoices for setting payment terms,
-  # so the vendor settings are always used
-
-  my $payment_term_type = $params{vc} eq 'customer' ? "${arap}" : 'vc';
 
   # open_amount is not the current open amount according to bookkeeping, but
   # the open amount minus the SEPA transfer amounts that haven't been closed yet
   my $query =
     qq|
        SELECT ${arap}.id, ${arap}.invnumber, ${arap}.transdate, ${arap}.${vc}_id as vc_id, ${arap}.amount AS invoice_amount, ${arap}.invoice,
+         ${arap}.currency_id,
          (${arap}.transdate + pt.terms_skonto) as skonto_date, (pt.percent_skonto * 100) as percent_skonto,
          (${arap}.amount - (${arap}.amount * pt.percent_skonto)) as amount_less_skonto,
          (${arap}.amount * pt.percent_skonto) as skonto_amount,
          vc.name AS vcname, vc.language_id, ${arap}.duedate as duedate, ${arap}.direct_debit,
+         ${is_sepa_blocked} AS is_sepa_blocked,
          vc.${vc_vc_id} as vc_vc_id,
 
          COALESCE(vc.iban, '') <> '' AND COALESCE(vc.bic, '') <> '' ${mandate} AS vc_bank_info_ok,
 
          ${arap}.amount - ${arap}.paid - COALESCE(open_transfers.amount, 0) AS open_amount,
          COALESCE(open_transfers.amount, 0) AS transfer_amount,
-         pt.description as pt_description
-
+         pt.description as pt_description,
+         (current_date < (${arap}.transdate + pt.terms_skonto)) as within_skonto_period
        FROM ${arap}
        LEFT JOIN ${vc} vc ON (${arap}.${vc}_id = vc.id)
        LEFT JOIN (SELECT sei.${arap}_id, SUM(sei.amount) + SUM(COALESCE(sei.skonto_amount,0)) AS amount
@@ -63,10 +70,13 @@ sub retrieve_open_invoices {
                   GROUP BY sei.${arap}_id)
          AS open_transfers ON (${arap}.id = open_transfers.${arap}_id)
 
-       LEFT JOIN payment_terms pt ON (${payment_term_type}.payment_id = pt.id)
+       LEFT JOIN payment_terms pt ON (${arap}.payment_id = pt.id)
 
-       WHERE ${arap}.amount > (COALESCE(open_transfers.amount, 0) + ${arap}.paid)
-
+       WHERE (  (${arap}.amount <> ${arap}.paid) AND
+                (${arap}.amount - (COALESCE(open_transfers.amount, 0) + ${arap}.paid)) >= 0.01
+                $p_credit_notes
+             )
+       $only_approved
        ORDER BY lower(vc.name) ASC, lower(${arap}.invnumber) ASC
 |;
     #  $main::lxdebug->message(LXDebug->DEBUG2(),"sepa add query:".$query);
@@ -76,17 +86,25 @@ sub retrieve_open_invoices {
   # add some more data to $results:
   # create drop-down data for payment types and suggest amount to be paid according
   # to open amount or skonto
+  # One minor fault: amount_less_skonto does not subtract the not yet booked sepa transfer amounts
 
   foreach my $result ( @$results ) {
-    my $invoice = $vc eq 'customer' ? SL::DB::Manager::Invoice->find_by(         id => $result->{id} )
-                                    : SL::DB::Manager::PurchaseInvoice->find_by( id => $result->{id} );
+    my   @options;
+    push @options, { payment_type => 'without_skonto',  display => t8('without skonto') };
 
-    $invoice->get_payment_suggestions(sepa => 1); # consider amounts of open entries in sepa_export_items
-    $result->{skonto_amount}             = $invoice->skonto_amount;
-    $result->{within_skonto_period}      = $invoice->within_skonto_period;
-    $result->{invoice_amount_suggestion} = $invoice->{invoice_amount_suggestion};
-    $result->{payment_select_options}    = $invoice->{payment_select_options};
-  };
+    if ($result->{within_skonto_period}) {
+      push @options, { payment_type => 'with_skonto_pt',  display => t8('with skonto acc. to pt'), selected => 1 };
+      # add real invoice open amount in results
+      $result->{open_amount_less_skonto} =   $arap eq 'ap'
+                                           ? SL::DB::Manager::PurchaseInvoice->find_by(id => $result->{id})->open_amount_less_skonto
+                                           : SL::DB::Manager::Invoice->find_by(id => $result->{id})->open_amount_less_skonto;
+    }
+    $result->{payment_select_options}  = \@options;
+
+    # add the original record's currency
+    $result->{currency}         = SL::DB::Currency->load_cached($result->{currency_id})->name;
+    $result->{currency_not_eur} = 'EUR' ne SL::Helper::ISO4217::map_currency_name_to_code($result->{currency});
+  }
 
   $main::lxdebug->leave_sub();
 
@@ -134,11 +152,13 @@ sub _create_export {
     qq|INSERT INTO sepa_export_items (id,          sepa_export_id,           ${arap}_id,  chart_id,
                                       amount,      requested_execution_date, reference,   end_to_end_id,
                                       our_iban,    our_bic,                  vc_iban,     vc_bic,
-                                      skonto_amount, payment_type ${c_mandate})
+                                      skonto_amount, payment_type ${c_mandate},
+                                      collected_payment, is_combined_payment, ${vc}_id                )
        VALUES                        (?,           ?,                        ?,           ?,
                                       ?,           ?,                        ?,           ?,
                                       ?,           ?,                        ?,           ?,
-                                      ?,           ? ${p_mandate})|;
+                                      ?,           ? ${p_mandate},
+                                      ?,           ?,                        ?                        )|;
   my $h_insert = prepare_query($form, $dbh, $q_insert);
 
   my $q_reference =
@@ -157,9 +177,38 @@ sub _create_export {
        WHERE id = ?|;
   my $h_reference = prepare_query($form, $dbh, $q_reference);
 
-  my @now         = localtime;
+  # if collective bank transfers, distinct end to end id for all transactions and no payment type
+  # and no reference to an invoice, but to a vendor_id
+  my %vc_id_end_to_end;
+  foreach my $transfer (@{ $params{collective_bank_transfers} }) {
+    my ($sec, $usec) = gettimeofday();
+    die "Invalid state, need a valid combined payment reference" unless $transfer->{reference}; # catch for h_reference
 
+    $transfer->{is_combined_payment}      = 1;
+    $vc_id_end_to_end{$transfer->{vc_id}} = strftime ("KIVITENDOMONIKA%Y%m%d%H%M%S", localtime) . $usec;
+    usleep(1);
+  }
+  # sum all credit notes for vc_id for later subtraction
+  my %vc_cn_amount;
   foreach my $transfer (@{ $params{bank_transfers} }) {
+    next unless $transfer->{credit_note};
+    $vc_cn_amount{$transfer->{vc_id}} += $transfer->{amount};
+  }
+  foreach my $transfer (@{ $params{bank_transfers} }, @{ $params{collective_bank_transfers} }) {
+
+    # credit note amount is negative -> book against current invoice
+    if ($transfer->{credit_note} || $vc_cn_amount{$transfer->{vc_id}} < 0) {
+      my %params = (transfer => $transfer, sepa_export_id => $export_id);
+      $self->_check_and_book_credit_note(transfer => $transfer, sepa_export_id => $export_id, current_credit_note_amount => $vc_cn_amount{$transfer->{vc_id}});
+      $vc_cn_amount{$transfer->{vc_id}} += $transfer->{amount} unless $transfer->{credit_note};
+    }
+    # if we have a credit note case always book skonto for all transactions
+    # maybe we can always book skonto directly (check in BankImport allows both cases)
+    if (   ($transfer->{credit_note} || exists $vc_cn_amount{$transfer->{vc_id}})
+        && ($transfer->{payment_type} ne 'without_skonto' && $transfer->{skonto_amount})) {
+      $self->_check_and_book_skonto(transfer => $transfer, sepa_export_id => $export_id);
+    }
+
     if (!$transfer->{reference}) {
       do_statement($form, $h_reference, $q_reference, (conv_i($transfer->{"${arap}_id"})) x 3);
 
@@ -171,8 +220,10 @@ sub _create_export {
 
     $h_item_id->execute() || $::form->dberror($q_item_id);
     my ($item_id)      = $h_item_id->fetchrow_array();
-
-    my $end_to_end_id  = strftime "LXO%Y%m%d%H%M%S", localtime;
+    my ($sec, $usec) = gettimeofday();
+    my $end_to_end_id  =  $transfer->{collected_payment} || $transfer->{is_combined_payment}
+                         ? $vc_id_end_to_end{$transfer->{vc_id}}
+                         : strftime ("KIVITENDO%Y%m%d%H%M%S", localtime) . $usec;
     my $item_id_len    = length "$item_id";
     my $num_zeroes     = 35 - $item_id_len - length $end_to_end_id;
     $end_to_end_id    .= '0' x $num_zeroes if (0 < $num_zeroes);
@@ -191,12 +242,18 @@ sub _create_export {
       push(@values, $transfer->{amount});
     } elsif ($transfer->{payment_type} eq 'with_skonto_pt' ) {
       push(@values, $transfer->{skonto_amount});
+    } elsif ($transfer->{payment_type} eq 'mixed' ) {
+      push(@values, $transfer->{skonto_amount});
     } else {
       die "illegal payment_type: " . $transfer->{payment_type} . "\n";
     };
     push(@values, $transfer->{payment_type});
 
     push @values, $transfer->{vc_mandator_id}, conv_date($transfer->{vc_mandate_date_of_signature}) if $params{vc} eq 'customer';
+
+    push @values, $transfer->{collected_payment}   ? 1 : 0;
+    push @values, $transfer->{is_combined_payment} ? 1 : 0;
+    push @values, $transfer->{vc_id};
 
     do_statement($form, $h_insert, $q_insert, @values);
   }
@@ -205,6 +262,175 @@ sub _create_export {
   $h_item_id->finish();
 
   return $export_id;
+}
+
+# TODO allow credit_notes higher amount than invoice amount AND skonto bookings (see Payment-Helper _skonto..)
+
+sub _check_and_book_skonto {
+  my $self     = shift;
+  my %params   = @_;
+  Common::check_params(\%params, qw(transfer sepa_export_id));
+  my $transfer = delete $params{transfer};
+
+  die "Invalid payment type for Skonto bookings " unless ($transfer->{payment_type} ne 'without_skonto' && $transfer->{skonto_amount});
+
+  my $invoice         = SL::DB::Manager::PurchaseInvoice->find_by(id => $transfer->{ap_id});
+  my $transdate      = DateTime->now();
+  my $sepa_export_id = $params{sepa_export_id};
+
+  my @skonto_bookings = $invoice->_skonto_charts_and_tax_correction(sepa_export_id => $sepa_export_id,
+                                                                    amount         => $transfer->{skonto_amount},
+                                                                    transdate_obj  => $transdate);
+  my $amount = abs($transfer->{skonto_amount});
+  my $mult = $invoice->is_sales ? -1 : 1;
+
+  my $paid_sign  = $invoice->invoice_type =~ m/credit_note/ ? -1 :  1;  # arap.paid is always negative for credit_note
+
+  # create an acc_trans entry for each result of $self->skonto_charts
+  my @new_acc_ids;
+  foreach my $skonto_booking ( @skonto_bookings ) {
+    next unless $skonto_booking->{'chart_id'};
+    next unless $skonto_booking->{'skonto_amount'} != 0;
+    my $skonto_amount = $skonto_booking->{skonto_amount};
+    my $new_acc_trans = SL::DB::AccTransaction->new(trans_id   => $invoice->id,
+                                                    chart_id   => $skonto_booking->{'chart_id'},
+                                                    chart_link => SL::DB::Manager::Chart->find_by(id => $skonto_booking->{'chart_id'})->link,
+                                                    amount     => $skonto_amount * $mult,
+                                                    transdate  => $transdate,
+                                                    source     => $params{source},
+                                                    taxkey     => 0,
+                                                    tax_id     => SL::DB::Manager::Tax->find_by(taxkey => 0)->id);
+
+    $new_acc_trans->save;
+    push @new_acc_ids, $new_acc_trans->acc_trans_id;
+    my $arap_booking= SL::DB::AccTransaction->new(trans_id   => $invoice->id,
+                                                  chart_id   => $invoice->reference_account->id,
+                                                  chart_link => $invoice->reference_account->link,
+                                                  amount     => $skonto_amount * $mult * -1,
+                                                  transdate  => $transdate,
+                                                  source     => '', #$params{source},
+                                                  taxkey     => 0,
+                                                  tax_id     => SL::DB::Manager::Tax->find_by(taxkey => 0)->id);
+    $arap_booking->save;
+    push @new_acc_ids, $arap_booking->acc_trans_id;
+  }
+  # update paid amount + skonto_amount
+  $invoice->update_attributes(paid => $invoice->paid + _round((abs($amount) * $paid_sign)), datepaid => $transdate);
+
+  # link both acc_trans transactions
+  my $id_type = $invoice->is_sales ? 'ar_id' : 'ap_id';
+
+  foreach my $acc_trans_id (@new_acc_ids) {
+    my  %props_acc = (
+                       acc_trans_id    => $acc_trans_id,
+                       sepa_exports_id => $sepa_export_id,
+                       $id_type        => $invoice->id,
+                     );
+    SL::DB::SepaExportsAccTrans->new(%props_acc)->save || die $@;
+  }
+
+  # Record a record link from the sepa export to the invoice
+  my %props = (
+      from_table => 'sepa_export',
+      from_id    => $sepa_export_id,
+      to_table   => $id_type,
+      to_id      => $invoice->id,
+  );
+  SL::DB::RecordLink->new(%props)->save;
+
+  return;
+}
+
+
+sub _check_and_book_credit_note {
+  my $self     = shift;
+  my %params   = @_;
+  Common::check_params(\%params, qw(transfer sepa_export_id current_credit_note_amount));
+  my $transfer = delete $params{transfer};
+  my $current_credit_note_amount = $params{current_credit_note_amount};
+
+  die "Need ap_id, amount from transfer" unless $transfer->{ap_id} && $transfer->{amount};
+
+  my $amount         =  $transfer->{credit_note} ? $transfer->{amount}   # full amount for credit notes
+                      : abs($current_credit_note_amount) <= $transfer->{amount} ? $current_credit_note_amount
+                      : $transfer->{amount};
+
+  $amount            = abs($amount);
+  #my $mc = Math::Currency->new( $amount );
+  my $transdate      = DateTime->now();
+  my $sepa_export_id = $params{sepa_export_id};
+
+  my $transit_chart = SL::DB::Manager::Chart->find_by(id => SL::DB::Default->get->transit_items_chart_id);
+  my $invoice       = SL::DB::Manager::PurchaseInvoice->find_by(id => $transfer->{ap_id});
+
+  # sanity checks
+  die "Invalid state, expected a credit note" if $transfer->{credit_note} && $invoice->invoice_type !~ m/credit_note/;
+  die "Not a valid Chart account"             unless ref $transit_chart eq 'SL::DB::Chart';
+
+  # acc_trans logic chart_links
+  #     credit_notes          | purchase_credit_note
+  #  -1397.11000 | AR         |     504.74000 |  AP
+  #   1397.11000 | AR_paid    |    -504.74000 |  AP_paid
+  #   purchase_invoice        | sales_invoice
+  #   -100       | AP         |   100         | AR
+  #   100        | AP_paid    |  -100         | AR_paid
+
+  my $mult = $invoice->is_sales ? -1 : 1; # multiplier for getting the sign right if no credit note is involved
+  $mult =  1 if ( $invoice->is_sales && $invoice->type eq 'credit_note');
+  $mult = -1 if (!$invoice->is_sales && $invoice->invoice_type eq 'purchase_credit_note');
+
+  my $paid_sign  = $invoice->invoice_type =~ m/credit_note/ ? -1 :  1;  # arap.paid is always negative for credit_note
+  my @new_acc_ids;
+  # positive for purchase invoice and sales credit note
+  my $new_acc_trans = SL::DB::AccTransaction->new(trans_id   => $invoice->id,
+                                                  chart_id   => $transit_chart->id,
+                                                  chart_link => $transit_chart->link,
+                                                  amount     => abs($amount) * $mult,
+                                                  transdate  => $transdate,
+                                                  source     => $invoice->invnumber, # $is_credit_note ?  $invoice_no : $credit_note_no,
+                                                  memo       => t8('Automatically assigned with SEPA Export: #1', $sepa_export_id),
+                                                  taxkey     => 0,
+                                                  tax_id     => SL::DB::Manager::Tax->find_by(taxkey => 0)->id);
+  # positive for purchase credit note and sales invoice
+  my $arap_booking= SL::DB::AccTransaction->new(trans_id   => $invoice->id,
+                                                chart_id   => $invoice->reference_account->id,
+                                                chart_link => $invoice->reference_account->link,
+                                                amount     => abs($amount) * $mult * -1,
+                                                transdate  => $transdate,
+                                                source     => '',
+                                                taxkey     => 0,
+                                                tax_id     => SL::DB::Manager::Tax->find_by(taxkey => 0)->id);
+  $new_acc_trans->save;
+  $arap_booking->save;
+
+  push @new_acc_ids, $new_acc_trans->acc_trans_id;
+  push @new_acc_ids, $arap_booking->acc_trans_id;
+
+  # only one time update paid amount + skonto_amount
+  $invoice->update_attributes(paid => $invoice->paid + _round((abs($amount) * $paid_sign)), datepaid => $transdate);
+
+  # link both acc_trans transactions
+  my $id_type = $invoice->is_sales ? 'ar_id' : 'ap_id';
+
+  foreach my $acc_trans_id (@new_acc_ids) {
+    my  %props_acc = (
+                       acc_trans_id    => $acc_trans_id,
+                       sepa_exports_id => $sepa_export_id,
+                       $id_type        => $invoice->id,
+                     );
+    SL::DB::SepaExportsAccTrans->new(%props_acc)->save || die $@;
+  }
+
+  # Record a record link from the sepa export to the invoice
+  my %props = (
+      from_table => 'sepa_export',
+      from_id    => $sepa_export_id,
+      to_table   => $id_type,
+      to_id      => $invoice->id,
+  );
+  SL::DB::RecordLink->new(%props)->save;
+
+  return;
 }
 
 sub retrieve_export {
@@ -222,13 +448,6 @@ sub retrieve_export {
 
   my $dbh      = $params{dbh} || $form->get_standard_dbh($myconfig);
 
-  my ($joins, $columns);
-
-  if ($params{details}) {
-    $columns = ', arap.invoice';
-    $joins   = "LEFT JOIN ${arap} arap ON (se.${arap}_id = arap.id)";
-  }
-
   my $query =
     qq|SELECT se.*,
          CASE WHEN COALESCE(e.name, '') <> '' THEN e.name ELSE e.login END AS employee
@@ -244,9 +463,9 @@ sub retrieve_export {
     my $mandator_id = $params{vc} eq 'customer' ? ', mandator_id, mandate_date_of_signature' : '';
 
     if ($params{details}) {
-      $columns = qq|, arap.invnumber, arap.invoice, arap.transdate AS reference_date, vc.name AS vc_name, vc.${vc}number AS vc_number, c.accno AS chart_accno, c.description AS chart_description ${mandator_id}|;
+      $columns = qq|, arap.invnumber, arap.invoice, arap.transdate AS reference_date, COALESCE (NULLIF(vc.depositor,''), vc.name) AS vc_name, vc.${vc}number AS vc_number, c.accno AS chart_accno, c.description AS chart_description ${mandator_id}|;
       $joins   = qq|LEFT JOIN ${arap} arap ON (sei.${arap}_id = arap.id)
-                    LEFT JOIN ${vc} vc     ON (arap.${vc}_id  = vc.id)
+                    LEFT JOIN ${vc} vc     ON (sei.${vc}_id   = vc.id)
                     LEFT JOIN chart c      ON (sei.chart_id   = c.id)|;
     }
 
@@ -254,7 +473,9 @@ sub retrieve_export {
                   $columns
                 FROM sepa_export_items sei
                 $joins
-                WHERE sei.sepa_export_id = ?|;
+                WHERE sei.sepa_export_id = ?
+                AND collected_payment IS FALSE
+                ORDER BY sei.id|;
 
     $export->{items} = selectall_hashref_query($form, $dbh, $query, conv_i($params{id}));
 
@@ -305,8 +526,66 @@ sub undo_export {
   croak "Not a valid SEPA Export id: $params{id}" unless $sepa_export;
   croak "Cannot undo closed exports."             if $sepa_export->closed;
   croak "Cannot undo executed exports."           if $sepa_export->executed;
+  # everything in one transaction
+  my $rez = $sepa_export->db->with_transaction(sub {
 
-  die "Could not undo $sepa_export->id" if !$sepa_export->delete();
+    # check if we have combined sepa exports
+    my %trans_ids;
+    foreach my $sepa_acc_trans (@{ $sepa_export->find_sepa_exports_acc_trans }) {
+      # save trans_id and type
+      die "no type" unless ($sepa_acc_trans->ar_id || $sepa_acc_trans->ap_id || $sepa_acc_trans->gl_id);
+      my $acc_trans = SL::DB::Manager::AccTransaction->get_all(where => [acc_trans_id => $sepa_acc_trans->acc_trans_id]);
+      $trans_ids{$sepa_acc_trans->ar_id} = 'ar' if $sepa_acc_trans->ar_id;
+      $trans_ids{$sepa_acc_trans->ap_id} = 'ap' if $sepa_acc_trans->ap_id;
+      $trans_ids{$sepa_acc_trans->gl_id} = 'gl' if $sepa_acc_trans->gl_id;
+      # 2. all good -> ready to delete acc_trans and connection table
+      $sepa_acc_trans->delete;
+      $_->delete for @{ $acc_trans };
+    }
+    # 3. update arap.paid (may not be 0, yet)
+    #    or in case of gl, delete whole entry
+    while (my ($trans_id, $type) = each %trans_ids) {
+      if ($type eq 'gl') {
+        SL::DB::Manager::GLTransaction->delete_all(where => [ id => $trans_id ]);
+        next;
+      }
+      die ("invalid type") unless $type =~ m/^(ar|ap)$/;
+
+      # recalc and set paid via database query
+      my $query = qq|UPDATE $type SET paid =
+                      (SELECT COALESCE(abs(sum(amount)),0) FROM acc_trans
+                       WHERE trans_id = ?
+                       AND (chart_link ilike '%paid%'
+                            OR chart_id IN (SELECT fxgain_accno_id from defaults)
+                            OR chart_id IN (SELECT fxloss_accno_id from defaults)
+                           )
+                      )
+                      WHERE id = ?|;
+
+      die if (do_query($::form, $sepa_export->db->dbh, $query, $trans_id, $trans_id) == -1);
+
+      # undo datepaid if no payment exists
+      $query = qq|UPDATE $type SET datepaid = null WHERE ID = ? AND paid = 0|;
+      die if (do_query($::form, $sepa_export->db->dbh, $query, $trans_id) == -1);
+    }
+    # 4. and delete all (if any) record links
+    my $rl = SL::DB::Manager::RecordLink->delete_all(where => [ from_id => $sepa_export->id, from_table => 'sepa_export' ]);
+
+    # 5. finally reset  this sepa export
+    die "Could not undo $sepa_export->id" if !$sepa_export->delete();
+    # 6. and add a log entry in history_erp
+    SL::DB::History->new(
+      trans_id    => $params{id},
+      snumbers    => 'sepa_export_unlink_' . $params{id},
+      employee_id => SL::DB::Manager::Employee->current->id,
+      what_done   => 'sepa_export',
+      addition    => 'UNLINKED',
+    )->save();
+
+    1;
+
+  }) || die t8('error while unlinking sepa export #1 : ', $sepa_export->id) . $sepa_export->db->error . "\n";
+
 
   $main::lxdebug->leave_sub();
 }
@@ -393,7 +672,8 @@ SQL
     my $query_sub  = qq|se.id IN (SELECT items.sepa_export_id
                                   FROM sepa_export_items items
                                   $joins_sub
-                                  WHERE $where_sub)|;
+                                  WHERE $where_sub
+                                  AND collected_payment IS FALSE)|;
 
     push @where,  $query_sub;
     push @values, @values_sub;
@@ -411,7 +691,7 @@ SQL
           WHERE (sei.sepa_export_id = se.id)) AS num_invoices,
          (SELECT SUM(sei.amount)
           FROM sepa_export_items sei
-          WHERE (sei.sepa_export_id = se.id)) AS sum_amounts,
+          WHERE (sei.sepa_export_id = se.id AND NOT sei.collected_payment)) AS sum_amounts,
          (SELECT string_agg(semi.message_id, ', ')
           FROM sepa_export_message_ids semi
           WHERE semi.sepa_export_id = se.id) AS message_ids,
@@ -544,6 +824,52 @@ sub _post_payment {
   return 1;
 }
 
+sub send_concatinated_sepa_pdfs {
+  my $self     = shift;
+  my %params   = @_;
+
+  Common::check_params(\%params, qw(arap_ids download_filename));
+
+  my @files;
+  foreach my $item (@{ $params{arap_ids} }) {
+
+    # check if there is already a file for the invoice
+    # check if already resynced
+    my @file_objects = grep { ref($_) eq 'SL::File::Object' }
+                       SL::File->get_all(object_id   => $item->{ap_id} ? $item->{ap_id} : $item->{ar_id},
+                                         object_type => $item->{ap_id} ? 'purchase_invoice' : 'invoice',
+                                         file_type   => 'document',
+                                         mime_type   => 'application/pdf',
+                                        );
+    foreach my $file_object (@file_objects) {
+      my $file = $file_object->get_file;
+      $::form->error(t8('Document file not found: #1', $file)) unless -e $file;
+      push @files, $file;
+    }
+  }
+
+  my @cmd = (
+    $::lx_office_conf{applications}->{ghostscript},
+    qw(-dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -sOutputFile=-),
+    @files
+  );
+  my ($out, $err);
+  IPC::Run::run \@cmd, \undef, \$out, \$err;
+
+  $::form->error($main::locale->text('Could not spawn ghostscript.') . ' ' . $err) if $err;
+
+  print $::form->create_http_response(content_type        => 'Application/PDF',
+                                      content_disposition => 'attachment; filename="'. $params{download_filename} . '"');
+
+  $::locale->with_raw_io(\*STDOUT, sub { print $out });
+}
+
+sub _round {
+  my $value = shift;
+  my $num_dec = 2;
+  return $::form->round_amount($value, 2);
+}
+
 1;
 
 
@@ -590,8 +916,27 @@ the state of the export is neither executed nor closed.
 Returns undef if the deletion was successfully.
 Otherwise the function just dies with a short notice of the id.
 
+=head2 C<send_concatinated_sepa_pdfs %params>
+
+This function is called from bin/mozialla/sepa.pl. It retrieves PDFs
+documents for all elements of @items, concatinates them and sends the
+resulting PDF back to the client.
+
+C<%params> must include the following:
+
+=over 4
+
+=item C<arap_ids>
+
+An array ref with the ids of the items. They are hashes
+with the keys C<ap_id> or <ar_id>.
+(mandatory)
+
+=item C<download_filename>
+
+The name of the resluting PDF file.
+(mandatory)
+
+=back
+
 =cut
-
-
-
-

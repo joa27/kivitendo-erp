@@ -2,7 +2,1681 @@
 # Veränderungen von kivitendo #
 ###############################
 
-2017-XX-XX - Release 3.5.1-beta
+20xx-xx-xx - Release x.x.x
+
+Größere neue Features:
+
+Mittelgroße neue Features:
+- Atlassian Jira als Ticket System kann in den Stammdaten eingebunden werden;
+  Dabei werden im Tab »Ticket System« die offenen Tickets des jeweiligen
+  Kunden oder Lieferanten automatisch abgerufen und angezeigt.
+  Die zukünftige Anbindung weiterer Ticket Systeme ist codeseitig vorgedacht.
+  Eine Verwaltung von OAuth2 Tokens wurde in der Nutzer-Weboberfläche
+  hinzugefügt.
+
+- Factur-X/ZUGFeRD/XRechnung: Es gibt jetzt die Möglichkeit,
+  rechnungsbegründende Dokumente an den Export anzuhängen. Die
+  Dokumente werden als Binär-Daten eingebettet (BG-24 / BT-125).
+  Als Dokumente können beliebige bei der Rechnung unter Dokumente bzw.
+  Dateianhänge vorhandene Dokumente gewählt werden.
+  Zudem lässt sich in der Mandantenkonfiguration einstellen, ob automatisch
+  Dokumente von verknüpften Lieferscheinen angehängt werden sollen.
+
+Kleinere neue Features und Detailverbesserungen:
+
+- Verschiedene E-Mail-relevante Felder in der Mandantenkonfiguration sind nun
+  in einem eigenen Reiter zu finden.
+
+
+Bugfixes von Github-Issues (https://github.com/kivitendo/kivitendo-erp/issues/):
+
+
+2026-08-14 - Release 4.1.0
+
+Größere neue Features:
+
+- Inventur-Zählungen erfassen und abgleichen: Zwischeninventur
+  Inventur-Zählungen lassen sich, auch eingeschränkt auf einzelne Lagerplätze,
+  zwischenspeichern. Erfasste Zählungen können abgeglichen werden, wobei
+  zunächst ein Bericht über Ist- und Soll-Werte der Zählung zur Kontrolle
+  gezeigt wird und bei erfolgter Bestätigung Lager-Korrekturbuchungen erfolgen.
+  Im Gegensatz zum Anlegen von Inventurbuchungen über Lager->Inventur eigenen
+  sich Inventur-Zählungen für die Datenerfassung per Code-Scanner, da zuerst
+  alle Zählergebnisse gesammelt und dann alle gemeinsam in einem Schritt per
+  Lagertransaktion abgeglichen werden.
+
+- Statische Dateien befinden sich nun im Unterverzeichnis public/.
+  Dies erfordert eine Änderung der Webserver-Konfiguration.
+
+Mittelgroße neue Features:
+
+- Verbundene Kunden/Lieferanten
+  Man kann jetzt Kunden und Lieferanten verbinden und so Geschäftspartner
+  abbilden, die in beiden Rollen auftreten. Dabei werden dann die Name, Straße
+  Stadt, Postleitzahl, Land, Währung, Steuerzone, Steuernummer, Steuergruppe,
+  UStID, Homepage, Sprache, Telefon, Fax, E-Mail und Ungültig zwischen beiden
+  synchronisiert. Benutzerdefinierte Variablen können einzeln für die
+  Synchronisation freigegeben werden.
+
+- Einkaufsrechnungssuche: Erweiterung um personenbezogene
+  Suchprofile. Jede Person kann nun die Optionen so setzen, wie sie
+  sie benötigt, und als Suchprofile speichern. Ein Suchprofil kann als
+  Standardprofil festgelegt werden, wodurch die darin enthaltenen
+  Einstellungen bei jedem Aufruf der Einkaufsrechnungssuche
+  standardmäßig gesetzt werden.
+
+- SEPA Überweisungen für Lieferantenrechnungen können zusammengefasst und
+  mit Gutschriften verrechnet werden. Zusätzlich wird beim Rückimport von der
+  Bank über das MT940 Verfahren diese Überweisung direkt beim Import verbucht
+  (falls SEPA EndToEndID und Überweisungssumme identisch ist).
+
+- Dialogbuchungen direkt beim Kontoauszugsimport:
+  Beim Verbuchen von Kontoauszügen wird für die Bankbuchungen neben den bisher
+  existierenden Optionen »Rechnung zuweisen« und »Buchung erstellen« als
+  dritte Möglichkeit »NI optimierte Buchung« angeboten, wobei die passende
+  Dialogbuchungsvorlage direkt aufgerufen wird.
+  Dialogbuchungsvorlagen mit Beschreibungstexten (inkl. Variablenersetzung),
+  welche zu dem Verwendungszweck einer Banktransaktionen passen, werden nun
+  direkt beim Importieren des Kontoauszuges verbucht.
+  Zur Kontrolle lässt sich das automatische Verbuchen beim Kontoauszugsimport
+  deaktivieren.
+  PS: NI steht für natürlich intelligent
+
+- Das Land in den Stammdaten, Liefer- und Rechnungsadressen, bei Ansprechpersonen,
+  Webshopbestellungen und in der Mandantenkonfig ist per Auswahlmenü aus einer
+  vordefinierten Liste wählbar, anstatt wie zuvor, ein Freitextfeld. Ein
+  interaktives Datenbankupgrade erfordert manuelle Auswahl bei Länderschreibweisen,
+  welche mit der bisherigen Zuordnung für ZUGFeRD Rechnungen inkompatibel sind,
+  und daher beim Upgrade nicht automatisch zugeordnet werden können.
+  Ländernamen für Berichte und Belegdruck lassen sich einstellen im Menü
+  System → Sprachen und Übersetzungen → Ländernamen. Die Reihenfolge der Länder
+  im Auswahlmenü auf Berichten und Belegen ist einstellbar, so dass bspw.
+  die am häufigsten verwendeten Länder zuoberst angezeigt werden können.
+
+- Überarbeitung des CSS-Layouts und der Titelzeilen. Dies verbessert die Anzeige
+  der Schnellsuchleisten, ermöglicht das Scrollen in Fällen in denen das
+  Top-Hauptmenü nicht auf dem Bildschirm passt und bietet eine bessere Grundlage
+  für zukünftige Weiterentwicklungen.
+
+- Ansprechpartner sind mehreren Kunden und/oder Lieferanten zuordenbar
+  Das Editieren von Ansprechpersonen erfolgt nun auf einer eigenen Seite
+  unabhängig von Kunden und Lieferanten. In der Kunden/Lieferanten-Maske lassen
+  sich bestehende Ansprechpersonen veknüpfen oder bereits verknüpfte entfernen.
+  Über den Workflow "Speichern und Ansprechperson erfassen" wird eine neu
+  gespeicherte Ansprechperson automatisch mit einem Kunden/Lieferanten
+  verknüpft.
+
+- Anstelle eines Leistungszeitpunktes kann auf Rechnungen ein
+  Abrechnungszeitraum angegeben werden: Abrechnungszeitraum von - bis.
+  Positionen von Verkaufsrechnungen besitzen optional einen eigenen
+  Abrechnungszeitraum. Dieser Abrechnungszeitraum wird in ZUGFeRD auf
+  Belegebene als BT-73 / BT-74 und auf Positionsebene als BT-134 / BT-135
+  exportiert.
+  Das Feature ist integriert mit der Erzeugung wiederkehrender Rechnungen,
+  bei welchen bisher der Abrechnungszeitraum lediglich als Text im
+  Bemerkungsfeld durch Variablenersetzung aufgenommen werden konnte.
+
+- Neuer Typ von benutzerdefinierten Variablen: Auswahlbox (mehrfach)
+  Gegenüber dem bisher existierenen Typen »Auswahlbox« erlaubt der neue Typ
+  »Auswahlbox (mehrfach)« das gleichzeitige Setzen und Speichern mehrerer
+  Auswahloptionen. Dieser BDV-Typ kann überall eingesetzt werden, wo BDVs
+  unterstützt werden: Artikel, Ansprechpersonen, Kunden und Lieferanten, ...
+  Lediglich Preisregeln an Artikeln lassen sich nicht über den BDV-Typen
+  Auswahlbox (mehrfach) steuern.
+
+- In denen unter System → Sprachen und Übersetzungen → Vorbelegte E-Mail Texte
+  eingestellten Texten können Ersetzungsvariablen der Form <%invnumber%>
+  eingefügt werden, welche vor dem Anzeigen des E-Mail-Textes automatisch
+  ausgetauscht werden. Die verfügbaren Ersetzungsvariablen werden in den
+  Einstellungen pro Belegtyp aufgelistet.
+
+Kleinere neue Features und Detailverbesserungen:
+
+- Anordnung der Elemente in der Maske für Wiedervorlagen verbessert
+
+- Suche nach und Anzeige von Kundenartikelnummer und Kunde im Artikelbericht
+  analog zur Suche nach Lieferantenartikelnummer und Lieferant ermöglicht.
+
+- Im Bericht VK-Rechnungen/Debitorenbuchungen und
+  EK-Rechnungen/Kreditorenbuchungen wird neben der Projektnummer des Belegs
+  auch die Projektbeschreibung angezeigt und es kann nach Nummer und
+  Beschreibung des Projekt sortiert werden.
+
+- Factur-X/ZUGFeRD/XRechnung: Anhebung der unterstützten Version von
+  XRechnung auf 3.0 inklusive der dafür nötigen Anpassungen an der
+  Menge der exportierten Daten. Damit einhergehend ist erforderlich,
+  dass einige Daten in der Mandantenkonfiguration bzw. den
+  Kundenstammdaten gesetzt sind:
+  - Mandantenkonfiguration: »E-Mail des Rechnungsempfängers« auf dem
+    »Features«-Tab
+  - Kundenstammdaten: »E-Mail des Rechnungsempfängers«, »E-Mail« oder
+    »GLN« auf dem Tab »Rechnungsadresse«
+
+- Factur-X/ZUGFeRD/XRechnung: beim Speichern von Aufträgen mit aktiven
+  wiederkehrenden Rechnungen wird eine Prüfung durchgeführt, ob für
+  daraus erzeugte Rechnungen die Factur-X/ZUGFeRD/XRechnungs-Daten
+  erzeugt werden können, oder ob Daten fehlen. Falls lezteres, wird
+  eine Warnung angezeigt.
+
+- ZUGFeRD-Export: Unterstützung für abweichende Lieferadresse und Referenz auf
+  Lieferschein.
+
+- experimenteller CAMT.053 Bankimport
+  Zusätzlich zum bisherigen MT940 Format können jetzt Bankauszüge auch im
+  CAMT.053 Format importiert werden.
+
+- PDF-Anhänge von Mahnungen werden in ein PDF zusammengeführt
+  betrifft Mahnungen bei welchen die Ursprungsrechnung mitgeschickt wird.
+
+- In der Aufgabenliste lassen sich nun auch Aufträge (VK/EK) anzeigen.
+  Zudem lässt sich in der Benutzereinstellung getrennt nach Belegtypen wählen,
+  ob und wann (Login und/oder Menüpunkt bei Produktivität) diese angezeigt
+  werden sollen.
+
+- In der Mandantenkonfiguration lässt sich ein Intervall in Tagen angeben,
+  ab welchen die Angebote/Aufträge für die Aufgabenliste als überfällig
+  gelten.
+
+- CSV-Export für Aufträge aus der Auftragsmaske heraus.
+
+- PDF Dokumente im Beleg-Reiter Dokumente können beim Buchungsjournal durch
+  setzen des enstprechenden Häkchens beim Export mitexportiert werden. Die
+  etwas versteckte Möglichkeit dafür über eine zweite Aktion in der Action-Bar
+  entfällt.
+
+- Preishistorie in den Stammdaten um die Felder Lieferant und Rechnung
+  erweitert, falls die Preisaktualisierung über eine Einkaufsrechnung
+  passiert ist.
+
+- Bankkonten: Einstellung von DATEV Export ausnehmen hinzugefügt
+
+- Die Authentifizierung über Cookies mit API-Token für das alte CRM-Menü wurde
+  entfernt.
+
+- Das Bearbeiten von LaTeX/HTML Templates in der Oberfläche wurde aus
+  Sicherheitsgründen entfernt
+
+- Ein HTML formatiert Feld "Interne Bemerkungen" wurde zu Artikeln hinzugefügt
+  und das Feld "Bemerkungen" wurde umbenannt zu "Langtext".
+
+- Artikelstamm: standardmäßig wird geprüft, dass jede EAN eindeutig ist
+  und ihre Prüfziffer stimmt.  Dies lässt sich in der Mandantenkonfig unter
+  Nummernkreise abschalten.
+
+- freie Preise: In der Mandantenkonfiguration lässt sich einstellen, ob Preise
+  als freie Preise beim Hinzufügen von Positionen in Belegen übernommen werden
+  sollen. Damit kommen die Preise nach wie vor aus der Preisquelle, aber der
+  Preis ist frei editierbar.
+
+- Regulatorische Pflichtangaben (Geschäftsführung/Handelsregistereintrag/Sitz
+  der Gesellschaft) lassen sich in der Mandatenkonfiguration hinterlegen
+  und werden beim ZUGFeRD-Export mit ausgegeben.
+
+- Umsatzsteuer-Id und Steuernummer sind als weitere Felder bei zusätzlichen
+  Rechnungsadressen eingebbar. Diese stehen auch in den (verkaufsseitigen)
+  Druckvorlagen zur Verfügung.
+
+- Falls eine Ware in einem Erzeugnis verbaut wurde, wird das Erzeugnis im
+  Lagerbuchungsbericht zusätzlich als Link zum Erzeugnis angezeigt.
+
+- Beim Blättern der Berichte kann die Anzahl der Treffer pro Seite ausgewählt
+  werden.
+
+- XRechnung: beim Herunterladen der XRechnung-XML-Datei beginnt der
+  Dateiname nun mit »xrechnung_« und nicht mehr mit »factur-x_«.
+
+- In Rechnungsbelegen lassen sich durch anhaken mehrere Positionen
+  gleichzeitig löschen.
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine/projects/forum/issues/):
+
+Bugfixes von Github-Issues (https://github.com/kivitendo/kivitendo-erp/issues/):
+#839 rose_auto_create_models: MetaSetups Auth-Tabellen ohne foreign keys
+#828 Wiederkehrende Rechnungen; Speichern mit "An Ansprechperson schicken" kaputt
+#821 sql/Pg-upgrade2/shared_contacts.sql schlägt fehl bei mehren Haupt-Ansprechpersonen an einem Kunden/Lieferanten
+#780 Login Felder bei Kivitendo fehlerhaft
+#758 Marge in Prozent bei Erzeugnisbestandteilen in Erzeugnisstammdaten wird nicht aktualisiert
+#698 live Backup: pg_dump blockiert kivitendos Dispatcher-Prozess und DB Handle
+#682 lessc -x deprecated
+#681 Zwischensumme Berechnung ist falsch master #b7fc893
+#649 Lagerbuchungsbericht: Anzahl der Zeilen bei Paginierung angeben können oder höher setzen
+
+Änderungshistorie laut Github  (https://github.com/kivitendo/kivitendo-erp/)
+
+#631 2025 linked customer vendor
+#645 CAMT.053 - Erste Version
+#657 202511 fix requirement spec discount
+#677 20251204 factur x fixes
+#685 SMTP EHLO Header konfigurierbar
+#699 Debitorenbuchung: HTML: weitere Input-Tags in table nicht ausserhalb von tr/td
+#701 Mahnungen: PDFs für Mail-Anhang in einer Datei
+#702 Unit-Test datev/encoding: check_text wird nicht exportiert
+#706 2026 remove algorithm checkdigits override
+#707 202602 zugferd ship to trade party 2
+#711 test: neuer Test um zu prüfen ob irgendwo in den sql/Pg-upgrade Tests SL::DB::Object verwendet wird
+#712 F factur x validation in recurring orders
+... und viele weitere gemergete PRs
+
+2025-11-17 - Release 4.0.0
+
+Größere neue Features:
+- Die Stilvorlagen kivitendo.css und lx-office-erp.css wurden komplett entfernt.
+
+Mittelgroße neue Features:
+
+Kleinere neue Features und Detailverbesserungen:
+
+- Alle PDFs die sich im Reiter Dokumente befinden können beim E-Mail-Versand
+  zu einem PDF im Anhang zusammengefasst werden.
+
+- Lieferscheine: Drucken mit Positionsauswahl:
+  Im Druckdialog lässt sich eine Positionsauswahl einblenden, mit der die zu
+  druckenden Positionen ausgewählt werden können.
+
+- neue Optionen für den E-Mail-Import, sowie Verbesserund der Doku für
+  das Setzen der IMAP-Flags, s.a. Kapitel 2.9.2 in der Doku.
+
+- Gesamt- und Zwischensummen werden im Mahnungsbericht angezeigt.
+
+- Rechnungen mit Nicht-Euro-Währung nicht für einen SEPA-Einzug oder
+  eine SEPA-Überweisung zur Auswahl anbieten.
+
+- Lieferplan um das Feld Status u. Vorgangsbezeichnung des Auftrags und Mikrofilm
+  erweitert und nach Vorgangsbezeichnis filterbar gemacht.
+
+- Beim E-Mail-Versand von Belegen wird abhängig von der Mandanteneinstellung
+  "Belegausdruck mitschicken: bevorzuge Erzeugung eines neuen Belegs"
+  standardmäßig ein neuer Belegausdruck erstellt und verschickt (zuvor
+  wurde standardmäßig der zuletzt erstellte Belegausdruck verwendet).
+
+- Im Artikelstamm bei den Warenbeständen den Wert der Ware korrekt berechnen
+  wenn ein Preisfaktor gesetzt ist.
+
+- Beim Lagerbuchungsbericht Zu- und Abnahme der Menge mit + und - zusätzlich
+  visualisiert.
+
+- Beim Produzieren von Erzeugnissen darf man auch Erzeugnisbestandteile mit der
+  Menge 0 verbauen. Konfigurierbar in der Mandantenkonfiguration, standardmäßig
+  deaktiviert.
+
+- Es gibt ein neues Feld Einkäufer für Lieferanten, die im Lieferanten-Workflow
+  bei den Belegen gesetzt werden können.
+
+- Konfigurierbares Feature in der Mandatenkonfiguration:
+  Lieferantenrechnungen können erst nach Freigabe per SEPA überwiesen werden.
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine/projects/forum/issues/):
+755 CSV-Import für Auftrage: Fehler, wenn record_type fehlt
+710 Bericht Lagerbuchungen zeigt nur Ein- und auslagerte Bucheungen und nicht die Umlagerungen
+577 locales-Lauf meldet unbenutztes Template "common/toggle-buttons-for-wrapper.html"
+575 Artikelbeschreibung wird von der Artikeleingabe nicht übernommen (Angebot, Auftrag, Reklamation)
+554 Artikelbeschreibung ändern beim Hinzufügen zum Beleg
+552 design4.0 Drehendes Rad bei Tasks (bspw. Task ausführen) verschiebt die Schnellsuchen
+
+Github-Issues (https://github.com/kivitendo/kivitendo-erp/issues/):
+#591 Gesamt- und Zwischensumme im Mahnungsbericht anzeigen
+#521 Sortierung im Bericht Lager->Berichte->Lagerbuchungen teilweise kaputt
+#514 <%mandator_id%> wird nicht bei wiederkehrenden Rechnungen ersetzt. Normale Rechnungen geht es.
+#500 Design 4.0 kein Padding beim Suchergebniss der Artikelsuche
+#493 ZUGfERD X-Rechnung PDF-Rechnung kann nicht imortiert werden xml geht
+#471 Bericht Beistelllieferscheine ohne Lieferanteninfo
+
+
+2025-04-29 - Release 3.9.2
+
+Größere neue Features:
+
+- Der alte Controller-Code im Bereich Auftrag/Lieferschein wurde
+  komplett entfernt und steht ab dieser Version nicht mehr
+  abwärtskompatibel zu Verfügung.
+
+- Bei allen Anwendern wird automatisch das neuere Design 4.0 automatisch
+  voreingestellt, das kann aber noch letzmalig auf eine andere
+  Variante in den Benutzereinstellung verändert werden. Ab der
+  Version 4.0 werden die älteren Designs entfernt.
+
+
+Mittelgroße neue Features:
+
+- ZUGFeRD, bzw. generelle eRechnungen von Lieferanten können über
+  das Testsystem t/ validiert werden.
+  Entsprechende PDFs müssten in den Ordner t/xml_invoice/corpus/ kopiert werden
+  und werden dann mit dem Aufruf: t/run.sh t/xml_invoice/xml_invoice.t validiert.
+
+
+Kleinere neue Features und Detailverbesserungen:
+
+- SSO (Single-Sign-On) Unterstützung über entsprechende HTTP-Header.
+  Für Details s.a. Doku und ggf. API-Doku im POD-Style
+
+- XXE Sicherheitslücke bei ZUGFeRD parsen verhindern (Upload), s.a.
+  https://www.usenix.org/sites/default/files/conference/protected-files/woot16_slides_spath.pdf
+
+- Der Hintergrund-Job Nummernkreise aktualisieren hat mehrere neue Paramter zur
+  Verwendung bekommen und kann somit auch monatlich Nummernkreise setzen. Details
+  in der Dokumentation.pdf oder perldoc SL/BackgroundJob/SetNumberRange.pm
+
+- Neuer Hintergrund-Job der alle Angebote/Aufträge älter als x Jahre schliessen kann.
+
+- Neuer Hintergrund-Job der den kompletten Lagerbestand auf 0 setzen kann.
+
+- Die Funktion Sortiment im Artikelstamm ist nicht mehr experimentell.
+
+- Die Vorgangsbezeichnung kann im E-Mail-Betreff vorbelegt werden (Mandantenkonfig)
+
+- Die Eingabezeile für Artikel kann mandantenweit und benutzerbezogen unterhalb der Positionszeile
+  positioniert werden, was eher dem Verhalten der vorherigen Eingabemaske entspricht.
+
+## Änderungshistorie laut Github  (https://github.com/kivitendo/kivitendo-erp/)
+
+#359 Lieferschein Speichern u. schliessen "Als geschlossen markieren"
+#370 Backgroundjob: ShopPartMassCreate Existierende Bilder überspringen
+#385 202409 feat zugferd email address
+#393 FIX: shopware6 connector: Bilder Upload für Shopware >= v6.6 Beheben
+#401 SelfTest:check_missing_tax: Bei reverse_charge Steuer, kein Fehlalarm
+#409 FIX: DeliveryOrder: Ohne Prüfung auf Bestand
+#410 202411-fix-doku-minor-enhancement-backgroundjob-setnumberrange
+#411 20241128 fix qr account
+#412 Debitorenbuchungen input eine ID gegeben, Zahlenformartierungen
+#413 202411 match end to end bt
+#414 202412 doku installation logpfad
+#415 202412 dodate in lieferschein
+#416 Doku: Typos
+#418 FIX: S:C:DeliveryOrder: instances of SL::DB::Unit have attribute $name
+#420 marei - bugfix: fix check for billing_address_department_
+#421 202501 ISO-3166 Ländernamen ZUGFeRD
+#422 202501 bt code 191
+#423 202501 Lieferschein: Button Speichern und weiter
+#425 F http header auth
+#426 202502 fix is empty on undefined value
+#427 202502 experimentelle Features assortment und order kommen in den Standard, oe.pl aufgeräumt
+#428 locale/de: Rechtschreibung korrigiert
+#430 202502 follow up trans info delivery order.js
+#431 202502 E-Mail Vorgangsbezeichnung in Betreff aufnehmen mandantenspez. konfigurierbar
+#434 202503 Druckvorlagen Bugfixes
+#435 202503 Background-Job Lager leeren vor Inventur und CloseQuotations
+#436 202503-fix-742 Wiederkehrende Rechnung bei Auftrag als_neu_speichern
+#438 2024 item input below item list 2
+#439 202503 preformatted html for result in backgroundjob
+#440 Fix Maske Sortiment Add_item mit Enter
+#441 Fix Anhänge bei Emailversand immer angehakt. Nur Design 4.0
+#442 DB: alle Benutzer auf Stilvorlage design40 setzen
+#443 CsvImport: Datumsformat bei Multiplex-Importen berücksichtigen
+#444 S:C:Order: Beschreibung übernehmen bei Hinzufügen neuer Artikel
+#446 fehlende Belegtypen bei Wiedervorlagen
+#447 Offene Angebote/Aufträge auf login-Seite schliessen können
+#448 202501 zugferd xrechnung namespaces aus xml 2
+#449 202503 Skontobuchung Einkaufsgutschrift Fix #699
+#450 Setting doc generation to use https dtd url for download since http i…
+#451 Expanding units of measure (cloned from NX dev stack) because those u…
+#454 templates: vergessenes feature_experimental_assortment entfernt
+#456 2024 set number range 6
+#458 MT940 SWIFT Codes Sonderfall
+#459 FIX: S:C:DeliverOrder: Überprüfen der Lagerbewegungen auf Bestand
+
+
+## Änderungshistorie aus dem Bugfix-Tracker (https://www.kivitendo.de/redmine)
+
+451	Design4.0: Radiobuttons/Texte verschoben
+499	Auftrags-Controller: geänderte Artikel-Beschreibung aus der Eingabezeile wird nicht in Position übernommen
+542	design4.0 SEPA Export ist visuell unbrauchbar (Hintergrundfarbe alterniert nicht und ist durchgängig rosa).
+543	design 4.0: Aktiviertes DMS beim E-Mail-Dialog nicht beachtet
+616	Design4.0: alternierende (Zebra) Tabellen mit dynamischen Zeilen
+628	SL::BackgroundJob::SetNumberRange Automatik auf die "neueren" Nummernkreise erweitern
+665	Individuelle Lieferadresse wird nicht übernommen im Workflow Autftrag  -> Lieferschein
+670	RecordImport aus Email über EmailJournal lädt den Anhang runter und zeigt nichts an
+675	Die Inhalte der Reiter Dokumente/Anhänge werden bei Lieferscheinen EK/VK nicht gerendet, wenn ein Lieferscheine über einen Link aufgerufen wird
+677	Link von der Wiedervorlagenliste zum Lieferschein
+678	Link vom Lagerbewegungsbericht zum Lieferschein
+684	Lieferscheindatum fehlt beim Drucken
+686	Shopware Version > 6.4 akzeptiert den POST '/api/media?_response=true' nicht mehr => shopware erwartet uuids in der Version 7 als zusätzlichen Parameter
+694	neuer Lieferschein-Controller: Speichern und Schließen defekt
+695	Anhänge bei Emailversand immer angehakt. Nur Design 4.0
+696	Workflow Auftrag -> Lieferschein: Positionsdetails gehen verloren
+697	Lieferschein: Formular-Details /zweite Zeile) lässt sich nicht ausklappen nach Workflow aus Auftrag
+699	Einkaufsgutschrift mit Skonto per Kontenauszug verbuchen, erzeugt DATEV Fehler, bzw. eine Fehlbuchung
+700	Email Lieferschein ohne Anhang
+702	Lieferschein fehlende Funktion als geschlossen markieren
+718	 Shopconnector shopware6: Check API Zeigt Fehlermeldung nicht an
+723	Kontoauszug verbuchen -> Eine Zahlung mehreren Rechnungen inkl. Schlussrechnung zuweisen wirft Fehler
+734	Design 4.0 Debitorenbuchung kein zahlungseingang möglich
+735	Auslagern (Nicht auslagern über Standardlagerplatz) im Lieferschein lässt zu das mehr ausgelagert wird wie auf den Lagern vorhanden
+736	Neuer Auftrags Controller: Artikel hier hinzufügen! Beschreibung wird nicht übernommen
+742	Konfiguration wiederkehrende Rechnung E-Mail Versand an Ansprechpartner angewählt -> als neu speichern -> Kunde wechseln -> alter Ansprechpartner bleibt bestehen ...
+744	Design4.0: Tabellenhöhe bei Auftrag erfassen im CSS nicht anpassbar
+745	Filter bei Zeiterfassung in erp-yaml vorkonfigurieren
+753	Design4.0: Verlauf der Hintergrund-Job-Ausführungen anzeigen, pre Fehlermeldung läuft über
+754	CSV-Import: bei Multiplex-Importen wird das Datumsformat ignoriert
+758	Reklamation: Aktualisieren aus Stammdaten geht nicht
+
+
+
+
+
+2024-10-23 - Release 3.9.1
+
+Größere Features und Komponentenupdates:
+  -
+
+Mittelgroße neue Features:
+  - Umwandeln mehrerer Aufträge in jeweils einen Lieferschein aus
+    dem Auftragsbericht.
+  - Neues Recht zum Anzeigen der Beträge in Auftragsberichten. Wer dieses
+    Recht nicht hat, sieht keine Beträge in den Berichten und die Links
+    zu nicht eigenen Aufträgen erscheinen nicht (nur die Auftragsnummer
+    als Text).
+    Als Standardeinstellung bekommen alle Gruppen mit Rechten, Aufträge
+    einzusehen bzw. zu bearbeiten, das Recht, Beträge im Bericht zu sehen.
+    Das Recht lässt sich getrennt nach Ein- und Verkauf einstellen.
+  - Neues Recht zum Ändern von Preisen in Artikelstammdaten.
+    Das Recht ist nach dem Update standardmäßig an, wenn man das Recht zum
+    Anlegen und Bearbeiten von Artikeln hat.
+    Fehlt einem dieses Recht, so lassen sich die Preise sehen, aber nicht
+    bearbeiten. Das betrifft Listen-, Einkaufs-, Verkaufs, Preisgruppen-,
+    Lieferanten- und Kundenpreise.
+
+Kleinere neue Features und Detailverbesserungen:
+  - Verkaufsreklamationen: Support für Drucken via odt-Vorlagen sowie eine
+    Beispiel odt-Vorlage hinzugefügt
+  - Neuer Backgroundjob zum Massen-generieren von Shop Artikeln aus Artikeln.
+    Dokumentation siehe POD in SL/BackgroundJob/ShopPartMassCreate.pm.
+  - Möglichkeit nach internen Bemerkungen zu suchen und zu filtern im
+    Bericht Einkaufsrechnungen/Kreditorenbuchungen.
+  - Der Inhalt der Picker (Artikel/Kunde/Lieferant/Projekt/Konto) wird
+    beim Klick in das Picker-Eingabefeld selektiert. Damit wird der Inhalt
+    dann beim Lostippen gelöscht und es kann direkt nach einem neuen
+    Objekt gesucht werden.
+  - Bei aktiviertem DMS wird bei SEPA-Überweisungen zusätzlich eine PDF zum Download
+    angeboten, die alle bei den Buchungen hinterlegten PDF-Belege in einem PDF bündelt.
+    Somit kann der Überweisende an dieser Stelle nochmal die Überweisungsliste anhand der
+    hinterlegten PDF-Rechnungen vor der Überweisung kontrollieren
+  - Beim Einlagern die Liste der letzten Einlagerungen von 10 auf 20 erhöht und auch
+    das entsprechende Dokument anzeigen
+  - Neues Feld Beschreibung bei den Backgroundjob. Dient zur besseren
+    Unterscheidung.
+  - Dialogbuchungen als "als neu verwenden" können.
+  - eigene Zugriffsrechte für die Verkaufs-Berichte "Auftragsartikelsuche",
+    "Finanz-Controlling" und "Verkaufsbericht".
+  - Ob einige Belege in den Menüs bzw. Workflows verfügbar sind, lässt sich nun
+    in der Mandantenkonfigurtion einstellen. Das gilt zur Zeit für
+    Auftragseingang, Angebotseingang und Lieferantenauftragsbestätigung,
+    sowie für Anzahlungs- bzw. Schluss-Rechnung.
+  - Möglichkeit einer Datenbank-Verklemmung bei CSV-Importen verringert.
+  - Die SEPA END-TO-END wird extrahiert und kann zur Duplikatserkennung beim
+    Bank-Import verwendet werden. Die Einstellung ist erstmal abgeschaltet und
+    der kivi Admin kann selber entscheiden ab wann genügend END-TO-END IDs im
+    Datenbestand vorhanden sind. Die Einstellung befindet sich in der
+    Mandantenkonfiguration unter Buchungseinstellungen.
+  - Neues Recht, um benutzedefinierte Berichte überhaupt nutzen zu können. Wenn
+    dieses Recht nicht gesetzt ist, taucht auch der Menüpunkt für die
+    benutzerdefinierten Berichte nicht auf und die Oberfläche ist etwas
+    übersichtlicher.
+  - Neues Recht, um Kunden-/Lieferanten-Liste (Stammdaten) aufrufen zu können.
+    Diese Recht beschränkt im Moment nur den Menüpunkt und den Bericht
+    unter Stammdaten, nicht aber den generellen Zugriff auf die Kunden- bzw.
+    Lieferanten-Maske.
+  - Neues Recht, um Liste der Ansprechpersonen (Stammdaten) aufrufen zu können.
+  - Die Dateiendung für den SEPA-Export wurde auf .xml geändert, konfigurierbar auf
+    den vorherigen Wert (.cct oder .cdd) über die Mandantenkonfiguration
+  - Kontoauszug verbuchen, der Reiter "Alle Buchungen" kann per Konfiguration immer
+    als erstes angezeigt werden (Vorschläge werden generiert, aber nicht direkt geöffnet)
+  - Neuer Hintergrund-Job der IBAN und BIC in den Stammdaten setzt, insofern diese
+    sich über verbuchte Bank-Transaktion ableiten lassen, s.a.
+    perldoc SL/BackgroundJob/SetBankAccountsMasterData.pm
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+718 Shopconnector shopware6: Check API Zeigt Fehlermeldung nicht an
+708 Design40 Feld salesman/Verkäufer beim Kunden fehlt
+705 design40: Sortieren (reorder) von Listen im SimpleSystemSettings-Controller kaputt
+704 Lieferschein email an "Email Lieferadresse" defekt
+700 Email Lieferschein ohne Anhang
+697 Lieferschein: Formular-Details /zweite Zeile) lässt sich nicht ausklappen nach Workflow aus Auftrag
+696 Workflow Auftrag -> Lieferschein: Positionsdetails gehen verloren
+694 neuer Lieferschein-Controller: Speichern und Schließen defekt
+688 Design4.0: Toggle Wrapper in Belegen, beim Aufklappen werden ein teil der Felder nicht mehr angezeigt
+680 Design 4.0: "neue" Controller: Update-Symbol falsch nach Anzeigen/Verstecken der 2. Zeile (Details)
+678 Link vom Lagerbewegungsbericht zum Lieferschein
+679 Lieferschein "als neu speichern" liefert Fehler
+671 Admin Bereich: Beim Anlegen einer Datenbank mit schweizer Kontenrahmen kommt eine Ansicht ohne CSS
+647 Kunde editieren: Belege: XML Parsing Error: not well-formed
+
+
+2024-04-10 - Release 3.9.0
+
+Größere Features und Komponentenupdates
+
+  - Bestell- oder Einkaufshelfer
+      Über einen Bericht "Meldebestand" können Artikel, die den Mindestbestand
+      unterschritten haben, in einen Warenkorb gelegt werden. Der Warenkorb
+      kann gefiltert nach Lieferant dann Einkaufsbestellungen auslösen.
+      Zusätzlich zu den Meldebestandwaren können weitere Artikel des
+      Lieferanten gleich mitbestellt werden. Artikel die in offenen und nicht
+      gelieferten Einkaufsbestellungen sind, werden nicht im Meldebestand
+      angezeigt. Artikel können auch direkt aus der Stammdatenmaske in den
+      Einkaufswarenkorb gelegt werden.
+
+  - Eingehender E-Mail-Import im E-Mail-Journal
+      E-Mails können von beliebigen IMAP-Ordnern importiert werden und sind
+      anschließend im E-Mail-Journal sichtbar. Beim Klick auf eine importierte
+      E-Mail werden PDF Anhänge direkt im Browser geöffnet und mit jedem Anhang
+      oder der gesamten E-Mail können weitere Aktionen innerhalb kivitendos
+      angestoßen werden. Diese Aktionen sind
+        - E-Mail-Anhang zum Beleg hinzufügen
+        - von einem beliebigen Einstiegspunkt einen weiteren Workflow Schritt
+          mit Mitnahme des Anhangs machen
+        - E-Mail-Anhänge in Belegvorlagen verbuchen
+        - Einen komplett neuen Workflow/Beleg starten
+
+      Falls der E-Mail-Anhang ein PDF vom Typ 'E-Rechnung' im Format ZUGFeRD/Factur-X ist,
+      wird bei der Erstellung einer Kreditorenbuchung probiert, sinnvolle Daten dort automatisch
+      vorzubelegen.
+      Diese Verfahren kann auch vollautomatisch direkt beim Import der E-Mail mit einer
+      entsprechend konfigurierten Kreditorenbelegvorlage durchgeführt werden.
+
+
+  - Update CKEditor auf CKEditor5 39.0.2
+    Featureabgleich mit ckeditor4:
+    - die folgenden Features sind alle weiterhin verfügbar, können aus alten
+      Daten gelesen werden und funktionieren in Export und Print
+      - bold
+      - italic
+      - strikethrough
+      - underline
+      - superscript
+      - subscript
+      - numbered list
+      - bulleted list
+      - remove format
+    - zusätzlich sind in der neuen Konfiguration noch:
+      - undo/redo (for free)
+      - horizontal line (wurde in ein paar Kundenprojekten verwendet, ist
+        default konfiguriert)
+      - source editor (wurde in einigen Anpassungen verwendet, ist jetzt
+        default konfiguriert)
+      wenn etwas davon nicht gewünscht ist, einfach in js/kivi.js aus der
+      toolbar entfernen.
+    - mehr als eine Instanz in der gleichen Seite funktioniert
+    - Lokalisierung des Editors auf die Benutzersprache
+      (myconfig.countrycode) funktioniert für de und en.
+    - cut/copy/paste aus dem alten Editor gibt es nicht mehr
+    - Enter events im Editor werden nicht an umliegende Forms gebubblet
+    - Focus, initial Fokus und focus_when_ready funktionieren wie vorher
+      auch
+    - die folgenden Attribute im unterliegenden <textarea> werden korrekt
+      interpretiert:
+      - disabled
+      - style: height
+    - clientjs fokus funktioniert
+
+    Wichtige Änderungen:
+
+    - die funktion kivi.selectall_ckeditor wurde nicht mehr verwendet und
+      wurde entfernt.
+    - Der neue Editor ist jetzt wieder Classic und NICHT Inline. Der Grund
+      dafür ist:
+      - Inline funktioniert nicht auf <textarea> Tags sondern brauch
+        zwingend <div> tags. Das würde deutlich mehr Migrationsaufwand
+        bedeuten.
+      - Inline kopiert nicht automatisch den Inhalt des ckeditors zurück in
+        das originale DOM Element, was zu versteckten Bugs führen könnte.
+      Wenn Inline gewünscht ist, bitte separat bauen.
+    - CSS Theme Anpassungen sind nicht mehr kompatibel. Die Klassen und der
+      DOM Aufbau haben sich geändert. Die Standardversion sieht aber in
+      allen Stylesheets gut genug aus, dass das erstmal so bleiben kann.
+    - Das "width" Attribut im unterliegenden <textarea> wird nicht mehr
+      benutzt um den Editor zu dimensionieren. Der ckeditor nimmt sich immer
+      die volle Breite des umliegenden Containers.
+    - dymanisches resize ist nicht mehr unterstützt.
+    - es gibt keinen jquery adapter mehr. Interaktion mit dem editor müssen
+      mit der API des ckeditors passieren. Das Editor Objekt ist weiterhin
+      im data-ckeditorInstance des unterliegenden <textarea>.
+
+Mittelgroße neue Features:
+
+  - Neben Artikelnummern pro Lieferant und pro Kunden können auch
+    Artikelnummern pro Kunden-/Lieferantentyp mit Beschreibung und
+    Langtext verwaltet werden.
+  - Das WebDAV Repository kann mit einem externen WebDAV-Repo in eine Richtung (kivi -> WebDAV)
+    mittels Hintergrund-Job periodisch synchronisiert werden. Der entsprechende Job heißt
+    ExternalSyncWebDAV. Die Einstellungen für das externe Repo befinden sich in der Mandanten-
+    konfiguration. Der Job kann mit dem Daten-Parameter delete: 1 aufgerufen werden und anstatt
+    die Daten zu kopieren wird das externe Repo gelöscht. Mit delete: 0 wird dann wieder normal
+    synchronisiert. Ferner wird nur das  WebDAV-Repo des eingeloggten Benutzers synchronisiert
+    (alle Einträge unterhalb $KIVI/webdav/$MANDANT/, z.B. /usr/local/src/kivitendo/webdav/2/).
+    Für das Verfahren wird das optionale Paket HTTP::DAV benötigt, s.a. (scripts/installation_check.pl -ov)
+    Der Hintergrund-Job kann ferner auch direkt auf Unterordner des entfernten WebDAV-Repos
+    zugreifen, bspw. nextclound (https://nc.firma.de/remote.php/webdav/dateien für den stb)
+  - Neuer Workflow Auftrags-Eingang auf der Verkaufsseite zwischen Angebot
+    und Auftrag.
+  - Neuer Workflow Angebots-Eingang auf der Einkaufsseite zwischen Preisanfrage
+    und Lieferantenauftrag.
+  - Neuer Workflow Lieferantenauftragsbestätigung auf der Einkaufsseite nach
+    Lieferantenauftrag.
+  - Scan Funktion für Schweizer QR-Rechnungen in mobilen templates. Die QR-Rechnung kann
+    mittels eingebauter Kamera Funktion eingescannt werden. Anschließend wird die Rechnung
+    einem Lieferanten zugeordnet und als Kreditorbuchung gespeichert.
+  - Beim fertigen eines Erzeugnisses können nun die Bestandteile genau bestimmt
+    werden, sofern diese nicht eingeutig sind. Gibt es also z.B. Bestandteile in
+    verschiedenen Lagerplätzen oder mit verschiedenen Chargen, so können diese
+    gewählt ausgewählt werden. Das Mindeshaltbarkeitsdatum wird dabei (noch
+    nicht) berücksichtigt.
+  - Beim Jahresabschluss besteht neu die Möglichkeit, zwischen den Methoden Einfach und Standard
+    zu wählen. Die Methode Einfach berücksichtigt nur die Bestandskonten und verwendet das
+    gleiche Konto für die Verbuchung von Gewinn oder Verlust.
+
+Kleinere neue Features und Detailverbesserungen:
+
+  - Beim Export aller Kontenblätter (Berichte -> Buchungsliste) können nun auch PDFs
+    erzeugt werden
+  - Schweizer QR-Rechnungen: Bei der Erzeugung via OpenDocument, innerhalb des QR-Code
+    Adresstyp S anstatt K verwenden
+  - Bei den Bankkonten Auswahlmöglichkeit hinzugefügt, ob das Konto für den Bankimport
+    verwendet (und somit für manuelle Buchungen gesperrt) werden soll
+    (Standardwert und für bestehende Mandanten: Ja)
+  - Mahnsperre beim Kunden
+  - Bei Mahnungen den schon erstellten Beleg mitversenden (optional einstellbar in der
+    Mahnungskonfiguration.
+  - Schon erstellte Belege aus dem Webdav/DMS als zip herunterladen.
+  - Volltextsuche auch für Einkaufsbelege EK-Rechnungen/Kreditorenbuchungen
+  - Volltextsuche auch für Lieferscheine
+  - weitere Filtermöglichkeiten wie Zahlungsbedingungen und Typ bei Mahnungen erzeugen
+  - In diversen Formularfeldern Kunden/Lieferanten trailing withespaces nicht speichern
+  - Bericht Lagerbestand nach text-artigen benutzer definierten Variablen
+    sortieren lassen
+  - Neben Lieferantenartikelnummern kann auch ein Langtext hierzu in
+    den Artikelstammdaten verwaltet werden.
+  - Zu kundenspezifischen Preisen/Artikelnummern können jetzt auch
+    Beschreibung und Langtext in den Artikelstammdaten verwaltet
+    werden.
+  - Hintergrund-Job zum Überprüfen des Mindestlagerbestands für Artikel, der
+    Emailversand kann über die Konfigurationsdatei eingestellt werden.
+  - Gesendete Emails können im Email-Server (IMAP-Ordner Sent) gespeichert werden
+    (konfigurierbar in kivitendo.conf [sent_emails_in_imap])
+  - IMAP Client (konfigurierbar in kivitendo.conf [imap_client]):
+    - Bei der Erstellung von VK-Angebote und VK-Aufträge können automatisch
+      Ordner im Email-Server angelegt werden
+    - Bei der Bearbeitung von VK-Angebote und VK-Aufträgen können die Emails aus
+      den angelegten Ordner im Email-Server automatisch importiert werden
+    - Hintergrund-Job zum Aufräumen der erstellten Email-Unterordner, nur
+      Unterordner für offene Belege werden behalten
+    - Hintergrund-Job zum Synchronisieren von Email-Ordner. Emails werden in das
+      E-Mail-Journal importiert, wenn sie nicht schon vorhanden sind
+  - Belege ("neue" Controller, sprich Angebot/Auftrag/Beistelllieferschein/RMA/
+    Reklamation) können nicht mehr ohne Positionen gespeichert werden. Ausnahmen
+    lassen sich in der Mandantenkonfiguration einstellen.
+  - Projektspezifische Testfälle 'NovoclonStrict' sind im Standard verfügbar.
+    Optimiert für die Branche 'Handel', die in der Regel nur eine Handelsware pro
+    Vorgang einkaufen und verkaufen. Das Modul ist als einzelner SelfTest mit
+    folgender JSON-Konfiguration im Feld 'Daten' aktivierbar (email tauschen):
+    email: prozessueberwacher@meinkunde.com
+    modules: NovoclonStrict
+  - Gutschriften können beim Kontoauszug verbuchen gegen Rechnungen über durchlaufende
+    Posten ausgebucht werden. Funktioniert bei exakt einer Rechnung und einer Gutschrift
+    die mit einer Banktbewegung vom Anwender verknüpft wird. Die Automatik wird
+    beim Zurücksetzen einer Bankbewegung auch entsprechend aufgelöst. Die Buchungen
+    bekommen zusätzlich einen Hinweis auf eine Automatik im Feld 'Memo'
+  - Kontoauszug verbuchen setzt automatisch ein unscharfes Skonto bei Skonto-Abweichungen
+    bis 0,5 % des Original-Rechnungbetrags. Der Prozentwert kann mandantenweit konfiguriert werden
+    und die Funktion kann deaktiviert werden, s.a. Mandantenkonfig->Buchungskonfiguration
+  - Mahnungsversand per E-Mail, nimmt Daten von der abweichenden Rechnungsadresse und priorisiert
+    ansonsten nach Mahnungsempfänger (E-Mail) und Rechnungsempfänger (E-Mail). Falls überhaupt
+    keine gültige E-Mail gefunden wird, ist die Funktion an der Oberfläche für den Anwender
+    deaktiviert.
+  - Bei Wechselkursgewinnen oder -verlusten wird dieser jetzt im Beleg angezeigt für
+    deutsche Kontenrahmen (chart_link nachträglich korrigiert)
+  - Rechnungsversand per E-Mail, auch bei Anzahlungs- und Schlußrechnung
+  - Bei neuen Wiedervorlagen wird der Benutzer automatisch per E-Mail informiert.
+    Dies kann in den Benutzereinstellungen deaktiviert werden. Die E-Mail kann
+    in kivitendo.conf [follow_up_notify] konfiguriert werden.
+  - Bei der Übernahme von Shop-Aufträgen kann jetzt auch nur eine teilweise Auswahl
+    der Artikel übernommen werden (hilfreich für den Fall Artikel existiert im Shop
+    aber so nicht in kivitendo oder es handelt sich um nicht abrechenbare Artikel)
+  - Ein Hintergrundjob ShopwareSetPaid setzt den Bezahlstatus eines Shopauftrags.
+    Sollte standardmäßig nach jedem Werktag angeschaltet werden, s.a. API-Doku im POD-Format.
+  - Lieferplan filtert auch nach Artikelnummer des Erzeugnisbestandteils
+  - In der Mandantenkonfiguration bzw. Benutzereinstellungen kann ausgewählt
+    werden, ob immer das Desktop-Layout gewählt wird. Das kann nützlich sein,
+    wenn man die kivi klassisch auf dem Tablet oder Smartphone verwenden will.
+  - Artikel können auf "nicht mehr bestellen" gesetzt werden. Dann sind diese
+    in neuen Preisanfragen und Lieferantenaufträgen nicht mehr auswählbar.
+
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+676 Druckvorlagen (marai): Fehler bei natürlicher Person
+675 Die Inhalte der Reiter Dokumente/Anhänge werden bei Lieferscheinen EK/VK nicht gerendet, wenn ein Lieferscheine über einen Link aufgerufen wird
+673 Design 4.0 Dialogbuchungsmaske hat keinen Reiter Verknüpfungen
+672 Schlussrechnung beim Schweizer Kontenrahmen 2024 mit MWST wirft Fehler.
+668 Design 4.0: Flash beim Anlegen einer neuen Datenbank wird versteckt
+666 Design4.0: Der wrapper für horizontales scrollen ist zu breit, wenn menü links verwendet wird
+665 Individuelle Lieferadresse wird nicht übernommen im Workflow Autftrag -> Lieferschein
+658 DMS -> Backend WebDAV verknüpfte Belege
+657 Schnellsuche Fibu findet Rechnungnummer nicht
+654 Aufzählungsliste ist im ckeditor 5 nicht mehr gut einsehbar einsehbar/editierbar
+653 Auftragscontroller: Als neu speichern: Hinweis auf ungültige Artikel zeigt Position nicht mehr an
+651 Design4.0: CSV-Import: Report zeigt erste Datenzeile nicht an
+649 CSV-Import Lieferanten 3.9 alpha geht nicht mehr
+648 Einkaufs- und Verkaufsreklamationen funktionieren nicht mehr
+646 Design4.0: Vorgangsbezeichnung: Feld in EK-Rechnung fehlt.
+643 Design4.0: Konten ungültig machen: checkobx fehlt im Template
+640 DBUpgrade fehler bei sql/Pg-upgrade2/oe_purchase_order_confirmation_order_types.sql
+637 load_zugferd fehlerhaft bei Ermitteln der tax
+636 ZuGFeRD Import defekt
+634 Verkauf -> Berichte -> Rechnungen -> Drucken kaputt
+633 Alte Berechnungsautomatiken von Auftrag nach Lieferschein defekt
+632 Verkaufslieferschein lässt sich nicht mehr Auslagern
+631 Lager -> Lagerbuchungen wirft einen DB-Fehler: "sales_invoice" ist kein gültiges enjm
+630 design40: Bei Lagereingang im Lieferschein-Popup wird Information abgeschnitten
+625 Speichern und Lieferschein (E) mit Artikelauswahl -> Fehler:
+624 Einkaufslieferschein lässt sich nicht zrücklagern
+622 Kein CKEditor bei Rechnung erfassen/bearbeiten
+621 Das Menü Links verschwindet / leer bei Rechnung erfassen, Anzahlungsrechnung erfassen, Gutschrift erfassen
+620 Mahnstatus wird in Rechung nicht richtig angezeigt
+617 Design4.0: Kunden/Lieferantenmaske Reiter "Belege"
+615 Reverse Charge $13 für UStVA richtig konfigurieren
+610 Lieferscheine an Lieferanten
+609 Nach Update von Debian11 auf Denian12 Fehler beim Ausdrucken von Rechnungen wenn ZugFerD eingeschaltert.
+608 DBUpgrade fehler bei sql/Pg-upgrade2/record_links_remove_to_quotation.pl
+607 Design4.0 Reportgenerator erzeugt sehr viele Leerzeilen
+605 Kontoauszug verbuchen rückgängig machen, setzt datepaid im Nebenbuch nicht null zurück, wenn keine Zahlungen mehr zum Beleg vorhanden sind
+603 Mailversand liefert immer einen Fehler / Mails über IMAP ablegen
+594 Design4.0: Mandantenkonfiguration
+593 Design40: Dialogbuchen
+592 Design40: CSV-Importe: Hilfe zu Spaltennamen nicht ganz lesbar bei Multiplex-Importen
+591 Design40: CSV-Importe: große leere Stelle bei Multiplex-Importen
+590 Design40: CSV-Importe: Einstellungen: Texteingabefelder zu weit rechts
+589 neue Buchungsliste saldiert falsch.
+584 SL/Controller/Reclamation.pm merge marker in POD
+578 Admin-Oberfläche: Fehler beim Anlegen eines Benutzers
+569 Design4.0 Kunden/Lieferantenmaske Reiter "Belege" überlagert andere tabs
+564 div. Belege/Dialogbuchen Beim Löschen eines Dokuments wird der DB Eintrag nicht gelöscht
+551 Design4.0: Bei Wiedervorlagen fehlt die Auswahlliste der Benutzer (für den die WV erstellt wird)
+541 ! LaTeX Error: There's no line here to end
+533 Design 4.0: Speichern der Mandantenkonfiguration: Can't locate object method "shipped_qty_fill_up" via package "SL::DB::Default" at /usr/share/perl5/Rose/DB/Object.pm line 1657.
+525 Design4.0 Kreditoren/Debitorenbuchungen
+524 Design4.0 Dialogbuchen
+523 Design4.0 Benutzereinstellungen
+522 Design4.0 Fehlende Option Benutzerdefinierte Variablen
+513 Beistellieferschein PDF wird nicht im DMS abgelegt
+474 Artikeldaten aktualisieren wenn Spache geändert
+473 SQL-Fehler bei "Suche nach in Erzeugnissen verbauten Artikeln"
+440 Im neuen Auftragscontroller kein Workflow "Angebot"
+374 Benutzerdefinierte Variablen lassen sich nicht leeren
+363 Standardbuchungskonto ("Buchen auf") wird in Rechnungen EK/VK nicht vorbelegt.
+313 unstable: Kontoauszug verbuchen - Verkaufsrechnungen werden SEPA-Sammelüberweisungen zugeordnet
+298 Artikel "Als neu verwenden" übernimmt die BDVs nicht.
+216 Kunden als csv exportieren2
+189 Sortierung in den Listen aus der Schnellsuche verwirft den Suchbegriff
+129 Erfolgsrechnung für nicht Schweizer-Anwender
+118 item in record_links für auftrag zu rechnung hinzufügen
+114 Wird ein Artikel gelöscht, zu dem eine Preisregel definiert ist, so bleibt die Preisregel bestehen und erzeugt Fehlermeldung beim Aufruf von Preisregeln
+112 Zeilenumbruch falsch konvertiert von 3.1 nach 3.3
+95  Händischer CSV-Import wirft (unter bestimmten Umständen) Fehler, bzw. sperrt die gesamte kivi
+93  Workflow Auftrag -> Lieferschein -> Rechnung "Steuer im Preis inbegriffen" wird nicht aus dem Auftrag mit in die Rechnung übernommen
+89  Berichte -> Projektbuchungen | zwei direkte SQL-Fehler
+88  Export der SuSa vergisst Projekt- oder Abteilungsfilter
+63  Standard-Druckvorlagen - parsen LaTeX-Bedingung nicht korrekt
+14  Lieferplan zeigt nicht alle Positionen / Liefertermine an.
+12  Erzeugnisse deren Einzelteile unterschiedliche Einheiten verwenden werden falsch berechnet.
+6   2437 Falsche Marge bei Verwendung von Preisfaktor
+5   1991 SelfTests: Undefiniertes Verhalten bei NOTESTS
+
+2023-04-05 - Release 3.8.0
+
+Größere neue Features:
+
+ - Reklamationscontroller
+   Zum Erfassen und Auswerten von Einkaufs- und Verkaufsreklamationen
+
+Mittelgroße neue Features:
+
+ - Export-Option als Chart/Grafik für den Report-Generator und damit für
+   alle Berichte
+ - Benutzerdefinierter Datenexport verwendet Report-Generator
+ - Überarbeitung von Berichte -> Kontenübersicht und Buchungsliste
+   Die Buchungsliste hat neu einen eigenen Menüpunkt. Dort kann das Konto,
+   zusammen mit dem Zeitraum und den Einstellungen, ausgewählt und dann die
+   Buchungsliste angezeigt werden. Die Auswahl des Kontos über die
+   Kontenübersicht ist weiterhin möglich. Zusätzlich gibt es in der
+   Buchungsliste, via Action-bar, neu die Funktion: Export -> Alle Konten als
+   CSV exportieren (ZIP-Datei) Diese exportiert die Buchungslisten aller
+   bebuchten Konten als CSV und bietet diese in einer ZIP Datei zum Download
+   an. Die Datumsauswahl zum Zeitraum ist neu in einem kompakten Modul mit
+   optionalen Voreinstellungen (in einem popup) untergebracht.
+ - Buchungsgruppen können auf "ungültig" gesetzt werden.
+
+Kleinere neue Features und Detailverbesserungen:
+
+ - Die Variablen zur Ersetzung der Zahlungsbedingungen stehen auch als einzelne
+   Variable für das Druckvorlagensystem zu Verfügung, bspw. bezeichnet
+   <%invtotal_wo_skonto%> den Rechnungsbetrag abzgl. des Skontos.
+ - Bei den Transaktions-SelfTest kann eine optional weitere E-Mail-Adresse direkt
+   beim Anlegen des Hintergrundjobs im Textfeld data json formatiert wie folgt
+   hinzugefügt werden 'email: meine@email.adresse' (Hochkommatas weglassen).
+ - Bücher können vom Benutzer auch beim Arbeitsschritt: Lohnbuchhaltung importieren
+   geschlossen werden.
+ - Metadaten für DATEV-CSV-Export exakter nach den Wünschen des DATEV-Prüfprogramms
+   gesetzt (SKR ergänzt und weniger Spalten)
+ - Hintergrund-Job der automatisch periodisch die Bücher schließt, falls dies manuell
+   vergessen wird. Als Intervall sind Monate und Tage rückwirkend auswählbar:
+   'subtract_month: n', 'subtract_days: n'. Die Einstellung im Job muss wie immer json
+   kodiert passieren. Falls keine Parameter gesetzt sind, werden die Bücher am 10. des
+   Monats rückwirkend am letzten Tag des Vorvormonats geschlossen.
+ - LaTeX-Druckvorlagen werden nun standardmäßig nicht mehr zwei mal
+   durch den LaTeX-Interpreter übersetzt. Statt dessen wird in der
+   Standardkonfiguration das Programm »latexmk --pdflatex« aufgerufen,
+   das selbständig feststellen kann, ob eine mehrfache Ausführung
+   nötig ist, z.B. um Referenzen richtig auflösen zu können. Bei
+   existierenden Installationen muss dafür in der Konfigurationsdatei
+   »config/kivitendo.conf« der Pfad in der Einstellung
+   »[applications]« → »latex« umgestellt werden, z.B. auf »latexmk
+   --pdflatex«.
+ - Neben Lieferantenartikelnummern kann auch eine Lieferantenartikelbeschreibung
+   in den Artikelstammdaten verwaltet werden.
+ - Umsatzübersicht im Kunden-/Lieferanten-Stamm als Chart. Umschalten zwischen
+   Monats/Jahresansicht per Klick.
+ - Für Einkaufsrechnungen und Kreditorenbuchungen können Überweisungen via SEPA
+   manuell gesperrt werden.
+ - Die E-Mail-Absenderadresse kann jetzt belegweise generisch gesetzt werden, konfigurierbar
+   in der Mandanteneinstellung auf Workflow-Ebene im Bereich Einkauf und Verkauf
+ - Schnellsuche für Projekte eingeführt
+ - In der benutzerkonfigurierten Kundenanzeige kann man nun auch das Land mit
+   anzeigen
+ - Einkaufsrechnungen können positionsweise mit Aufwands- oder Bestandskonten
+   und einem Steuerschlüssel überlagert werden (sichtbar in der 2.
+   Positionszeile)
+ - Die Rechnungsberichte Verkauf und Einkauf können nach Zahlungsbedingung
+   gefiltert werden.
+ - Buchungskonten haben ein Attribut ungültig und stehen damit standardmäßig nicht
+   mehr zur Auswahl bei neu erfassten Buchungen
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+585 Lieferschein läss sich nicht mehr auslagern/speichern wenn Seriennummer ist Pflicht
+584 SL/Controller/Reclamation.pm merge marker in POD
+583 ListTransactions (Buchungsliste) (neuer controller) Saldo alt / Jahresverkehrszahlen alt / Bilanz falsch
+580 Umbuchung im Lager gleicher Fehler wie bei Lagerentnahme
+579 Lagerntnahme wirft DBI fehler
+570 Test invoice_to_reclamation.t kaputt
+568 Fehler bei "Positionen" anzeigen in Berichte Lieferschein
+566 Beistelllieferschein Nummernkreis
+565 Artikel->Lieferantenauftrag Meldung: Das Formular ist nicht mehr gültig
+562 DMS mit Backend WebDAV Datei hochladen stürzt ab, sobald ein '/' in der Rechnungsnummer, bzw. Buchungsbeschreibung vorkommt
+559 E-Mail-Versand von Briefen, berücksichtigt nicht die Firmensignatur
+558 Lagerbestand für den Import kompatibel machen
+556 Design4.0: Web-Templates für neues Design werden nicht gezogen
+553 Adminbereich: Beim Editieren von Benutzer*innen fehlt Anzeige der Gruppen und Mandantenzugehörigkeit
+550 Lieferschein - Datenbank stimmt nich mit MetaSetup überein
+549 Workflow EK-Reklamation -> VK-Reklamation geht nicht
+548 Workflow VK-Reklamation -> EK-Reklamation landet bei VK-Reklamation
+547 Workflow Reklamation -> Auftrag; dann Auftrag speicher schlägt fehl
+546 Workflow Reklamation -> Auftrag (direkt ohne speichern)
+545 Ausgelagerte Beistell-Lieferscheine können nicht mehr gedruckt werden
+544 Verknüpfte Belege: Manuelle Auswahl von Dialogbuchung liefert keine Suchtreffer im Popup
+535 Lieferbedingungen können nicht ungültig gesetzt werden
+534 "Das Formular ist nicht mehr gültig." beim Erzeugen einer Schlussrechnung/weitere Anzahlungsrechnung
+531 Retourenlieferschein: Es gibt keinen Eintrag für Dokument im Bericht Lagerbuchungen
+530 Reklamationscontroller: Workflow VK-Auftrag -> VK-Lieferschein ist defekt: Fehler: Invalid action 'undefined' for controller SL::Controller::Order
+529 Retourenlieferschein: Verkaufs-Retouren können nur auf schon bebuchte Lagerplätze gesetzt werden
+527 Design4.0 Kunden/Lieferantenmaske Reiter "Belege" Inhalt sieht unschön aus
+526 Design4.0 Reiter "Dateianhänge" fehlt das DROP-Feld "Dateien hierher ziehen und fallen lassen"
+521 System -> UStVa Einstellungen Maske erscheint in ungewöhnlich grosser Schrift.
+520 Mandantenkonfiguration: design40_webpages erscheint in der Liste existierender Druckvorlagen
+519 locales.pl neues Design verursacht Fehler
+518 Neues Design - Fehler in Rechnung/Gutschrift erfassen
+517 Neues Design - Fehler in Mandantenkonfiguration
+516 Neues Design - Fehler in der Kunden/Lieferantenmaske
+515 Design4.0 Benutzer lässt sich nicht speichern
+512 Rechnung aus Lieferscheinen buchen geht nicht mehr bei Version 3.7
+506 Beistelllieferschein lässt nach auslagern nicht mehr drucken
+493 Cannot rethrow string ... bei Fehler in der Kreditoren-Transaktion
+490 DeliveryOrder order_type db upgrade
+451 Design4.0: Radiobuttons/Texte verschoben (Status Feedback)
+317 DATEV KNE-Export komplett entfernen
+
+
+2022-09-19 - Release 3.7.0
+
+Größere neue Features:
+
+Mittelgroße neue Features:
+
+ - Angebote und Aufträge um Unterversionierungen erweitert.
+   Dabei werden vorherige Unterversionen von Verkaufs-Angebote und Verkaufs-Aufträge
+   gesperrt sobald diese per E-Mail versendet wurden. Die Funktion ist
+   standardmäßig deaktiviert und kann über die Mandantenkonfiguration aktiviert werden.
+ - Angebote und Aufträge bekommen einen Status. Die Status können im
+   System-Menü angelegt, editiert und gelöscht (sofern noch nicht
+   verwendet) werden. Ein Status "bestätigt" ist bereits angelegt.
+   Der Status kann in den Masken per Hand gesetzt werden. Es erfolgt
+   keine automatische Statusänderung. In den Berichten kann der Status
+   angezeigt werden und es kann danach gefiltert werden.
+ - Informationen über Positionen in Belegberichten können in einer eigenen
+   Spalte angezeigt werden. Es wird zuerst nur die erste Position angezeigt,
+   die Information weiterer Positionen lässt sich aus- und einklappen.
+ - Wiedervorlagen können für mehrere Benutzer angelegt werden. Zudem können
+   die Benutzer aus den Benutzergruppen gewählt werden.
+ - Erinnerungen an fällige Wiedervorlagen können an Benutzer gemailt werden.
+   Dazu gibt es einen Hintergrund-Job (SendFollowUpReminder), der angelegt und
+   aktiviert werden kann.
+
+Kleinere neue Features und Detailverbesserungen:
+
+ - Angebote/Preisanfragen können aus der Aufgabenliste (auch auf dem
+   Startbildschrim) heraus geschlossen werden.
+ - Schweizer QR-Rechnungen: Bei den Adressdaten für Kunden und Rechnungssteller wird
+   Schweiz als Standardwert verwendet. Es werden nur noch Druckvorlagen welche 'qr' im
+   Vorlagenkürzel enthalten für die QR-Rechnung verwendet, dies ermöglicht die gleichzeitige
+   Verwendung von QR und nicht-QR Rechnungen.
+ - Beim Abschluss von Wiedervorlagen wird der Benutzer und der Zeitpunkt gespeichert.
+ - Formular-Gültigkeit beim Buchen von Verkaufsrechnungen überprüfen. Aktuelles Browser-Verhalten
+   kann dazu führen, dass der Anwender doppelte Buchungen erstellt.
+ - Das E-Mail-Journal protokolliert jetzt die genaue Fehlermeldung des SMTP-Servers
+ - Finanzübersicht funktioniert jetzt auch korrekt mit Fremdwährungs-Belegen
+ - Die Konfigurations-Option "git_commit_reload_recources", um bei
+   einer git-basierten Installation den js/css-Resource-Dateien den
+   Hash des aktuellen git-Heads anzuhängen, entfällt. Nun wird
+   vielmehr immer der Hash angehängt. Wenn dieser nicht ermittelt
+   werden kann, dann wird die kivi-Versionsnummer angehängt.
+   Die Entwickler-Option "auto_reload_resources" bleibt vorhanden und
+   hat Vorrang.
+   Das dient dazu, dass der Browser die Resource-Dateien neu lädt und
+   bei einem Upgrade nicht bei allen Anwender-Browsern der
+   Broser-Cache manuell gelöscht werden muss ("Drück mal Strg-F5"
+   entfällt dann hoffentlich).
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+504 BDV Auswahlbox mit Checkbox ignoriert Parameter 7) Deaktiviert als Voreinstellung
+501 Gelöschten Benutzernamen für einen andere Person neu vergeben verursacht Durcheinander
+
+
+2022-05-20 - Release 3.6.1
+
+Größere neue Features:
+
+Mittelgroße neue Features:
+
+ - Neuer Workflow Artikel->Lieferantenaufrag. Hierbei wird der gerade
+   bearbeitete Artikel gespeichert und die Lieferantenauftrags-Maske
+   geöffnet. Der Artikel ist dann in der Eingabezeile vorbelegt.
+   Sofern genau ein Lieferant beim Artikel hinterlegt ist, so wird
+   auch dieser im Lieferantenauftrag vorbelegt.
+ - In Angebot und Auftrag gibt es einen neuen Reiter für Telefonnotizen.
+   Hier können Notizen zum Beleg erfasst werden. Nach diesen lässt sich im
+   Bericht auch filtern.
+ - Neuer Filter im Auftragsbericht nach "Volltext". Hierzu werden die Texte in
+   den Feldern Bemerkungen, interne Bemerkungen, Versandort, Transportmittel,
+   Vorgangsbezeichnung, Auftragsnummer, Angebotsnummer und
+   Bestellnummer des Kunden durchsucht,
+   Zudem werden Dokumente und Anhänge zu Aufträgen im DMS durchsucht.
+   Dazu wird ein Hintgergrund-Job eingerichtet (täglich 03:20 Uhr), der die
+   Texte aus den Dokumenten extrahiert. Im Moment werden Texte aus Dokumenten
+   mit den mime-Typen 'application/pdf', 'text/html' und 'text/plain'
+   ausgelesen.
+
+Kleinere neue Features und Detailverbesserungen:
+
+ - Die Protokollierung von E-Mails in interne Bemerkungen ist deaktiviert,
+   falls der Mandant sowieso das E-Mail-Journal aktiviert hat.
+ - Steuerschlüssel 94, 19 und 18 neu angelegt und um Reverse Charge erweitert.
+   D.h. bei diesen Steuerschlüsseln
+   kann in einem netto verbuchten Kreditorenbeleg gleichzeitig Vor- und
+   Mehrwertsteuer verbucht werden. Die Steuerbuchung wird in einer separat
+   verknüpften Dialogbuchung gemacht.
+ - Im Kunden-/Lieferantenbereicht kann nach "allen Telefonnummern" gefiltert
+   werden. Hier wird in den Feldern Telefon und Fax bei Kunden und Lieferanten
+   und in weiteren Feldern bei Ansprechpersonen (Tel. 1/2, Fax, Mobil 1/2,
+   Sat. Tel, Sat. Fax, Privates Tel.) gesucht.
+ - Es gibt eine neue Schnellsuche "Alle Telefonnummern", die alle Telefonnumern
+   bei Kunden, Lieferanten und Ansprechpersonen durchsucht.
+-  Skontoautomatik bei Kontoauszug verbuchen generiert automatisch die
+   Steuerkorrektur pro Steuersatz des Belegs als verknüpfte Dialogbuchung
+-  Verknüpfte Belege auch für Dialogbuchungen (neuer Reiter)
+-  DMS: Anzeige von Versionen verbessert: Angezeigt wird immer nur die neueste
+   Version einer Datei. Weitere Versionen lassen sich durch Ausklappen
+   anzeigen. Dies gilt nun auch für die Dokument-Typen Anhänge und Bilder, bei
+   denen zuvor nur die neueste Version angezeigt wurde.
+-  Um ein ungewolltes doppeltes Buchen einer Verkaufsrechnung zu verhindern,
+   dass durch den Browser-Zurück-Knopf (und dann nochmaliges Buchen) ausgelöst
+   werden kann, kann in der Mandantenkonfiguration das Aushebeln des Browser-
+   Zurück-Knopfes bei Verkaufsrechnunghen aktiviert werden.
+   Da dadurch allerdings auch Situationen ausgehebelt werden, in denen das
+   Drücken des Zurück-Knopfes sinnvoll ist, ist dies konfigurierbar.
+-  Rechte (nur) zum Lesen von Belegen, getrennt nach Einkauf/Verkauf und
+   Angebot/Auftrag/Lieferschein/Rechnung. Wer nur das Lese-Recht hat, kann
+   Belege nicht anlegen und nicht speichern.
+-  neues Feld "Vorgangsbezeichnung" in Kreditoren-, Debitoren und Dialogbuchung.
+-  Rechnungsbericht VK und EK kann nach Steuerzone gefiltert und sortieren werden.
+-  Möglichkeit, Namen von Dateianhängen im Rechnungsbericht anzuzeigen.
+
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+
+498 Angebot/Auftrags-Maske: Drucken mit nicht-änderbarer Belegnummer zeigt diese nicht an
+494 Beim Erstellen eines Auftrags via Workflow aus der Kundenmaske wird die Sprache nicht übernommen
+491 qty real nach numeric migrieren
+479 Preise neuer Auftragsconroller
+
+
+2022-03-02 - Release 3.6.0
+
+Größere neue Features:
+
+- Mobilvariante Handyfotos für Lieferscheine
+
+  Die neue mobile Variante von kivitendo kann Handyfotos an Lieferscheine hinzufügen.
+  Das Feature setzt ein mobiles Endgerät voraus, aufgrund dessen wird ein passendes
+  CSS-Design im Android-Stil geladen und über die Suche nach einem Lieferschein lassen
+  sich aufgenommen Fotos hochladen. Die Funktion benötigt ein aktiviertes DMS innerhalb
+  von kivitendo.
+
+- Lieferanten-Beistelllieferschein
+
+  Über den Lieferantenworkflow ist es jetzt möglich
+  einen Lieferantenausgangslieferschein zu erstellen (beigestellte Ware).
+  Mit diesem neuen Belegtyp können dann für einen Lieferanten Waren ausgelagert,
+  sprich mitgegeben werden. Damit kann der Anwendungsfall: Lieferant veredelt
+  eigene Erzeugnisse weiter oder erbringt Dienstleistungen mit selbst erzeugter
+  Ware abgebildet werden.
+  Dieser Belegtyp wurde vollständig unabhängig vom alten Lieferschein-Code ent-
+  wickelt (MVC Modell, wie beim neueren Auftrag) und enthält die Option
+  Belegart (Einkauf oder Verkauf) sowie Lagerrichtung (Ein- oder Auslagern) beliebig
+  zu kombinieren.
+
+- Shopware 6 Schnittstelle
+
+  kivitendo unterstützt jetzt die neuere Shopware Version 6 als Alternative
+  zum bisherigen Shopware 5 Konnektor. Die meisten Funktionen sind analog zum
+  Shopware 5 Konnektor implementiert. Admins können sich im Detail im Perl-Doc
+  über die Implementierung informieren (perldoc SL/ShopConnector/Shopware6.pm).
+
+- Anzahlungs- und Schlussrechnung konform nach deutschem Steuerrecht
+
+  Es gibt zwei neue Typen von Rechnungen, einmal den Typ Anzahlungsrechnung und den Typ Schlußrechnung.
+  Die Anzahlungsrechnung braucht keinen Vorgänger.
+  Schlußrechnung braucht immer einen Vorgänger.
+  Vorgänger für die Schlußrechnung kann eine Anzahlungsrechnung oder ein Auftrag sein.
+  Sollte der Workflow bei Anzahlungsrechnung starten, kann von der Anzahlungsrechnung aus eine
+  weitere Anzahlungsrechnung oder eine Schlußrechnung generiert werden.
+  Alternativ kann der Workflow auch mit einem Auftrag beginnen, dann muss die Schlußrechnung auch von diesem Auftrag aus erstellt werden.
+  Buchhalterische Änderungen:
+  Die Anzahlungsrechnung wird nicht auf das Standard-Ertragkonto gebucht,
+  sondern auf ein definiertes Transferkonto, ferner wird keine Mehrwertsteuer gebucht.
+  Wichtig ist in diesem Fall, dass dieses Transferkonten in der Mandatenkonfiguration
+  beim Reiter Standardkonten hinterlegt werden muss.
+  Sobald der Zahlungseingang zu dieser Anzahlungsrechnung verbucht wird (per Bankimport),
+  wird die Mehrwertsteuer entsprechend zum Zahlbetrag brutto verbucht.
+  Damit das ganze DATEV konform bleibt, wird der entsprechende netto Betrag des Zahlbetrags
+  auf ein Steuertransferkonto je nach Steuersatz verschoben.
+  Sobald die Schlußrechnung gebucht wird, werden die Verschiebungen wieder rückgängig gemacht
+  und falls die Schlußrechnung in Summe höher ist als die vorherigen Anzahlungsrechnungen wird
+  die Mehrwertsteuer anteilig gebucht.
+  Die Standard-Druckvorlage marei, enthält exemplarisch zwei neue Druckvarianten die
+  diesen Fall abbilden und somit als Orientierung für eigene Vorlagen-Anpassungen
+  dienen können.
+  Wichtig: Für nicht DATEV-Kontenrahmen ist die Funktionalität nicht implementiert, kann aber
+  konfiguriert werden, falls man zusätzlich das Verrechnungskonto unter Mandanten-Konfig
+  Standard-Konten und die Anzahlungskonten nach Steuersatz (bspw. 1718 (SKR03) / 3272 (SKR04))
+  in der Tabelle defaults definiert.
+  Die Spalten für die Konto-ID der Anzahlungskonten lauten advance_payment_taxable_7 (verm. Steuersatz)
+  und advance_payment_taxable_19 (normaler Steuersatz).
+
+
+Mittelgroße neue Features:
+
+- In Kundenstammdaten können nun abweichende Rechnungsadressen analog zu
+  Lieferadressen verwaltet werden. Diese können in Verkaufsbelegen
+  ausgewählt werden. Sie stehen den Druckvorlagen als eigene Variablen
+  zur Verfügung.
+- Unterstützung für Schweizer QR-Rechnung mit OpenDocument Vorlagen.
+  Varianten: QR-IBAN mit QR-Referenz, IBAN ohne Referenz
+- Neuer benutzerdefinierter Variablentyp HTML-Feld
+  Der Funktionsumfang entspricht dem Editor im Langtext/Bemerkungen
+  innerhalb der Belege. Erweiterbar für alle auch bisher verwendete
+  Objekte die benutzerdefinierte Variable verwenden können (Stammdaten,
+  Projekte, usw)
+- DMS unterstützt auch Druckvarianten des Belegs
+  Bisher konnte das DMS nur die Hauptvariante des Belegtyps zuordnen,
+  jetzt wird auch bei allen bekannten Druckvariante ein entsprechend
+  eigenständiger Dokumenteneintrag, inkl. Version hinterlegt
+
+Kleinere neue Features und Detailverbesserungen:
+
+- neue Druckvorlagen-Variante "Rechnungskopie", die mit dem Druckvorlagensatz marei
+  ein Wasserzeichen "Rechnungskopie" bei Verkaufs-Rechnungen erzeugt
+- Alle HTML-Textfelder benutzen die Rechtschreibprüfung des Anwender-Browser und
+  markieren unbekannte Worte (Tippfehler) mit einer roten gewellten Linie
+- Prüfung, ob Kundenbestellnummer in Verkaufsaufträgen vorhanden ist, kann in der
+  Mandantenkonfiguration eingestellt werden
+- Optionale Warnung falls eine Verkaufsrechnung nicht aus einem Lieferschein
+  erzeugt wurde (Konfigurierbar in der Mandantenkonfiguration)
+- Die Ansicht der verknüpften Belegen kann unabhängig vom aktuellen Beleg immer
+  vom Auftrag her aufgebaut werden
+- SEPA-Überweisungen & -Bankeinzüge nutzen jetzt aktuelle Standard-Versionen, die
+  momentan von der Kreditindustrie unterstützt werden.
+- Pflichtenhefte: wenn man im Workflow vom Pflichtenheft ein neues
+  Angebot anlegt und später von diesem Angebot aus einen Auftrag, so
+  wird auch der Auftrag direkt mit dem Pflichtenheft verknüpft.
+- Pflichtenhefte: wenn in einem Auftrag, das mit einem Pflichtenheft
+  verknüpft ist, ein Projekt ausgewählt, so wird dieses Projekt auch
+  automatisch beim verknüpften Pflichtenheft eingetragen.
+- Druckvorlagen: die in Positionen verwendeten Variablen können nun
+  Platzhalter enthalten, die vom Beleg selber stammen. So könnte
+  z.B. in der Artikelbeschreibung automatisch die Rechnungsnummer
+  ersetzt werden. Beispiel: »Abrechnungszeitraum bis <%invnumber%>«
+- Verkaufs- & Einkaufsbelege: kivitendo kann so konfiguriert werden,
+  dass die Belegnummern von Belegen, die auf unserer Seite erzeugt
+  werden, nicht mehr editierbar sind. In dem Fall vergibt kivitendo
+  sie immer automatisch und zeigt sie in den Belegmasken nur noch an.
+- Warengruppe kann nun als Pflichtfeld für Artikel konfiguriert werden.
+- Das E-Mail Feld 'body' innerhalb von kivitendo unterstützt jetzt HTML-Formatierungen
+  Somit kann der Versand von wiederkehrenden Rechnungen als auch der
+  manuelle E-Mail-Versand von Belegen wie das Beleg-Bemerkungsfeld formatiert werden.
+- Für die HTML-Texte ist jetzt die Rechtschreibprüfung des Anwender-Browsers aktiviert
+- Beim E-Mail-Versand wird jetzt gewarnt, falls scheinbar keine
+  gültige E-Mail-Adresse des Empfängers existiert
+- Optionale auftragszentrische Verknüpfte Belege
+  Konfigurierbar in der Mandantenkonfiguration. Unabhängig vom
+  aktuellen Belegort werden die verknüpften Belege immer vom VK-Auftrag aufgebaut.
+- Lieferplan: Geschwindigkeitssteigerung
+- SEPA: aktuell von Kreditinstituten unterstützte Formatversionen nutzen
+- Pflichtenhefte: bei Pflichtenheft → Angebot → Auftrag auch PH mit Auftrag verknüpfen
+- Auftrag: Projekt automatisch in verknüpftem Pflichtenheft eintragen
+- Ein-/Verkauf: Belegnummern von uns erzeugter Belege nicht ändern können (Mandantenkonfig)
+  Für Belege, die auf unserer Seite erzeugt werden, kann nun verhindert
+  werden, dass die Belegnummer manuell angepasst bzw. gesetzt
+  wird. Statt dessen wird sie immer vom System beim ersten Speichern
+  vergeben und beim späteren Bearbeiten nur noch read-only angezeigt.
+- Verkaufsrechnungen direkt als Factur-X/ZUGFeRD-XML exportieren können
+- Order-Controller: Unterstützung für Drucken & E-Mailen von HTML-Vorlage
+- Der Lagerbewegungs-Import (CSV) unterstützt auch Fließkommazahlen
+- E-Mails aus kivitendo werden jetzt HTML-formatiert verschickt, mit
+  den bekannten Editiermöglichkeiten aus den Bemerkungen/Langtext
+- Bei längeren Langtexten in der Position ist jetzt ein Vergrößern des
+  Textfelds im Popup-Dialog möglich
+
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+
+488 Lager ohne Lagerplatz nicht erlauben
+486 Bericht Lagerentnahme: Link zur Ware kaputt
+485 Offenen Forderungen zum Stichtag mit aktuellem Status
+484 CSV/PDF-Export Summen- und Saldenliste mit allen Konten
+
+
+2021-08-10 - Release 3.5.8
+
+Kleinere neue Features und Detailverbesserungen:
+
+- Erzeugnis fertigen, kann jetzt auf Lagerteile aus anderem Lagern zurückgreifen
+  und die Fertigung liefert keinen Fehler mehr. Einstellbar in der
+  Mandantenkonfiguration.
+- Erzeugnisse fertigen, kann auch Dienstleistungen verbrauchen, falls
+  diese ein Erzeugnisbestandteil sind. Standardmäßíg deaktiviert.
+  Aktivierbar in der Mandantenkonfiguration (Bereich Lager).
+- API- Änderung Erzeugnis fertigen nutzt jetzt SL/Helper/Inventory.pm
+- Falls der Mandant zu jeder Buchung einen Beleg hinzufügen möchte,
+  und dies in der Mandantenkonfiguration einstellt, dann öffnet sich nach
+  dem Buchen von Dialog-/Kreditoren- und EK-Rechnungs-Buchungen der
+  Dokumenten-Reiter des entsprechenden Belegs.
+  Bei dieser Einstellung gibt für Dialog- und Kreditoren-Buchungen eine
+  zweite Aktion unterhalb von "Buchen", nämlich "Buchen und neue Buchung".
+  Ist die Option ausgestellt, ist das Verhalten nach dem Buchen wie zuvor
+  und es gibt eine zweite Aktion "Buchen und Dokument hochladen", mit der
+  in den Dokumenten-Tab gesprungen werden kann.
+- Seriennummer ist jetzt ein Pflichtfeld für Lieferscheine (Einkauf und Verkauf),
+  falls die Ware im Beleg in den Stammdaten mit "Hat eine Serienummer" markiert ist.
+- Einkaufsbericht um Anzeige erstes Sollkonto erweitert
+- Einkaufsbericht um Anzeige Erfassungsdatum erweitert
+- Import der Lohnbuchhaltungsdatensätze aus DATEV Lohnbuchhaltung
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+
+483 Upgrade-Skript: delete_cvars_on_trans_deletion_add_shipto löscht alle custom_variables
+
+
+2021-06-25 - Release 3.5.7
+
+Größere neue Features:
+  - Modul zur Zeiterfassung. Es ist nun möglich, auftrags-, kunden- oder
+    projektbezogen, Arbeitszeiten zu erfassen. Die erfassten Zeiten können
+    über einen Hintergrund-Job in Lieferscheine umgewandelt werden.
+
+Mittelgroße neue Features:
+
+ - Der Import von Bankauszügen im MT940-Format wurde komplett neu
+   geschrieben. Das externe Programm AQBanking wird nun nicht mehr
+   benötigt.
+ - Lupe für Projekt-Picker, über die ein Auswahl-Dialog geöffnet werden
+   kann.
+ - Verbesserungen beim Erzeugen von Mahnungen:
+   - erzeugte Dokumente werden zum Mahnlauf abgelegt
+   - erzeugte Dokumente im Dateimanagement und im WebDAV werden im
+     Bericht angezeigt
+   - erzeugte Dokumente werden erst nach der "Mahnungs-Transaktion"
+     abgelegt, wenn diese ohne Fehler verlaufen ist, sonst können
+     Dokumente ohne Mahnung abgelegt werden
+   - Fehler der Mahnläufe werden gesammelt und nach dem Mahnen in
+     einem Status-Bericht angezeigt
+   - die Verknüpfung bei der Rechnung zur Mahnung führt nicht mehr zum
+     Drucken, sondern zum Mahnbericht f. die entsprechende Mahnung
+   - der Attachment-Name der Mahnrechnung (mit den Gebühren) enthält
+     jetzt die Rechnungsnummer und nicht mehr die Mahnungsnummer
+   - Verknüpfung der Mahnungen mit E-Mail-Journal evtl. verschickter
+     Mails
+   - Anzeige der Mails im Mahnbericht
+   - DB-Trigger zum Löschen von Verknüpfungen beim Löschen einer
+     Mahnung
+ - Neuer Order-Controller: Artikel können während der Erfassung eines
+   Angebots bzw. Auftrags erfasst werden.
+ - Webshopschnittstelle
+   - Überarbeitet und verbessert. Shopstadi werden jetzt gesetzt und
+     an den Shop gemeldet
+   - Woocommerce Schnittstelle
+
+Kleinere neue Features und Detailverbesserungen:
+  - Der Status geliefert bei Aufträgen kann mit oder ohne Dienstleistungen
+    im Lieferschein berechnet werden. Einstellbar in der Mandantenkonfiguration
+    jeweils unabhängig für Einkauf und Verkauf.
+    Standardeinstellung: Dienstleistungen sind lagerbar.
+  - Gefertigte Erzeugnisse können innerhalb des Zurücklagerungszeitraums
+    wieder zerlegt werden. Die Aktion befindet sich im Lagerbuchungsbericht
+  - E-Mail-Versand: Neben dem Freitext CC-Feld kann jetzt auch ein
+    kivitendo Benutzer mittels einer Auswahlliste in CC gesetzt werden
+  - Falls der Mandant zu jeder Buchung einen Beleg hinzufügen möchte,
+    ist dies jetzt in der Mandantenkonfiguration einstellbar und falls
+    zusätzlich die DMS Funktion aktiv ist, bleibt der Bearbeiter nach
+    dem  Erfassen einer Buchung in der Maske und kann einen Beleg hinzufügen
+ - Ausgelagerte Lieferscheinen können zurückgelagerte werden insofern der
+   konfigurierbare Zurücklagerungszeitraum noch nicht überschritten ist.
+ - Angebote und Aufträge im Ein- und Verkauf können optionale Positionen enthalten.
+   Optionale Positionen werden in der zweiten Zeile der Position aktiviert.
+   Die einzelne Position wird dann berechnet und erscheint im Ausdruck mit dem
+   berechnetem Preis, die Position wird aber nicht in der Gesamtsumme des Belegs
+   aufgenommen. Dies gilt auch für die Gesamt-Marge und den Gesamt-Ertrag des Belegs.
+   Innerhalb der Druckvorlagen steht das Attribut mit <%optional%> als Variable zu Verfügung.
+   Beim Status setzen eines Auftrags (offen oder geschlossen) werden optionale Position
+   ignoriert. D.h. ein Auftrag gilt als geschlossen, wenn alle nicht optionalen
+   Positionen fakturiert worden sind.
+   Das Gleiche gilt für Lieferscheine. Sollten alles bis auf optionale Artikel
+   geliefert worden sein, gilt der Auftrag als komplett geliefert.
+   Das Attribut optional steht auch nur in den Angeboten/Aufträgen zu Verfügung.
+   Sobald über den Workflow ein neuer Beleg erstellt wird,
+   wird die vorher optionale Position zu einer normalen Position
+   und wird dann auch entsprechend bei dem Rechnungsbeleg mit fakturiert und im
+   Druckvorlagen-System entfällt das Attribut <%optional%>.
+   Entsprechend exemplarisch im aktuellen Druckvorlagensatz RB ergänzt.
+
+ - Lagerbestandsbericht: Die Resultate pro Seite können im Bericht eingestellt werden
+ - Es gibt eine PDF-Druckvorschau für die Standard-Druckvorlage bei Angeboten und
+   Aufträgen im Einkauf und Verkauf ohne ein vorheriges Dialogmenü (Druckvorlage
+   ist die Standard-Druckvorlage und Typ immer 'PDF'). Die Druckvorschau wird nicht
+   im DMS oder WebDAV archiviert, es werden aber die Pflichtfelder des Belegs überprüft.
+ - Die benutzerdefinierten Variablen für Artikel können konfigurierbar im Tab Basisdaten
+   angezeigt werden (ohne extra Klick auf einen weiteren Tab)
+ - Der Lagerbestandsbericht wurde um die Anzeige von benutzerdefinierten Variablen
+   aus dem Bereich Artikel erweitert
+ - Im Lagerjournal ist standardmäßig die Berichtsanzeige um Dokument angehakt.
+   Sollte eine Warenbewegung durch einen Lieferschein oder eine Rechnung ausgelöst
+   worden sein, wird dies jetzt direkt verlinkt dort angezeigt
+ - Projekte wurden um Dateianhänge erweitert, die dort hochgeladenen Dokumente
+   stehen beim E-Mail-Versand in allen verknüpften Belegen vorausgewählt zu
+   Verfügung
+ - Dateimanagement: In der Liste der Dateien werden Vorschaubilder angezeigt,
+   falls möglich. Diese werden beim Drüberfahren vergrößert.
+ - Dateimanagement: Dokumente können auch hochgeladen werden, dort, wo sie
+   bisher nur vom Scanner importiert werden konnten.
+ - Dateimanagement: Dokumente können auch per Drag&Drop hochgeladen werden.
+ - In der Mandantenkonfiguration ist einstellbar, ob UStID oder Steuernummer
+   für Kunden oder Lieferanten eindeutig sein sollen.
+ - Menü und Rechte für Produktivität: Zugriffskontrolle aufgeteilt und
+   Rechte unterhalb "Produktivität" als eigene Kategorie
+ - Inventur-Makse: Part-Picker sucht auch nach Lieferanten-Artikelnummer
+ - Einkaufs-/Verkaufsbelege und Buchungsmasken: Neues Feld Leistungsdatum,
+   welches die Steuerberechnung beeinflusst. I.d.R. gilt für die Steuer:
+   Leistungsdatum. Wenn leer, dann Lieferdatum; wenn leer, dann Belegdatum.
+ - Neuer Order-Controller: Unterstützung für Übersetzungen von
+   Artikeln wurde implementiert.
+ - Einkaufs-/Verkaufsbelege: die Belegsprache ist nun als Auswahl
+   direkt in der Hauptmaske vorhanden und nicht mehr in den
+   Druckeinstellungen versteckt.
+ - Einkaufsrechnungen: wenn das direkte Anlegen von Einkaufsrechnungen
+   in der Mandantenkonfiguration deaktiviert war, gab es eine
+   Fehlermeldung nach dem Verbuchen von Einkaufsrechnungen, weil auf
+   die Maske zum Erfassen einer weiteren neuen Einkaufsrechnung
+   weitergeleitet wurde.
+ - Wiederkehrende Rechnung: beim automatischen Versand erzeugter
+   Rechnungen per E-Mail können nun auch Rechnungsattribute als
+   Variablen im Betreff & Text der E-Mails genutzt werden
+   (z.B. <%invnumber%> für die Rechnungsnummer oder
+   <%transaction_description%> für die Vorgangsbezeichnung).
+ - Wiederkehrende Rechnungen: die optionale Zusammenfassungs-E-Mail
+   enthält nun auch eine Auflistung von Rechnungsnummern, für die das
+   automatische Drucken oder der automatische Versand per E-Mail
+   fehlgeschlagen ist zusammen mit der jeweils aufgetretenen
+   Fehlermeldung.
+ - Wiederkehrende Rechnungen: für die Empfangsadresse der optionalen
+   Zusammenfassungs-E-Mail kann in der Konfiguration nun anstelle
+   eines Loginnamens auch eine E-Mail-Adresse verwendet werden. Es ist
+   nicht nötig, dass diese Adresse einem der Anwenderkonten zugeordnet
+   ist.
+-  Lieferdatum und Gültigkeitsdatum können optional auch nicht mehr gesetzt werden
+
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+480 Lieferscheine mit kompletter Menge im Auftrag erstellt, fehlerhaft bei Option "Lieferschein Menge muss eingelagert sein"
+478 Offene Forderungsliste per E-Mail verschicken, die Auswahl-Haken werden ignoriert
+470 OrderController: Auf Lager falsche Tausenderberechnung
+469 Lieferschein erfassen und direkt drucken: JavaScript-Fehler
+462 Part-Picker Lupen-Dialog: Ergebnisse auf weiteren Seiten (bei Paginierung) lassen sich nicht auswählen
+453 Installationsspezifische Übersetzungen (more/all) besser in Entwicklungsprozess einbinden
+441 Dialogbuchen Konten entfernen
+432 Neuer Auftragskontroller ignoriert Artikel-Übersetzungen
+431 Doppelte Steuern mit neuer DB bei SKR04
+414 Fehler beim DATEV-Export: "Unausgeglichene Buchung" bei Rechnung mit 0,00
+408 Neuer Auftragskontroller: Drucken von odt-Vorlagen geht nur mit Standardvorlage
+399 Nach dem Anlegen von Mahnungen erfolgt keine Bestätigung
+375 Keine Wiedervorlage/Historie im neuen Auftragscontroller
+319 Einkaufspreise von Waren werden im Artikel-Bericht mit 0,00 angezeigt
+317 DATEV KNE-Export komplett entfernen
+302 MT940 Import, doppelte Datensätze besser abfangen
+287 Fehlerhafte Anzeige und Vergabe von Kundennummern beim CSV-Import von Kundendaten
+237 Beim CSV-Import von KundInnen findet bei den benutzerdefinierten Variablen keine Aktualisierung bestehender Einträge statt
+ 97 Benutzer löschen unter System->Benutzer funktioniert nicht
+
+
+2020-10-02 - Release 3.5.6.1
+
+
+Mittelgroße neue Features:
+
+ - USTVA: Konjunkturpaket erwarte Pos. 35 und Pos. 36 für Voranmeldung
+ - Währung und Wechselkurs können in der (neuen/experimentellen)
+   Angebots-/Auftrags-Maske angegeben werden. Der Wechselkurs wird hier
+   pro Beleg (und nicht pro Tag) gespeichert.
+ - individuelle Lieferadresse in der (neuen/experimentellen) Angebots-/
+   Auftrags-Maske
+
+Kleinere neue Features und Detailverbesserungen:
+
+ - Beim automatischen Auslagern über die Verkaufsrechnung kann zusätzlich
+   ein Auslagern über das Attribut Seriennummer entspricht Chargennummer
+   gemacht werden. Falls die Beleg-Seriennummer nicht auslagerbar ist wird
+   eine entsprechende Fehlermeldung generiert (einstellbar in der Mandanten-
+   konfiguration).
+ - Zahlungsbedingungen auch in Ek-Rechnung angeben können
+
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+
+438 individuelle Lieferadresse gerät beim Speichern durcheinander
+358 segmentation fault in DBI.so beim versenden einer Rechnung per E-Mail
+365 Neuer Order Controller "Individuelle Lieferadresse fehlt"
+ 35 Zahlungsbedingungen bei Lieferanten nicht in EK-Rechnung
+
+
+2020-07-20 - Release 3.5.6
+
+
+Mittelgroße neue Features:
+
+ - komplette Überarbeitung der Standard-LaTeX-Druckvorlagen von PeiTeX
+   S.a.: templates/print/marei/Readme.md
+
+ - Erstellung von ZUGFeRD 2.0 fähigen PDFs
+ - Verarbeitung von ZUGFeRD 2.0 kompatiblen Eingangsrechnungen über
+   Kreditorenbuchungsvorlagen
+
+ - CSV-Import für Lieferscheine
+
+Kleinere neue Features und Detailverbesserungen:
+
+ - Suche nach Erzeugnissen über die dort verbauten Artikel
+ - neues Flag "natürliche Person" bei Kunden/Lieferanten welches z.B. in den
+   Druckvorlagen für eine Weiche für die Anrede verwendet werden kann.
+ - eigene Tabellen für Anrede von Kunden/Lieferanten und Titel und Abteilung
+   von Ansprechpersonen. Auswahl in Mandantenkonfiguration, ob in den Stammdaten
+   nur eine Auswahlliste angezeigt werden soll, oder wie bisher Freitext-Feld
+   und Auswahlliste. Anrede, Titel und Abteilung können im System-Menü bearbeitet
+   werden.
+ - Kompatibel mit Postgres Version 12 (keine Abhängigkeit von oids mehr)
+ - Leistungszeitraum (Periode) durchgängig in allen Buchungsmasken verfügbar und
+   im DATEV-Export als neues Feld vorhanden
+ - Automatische Kontenrahmen-Anpassungen für Konjunkturpaket des Bundes ab 1.7.2020
+ - die Einfüge-Position beim Hinzufügen von Artikeln in der neuen Angebots-/Auftragsmaske
+   (neuer Auftrags-Controller) kann angegeben werden
+
+Administrative Änderungen
+
+  - Die zwei Perl-Module "CAM::PDF" und "XML::LibXML" werden nun benötigt.
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+
+436 Kontoauszug verbuchen fehlerhafter Rechnungsbetrag 16%/19% Mehrwertsteuer
+430 Steuer erfassen wirft SQL-Bind Fehler
+428 alte/falsche Tabellen in LaTex-Vorlagen, die package filecontents u. lxtable verwenden
+266 Kontenabgleich mit Bank ist nicht Transaktionssicher
+415 Inkompatibilitäten mit postgres 12
+418 Angebote/Aufträge (alte Maske)/Lieferscheine E-Mail ohne vorher speichern kaputt
+416 Tests datev
+411 Massenerstellen Rechnungen aus Lieferscheinen: Pflege-Commit verloren gegangen
+
+
+2019-12-11 - Release 3.5.5
+
+Mittelgroße neue Features:
+
+- In den Benutzereinstellungen kann ausgewählt werden, ob der Part-Picker in
+  der neuen Angebots-/Auftragsmaske (neuer Auftrags-Controller) auch nach
+  Kunden-Artikelnummern (Verkauf) und Lieferanten-Artikelnummern (Einkauf)
+  suchen soll. Ist dieses Feature eingeschaltet, so werden auch die Kunden-
+  bzw. Lieferanten-Artikelnummern als Spalte in den Positionen angezeigt.
+
+- Part Controller - neuer Tab mit Lagerinformationen - was ist wo gelagert
+
+- Neuer Workflow Lieferantenauftrag->Kreditorenbuchung: Für jedes Aufwandskonto
+  der Positionen im Lieferantenauftrag wird eine Zeile in der Kreditorenbuchung
+  erstellt. Gebucht wird standardmäßig auf das entsprechende Aufwandskonto. In
+  der Mandantenkonfiguration kann unter Standardkonten ein Konto ausgewählt
+  werden, auf das dann alle Zeilen gebucht werden.
+  Die Steuern werden übernommen, sofern diese für das ausgewählte Aufwandskonto
+  gültig sind. Ansonsten wird die Default-Steuer für das Aufwandskonto gesetzt.
+  Der Quellauftrag wird geschlossen, wenn der Betrag aller Kreditorenbuchungen,
+  die aus Workflows aus dem Quellauftrag entstanden sind, gleich dem Betrag
+  des Quellauftrags ist.
+
+- Der Jahresabschluß wurde komplett überarbeitet, es wird nun zwischen
+  Bestands- und Erfolgskonten unterschieden und ein Gewinn- bzw. Verlustvortrag
+  übertragen.
+
+Kleinere neue Features und Detailverbesserungen:
+
+- Mahnungen nach Abteilung filtern
+
+- Anzeige einer Kundenpreisliste in den Kundenstammdaten als Reiter.
+  Hier werden die Preisgruppenpreise angezeigt, falls einem Kunden eine
+  Preisgruppe zugeordnet ist.
+
+- In der neuen Angebots-/Auftragsmaske (neuer Auftrags-Controller) kann
+  ein Update-Knopf angezeigt werden, der die Positionen aus den
+  Artikelstammdaten aktualisiert (alle oder pro Position). Aktualisiert werden
+  Preis, Beschreibung und Langtext. Das Feature kann in den
+  Benutzereinstellungen eingeschaltet werden.
+
+- In der neuen Angebots-/Auftragsmaske (neuer Auftrags-Controller) ist die
+  Artikelnummer ein Link, der die Artikelstammdaten in einem neuen Tab öffnet.
+
+- Neuer Hintergrund-Job, der die Jahreszahl in Nummernkreisen jährlich hochsetzt
+  (Einstellung und Konfiguration s.a. Kapitel 2.7.5 Exemplarische Konf. Hintergrund-Job)
+
+- Weiterleitung zur Zielseite, wenn man ausgeloggt war und sich einloggt.
+  Falls z.B. der Timeout greift, man in der noch geöffneten kivi aber etwas
+  anklickt, so wird man zur Login-Seite weitergeleitet. Vorher landete man nach
+  dem login in einem solchen Fall auf der Startseite (Logo/Version/Todo-Liste).
+  Nun gelangt man zu der Seite, die man ursprünglich angeklickt hat (nur
+  POST-Requests).
+  Das kann z.B. auch dazu verwendet werden, jmd. einen Link in der kivi (z.B. zu
+  einem Auftrag) zu schicken. Wenn derjenige nicht eingeloggt ist, gelangt er
+  nach dem Login dennoch auf die Zielseite.
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+
+407 Test ./t/db_helper/with_transaction.t läuft nicht durch; Rose-Fehlermeldung nur "generic exception"
+406 abzurechnender (Netto-)Betrag bei Aufträgen rechnet falsch wenn Rechnungs-Gutschriften vorhanden sind
+379 Einkauf Lieferanten-Artikelnummer in zweiter (erster) Spalte anzeigen
+377 PartPicker-Suche im Einkauf um Hersteller-Artikelnummer erweitern
+
+
+2019-08-07 - Release 3.5.4
+
+
+Mittelgroße neue Features:
+
+- Anzeigename (Picker-Ergenisse) konfigurierbar gemacht
+  Im Moment können Kunden-, Lieferanten und Waren-Anzeige konfiguriert werden.
+  Dies kann mandantenweit in der Mandantenkonfiguration passieren und vom
+  Benutzer in den Benutzereinstellungen überschrieben werden.
+  Konfiguriert wird intern "displayable_name". Es kann sein, dass dieser auch
+  an anderen Stellen außer Picker-Ergebnissen verwendet wird.
+
+Kleinere neue Features und Detailverbesserungen:
+
+- Memory-Limits für FCGI-Prozesse werden nun auch vom Task-Server berücksichtigt.
+  Zu beachten ist, dass für einen Neustart des Task-Servers gesorgt werden muss.
+  Ist der Task-Server als systemd-Service eingerichtet, geschieht dies automatisch.
+- Bearbeiter der Mahnungen konfigurierbar gemacht (#345)
+  Entsprechend wird beim Mahnungen erzeugen auch der E-Mail-Absender inkl. Signatur gesetzt
+- Kundenstammdaten um Feld Herkunft personenbezogener Daten erweitert
+  Entsprechend der DSGVO kann hier der Erstkontakt mit dem Kunden protokolliert werden (Messe, etc)
+  Das Feld wird beim Bericht mitexportiert
+- Kundenstammdaten um Feld E-Mail Rechnungsempfänger erweitert
+  Viele Kunden besitzen für den Rechnungseingang eine generische E-Mail-Adresse, die nicht
+  mit der allgemeinen E-Mail-Adresse identisch ist. Falls dieses Feld gesetzt ist, so hat dieser
+  Wert beim manuellen E-Mail Versand der Rechnung Priorität (mandantenweit konfigurierbar).
+  Für die wiederkehrende Rechnung wird diese E-Mail-Adresse zusätzlich gesetzt.
+  In den entsprechenden vorgelagerten Masken, wird dies auch visuell angezeigt (nicht bei alter Auftragsmaske!).
+- Kundenstammdaten um Feld "Herkunft der personenbezogenen Daten" erweitert
+  Um Details zum Erstkontakt des Kunden zu erfassen.
+- Kundenstammdaten um Feld Amtsgericht erweitert
+  Falls das Feld Steuernummer mit dem Wert der Hr-Nr gefüllt wurde, wird auch das zuständige
+  Registierungs-Gericht benötigt.
+- Ansprechpartner um Feld 'Hauptansprechpartner' erweitert und exportierbar im Kundenbericht gemacht
+
+- Verkauf-Rechnungsbericht -> Nicht per E-Mail verschickte Belege anzeigen lassen
+
+- Vorauswahl bei Dateianhängen für den E-Mail-Versand von Belegen konfigurierbar gemacht (Standardmäßig angehakt)
+
+- Verbuchte Kontoauszüge können wieder rückgängig gemacht werden (Neuverbuchen ist möglich)
+
+- Verbuchen von Kontoauszügen, es können jetzt teilweise Verbuchungen gemacht werden (Belege werden nicht mehr überbucht)
+
+- Dialogbuchungen aus Kontoauszugs-Import erstellen, der Verwendungszweck wird in die Beschreibung übernommen
+
+- ungenutzte Spalte "ranking" aus Tabelle "payment_terms" entfernt
+
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+
+378 Lieferantenauftrag Darstellung für Besteller optimieren
+376 Aktuelle unstable kann keine kivitendo_auth Datenbank anlegen
+371 Benutzerdefinierte Variablen nicht im Bericht Projekt enthalten, kann nicht danach gefiltert werden.
+367 Kontoauszugsimport: 2 Konten bei einer Bank. Bankgebührenbuchung wird als schon importiert makiert
+366 Zahlungsverkehr->Zahlungs-(ein/aus)gang. Bezahlen/Abgleichen mehrerer Rechnungen geht nicht mehr wie vorher.
+345 Bearbeiter bei Mahnungen
+215 Kunden als csv exportieren
+
+
+2019-01-03 - Release 3.5.3
+
+Mittelgroße neue Features:
+
+- Inventurerfassung
+
+  Portierung aus einem Kundenprojekt mit folgenden Anforderungen/Features:
+  - eigene Maske unter Lager->Inventur
+  - Anzeige des aktuellen Lagerbestands des zu erfassenden Artikels
+  - Angabe des Artikels auch über EAN
+  - Angabe eines Stichtages
+  - Vorbelegung Lager/Lagerplatz und Stichtag in Mandantenkonfiguration
+  - korrigieren des Lagerbestands entsprechend der Zählung (mit neuem
+    Transfertyp "Inventur")
+  - Speichern der gezählten Menge (auch wenn keine Korrektur des Bestands
+    stattfindet)
+  - Warnung, wenn gleicher Artikel für gleichen Lagerplatz und Stichtag schon
+    gezählt wurde und Möglichkeit die eigene gezählte Menge zu der vorhandenen
+    hinzuzuzählen oder die vorher gezählte Menge durch die eigene Menge zu
+    korrigieren
+  - Historie der Inventurerfassung des aktuellen Bearbeiters unterhalb
+    der Erfassungsmaske
+  - Bericht über Inventurerfassungen
+
+Kleinere neue Features und Detailverbesserungen:
+  - Verknüpfte Belege um die Verknüpfung von Beleg nach E-Mail-Journal erweitert.
+  - Filter nach Abteilungen für Lieferplan
+  - Eindeutigkeit bei Rechnungsnummern von Kreditoren. (Es erfolgt eine  Warnung bei Duplikaten (Überprüfung auf Lieferant mit Rechnungsnummer))
+  - Mit dem SEPA-Export verknüpfte Kreditorenbelege (Einkaufsrechnung oder Kreditorenbuchungen) können nicht mehr gelöscht oder storniert werden.
+  - Tab "Belege" beim Kunden und Lieferanten. Offene Rechnungen, Aufträge
+    werden angezeigt. Eine Umsatz und Mahnstatistik können in Tabs geöffnet
+    werden. Belegtypen Angebote, Aufträge (Kunden), bzw Preisanfragen,
+    Lieferantenaufträge (Lieferanten) sowie die Belege Rechnungen, Emails,
+    Briefe können in weiteren Tabs angezeigt werden.
+  - SEPA-Export. Überweisungsdatum vorbelegen, entweder die Fälligkeit oder falls vorhanden das Skonto-Datum.
+    Das Skonto-Datum hat Priorität vor der letzten Fälligkeit.
+    Zusätzlich kann ein Puffer in Tagen vom Zahlungsziel abgezogen werden (Standard 0). Das Verhalten muss für jeden
+    Mandanten unter Mandantenkonfiguration -> Features -> SEPA aktiv eingeschaltet werden.
+  - Schnellsuchen können auf Benutzerebene Programm->Benutzereinstellungen->Anzeigeoptionen konfiguriert werden.
+  - SelfTests erweitert: Warnungen bei sehr laxer Buchungskonfiguration und bei verwaisten abgeglichen Bank-Transaktionen
+  - DATEV-Export-Format konfigurierbar
+    In der Mandantenkonfiguration befindet sich jetzt eine Einstellung, welche die Kodierung des DATEV-Exports steuert.
+    DATEV erwartet CP1252. Kivitendo kann diese Kodierung so vom kivitendo Nutzer einfordern, alternativ nicht
+    vorhandenen Zeichen versuchen zu ersetzen oder die DATEV-Erwartung ignorieren und UTF-8 liefern.
+    Voreingestellt ist CP1252 mit Ersetzungen.
+
+Bugfixes (Tracker: https://www.kivitendo.de/redmine):
+
+361 Ware erfassen nicht möglich im leeren Mandanten
+359 get_payment_select_options_for_bank_transaction vereinfachen
+358 segmentation fault in DBI.so beim versenden einer Rechnung per E-Mail
+357 Die Generierung einer periodische Rechnung mit der Periode einmalig sollte auch den Quell-Auftrag schliessen.
+356 Bei Zuweisung von zwei Kreditorengutschrift per Kontoauszug verbuchen, wird bei der zweiten Zuweisung das Vorzeichen gedreht
+355 Kontoauszug verbuchen -> Eine Bankbewegung mit zwei Skonto Rechnungen verknüpfen geht nicht
+354 Zahlungsbedingung falsch bei Verkausf-Lieferschein nach Rechnung
+353 Preisregeln Wenn Artikel gelöscht wird
+352 Beim Drucken mehrerer Rechnung aus dem Bericht heraus wird der Rabatt falsch berechnet
+351 Order-Controller: Angebot als neu speichern erzeugt kein neues Objekt
+350 Berichte->Projektbuchungen wirft Fehler bei ausgwählten Project
+349 Normalisierung Artikelbeschreibung und Artikellangtext (Bemerkung) funkioniert nicht mehr
+348 DatevExport kommt mit bestimmten Zeichen im Buchungstext nicht klar
+347 Dateimanagement -> Erzeugte Dokumente löschen -> Nein funktioniert nicht
+344 Internal Server Error (fallback Module fehlen)
+343 Kontoauszug verbuchen Skontoautomatik bei Verkaufsrechnungen defekt
+341 Auftrag: Warnung bei aktiven wiederkehrenden Rechnungen geht nicht mehr
+337 Standardlagerplatz bei Erzeugnissen ändern wirft Presenter-Fehler
+336 Beim Drucken mehrerer Rechnung aus dem Bericht heraus mit aktiviertem DMS bricht mit Fehlermeldung ab
+335 Fehler bei den Verknüpften Belegen wenn Verknüpfungsziel Pflichtenheft
+334 Sortierung Artikelstammdaten/Preisinformationen/Verkaufspreisinformation: Kundenauftrag
+333 Bericht Lagerentnahme: Lagerplatz lässt sich nicht auswählen
+332 Bug: Bericht Lagerbestand gibt Fehler beim einschliessen leerer Lagerplätze
+329 Konto mit identischem Folgekonto führt zu Endlosschlaufe
+323 Kontoauszug verbuchen. Kombination von Rechnungen und Gutschriften nicht möglich
+316 Verknüpfte Belege erlaubt keine manuelle Verknüpfung mit Kreditorenbuchungen
+315 EAN-Feld beim Einlagern ohne Funktion
+311 Task-Server-Start beim Booten
+306 unstable: Leerzeichen beim CKEditor im Pflichtenheft
+301 SelfTest Transactions - all_passed nicht gesetzt
+292 Verkaufsbericht filtert nicht mehr nach Warengruppe
+282 Artikelliste leer, wenn in der Schnellsuche mehrere Treffer vorgeschlagen und keiner ausgewählt ist.
+281 Falsche Lagerbewegungen beim Erstellen von Erzeugnissen, wenn Bestandteile vorhanden/nicht vorhanden
+279 Datenmodell der verknüpften Belege um E-Mail Verknüpfung erweitern
+265 Kontoauszug verbuchen bei negativer Kreditorenbuchung wird das Vorzeichen bei Zahlung umgedreht
+233 Memory-Bedarf des Taskservers steigt kontinuierlich an
+151 Berichte->Pflichtenheft Fehler ab commit #c44615e
+125 Neues Datevexportformat
+90 Benutzerdefinierte Variablen von Kunden werden bei Lieferanten mit gleicher id angezeigt
+86 Kunden bzw Lieferantenliste wird von anderem Mandanten angezeigt
+82 Berechnete Preiswerte von PTC weichen von oberflächen Werten aus den Masken ab
+28 Fehler beim Hinzufügen von Artikeln zu Erzeugnissen per Artikelauswahlseite
+22 Doppelte Minuse ( --) im Kundennamen erzeugen "leider" immer check_name problem bei freitext Auswahl
+
+2017-12-12 - Release 3.5.1
 
 Größere neue Features:
 
@@ -810,10 +2484,10 @@ Kleinere neue Features und Detailverbesserungen:
   Loginseite per URL den Parameter "{AUTH}client=foobar" mit, wird nun stattdessen der
   Mandant "foobar" vorausgewählt. (Der Name muß natürlich in der Liste
   vorkommen). Damit kann man sich ein Bookmark für einen bestimmten Mandanten setzen:
-  controller.pl?action=LoginScreen/login&{AUTH}client=foobar
+  controller.pl?action=LoginScreen/user_login&{AUTH}client=foobar
   Übergibt man als Parameter "{AUTH}login=Tom" wird auch das Benutzerfeld
   vorausgefüllt, Beispiel:
-  controller.pl?action=LoginScreen/login&{AUTH}login=Tom&{AUTH}client=foobar
+  controller.pl?action=LoginScreen/user_login&{AUTH}login=Tom&{AUTH}client=foobar
 
 - Benutzerdefinierte Variablen vom Typ "Kunde/Lieferant" und "Ware" werden
   jetzt mit Pickern ausgewählt, nicht mehr mit L-selects.

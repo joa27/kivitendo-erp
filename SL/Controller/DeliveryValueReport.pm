@@ -5,6 +5,7 @@ use parent qw(SL::Controller::Base);
 
 use Clone qw(clone);
 use SL::DB::OrderItem;
+use SL::DB::Order::TypeData qw(:types);
 use SL::DB::Business;
 use SL::Controller::Helper::GetModels;
 use SL::Controller::Helper::ReportGenerator;
@@ -17,8 +18,7 @@ use Carp;
 use Data::Dumper;
 
 use Rose::Object::MakeMethods::Generic (
-  scalar => [ qw(db_args flat_filter) ],
-  'scalar --get_set_init' => [ qw(models vc all_employees all_businesses) ],
+  'scalar --get_set_init' => [ qw(models vc all_employees all_businesses all_partsgroups) ],
 );
 
 __PACKAGE__->run_before(sub { $::auth->assert('delivery_value_report'); });
@@ -64,10 +64,11 @@ sub action_list {
 sub prepare_report {
   my ($self)      = @_;
 
-  my $vc          = $self->vc;
-  my $report      = SL::ReportGenerator->new(\%::myconfig, $::form);
-  my $csv_option  = $::form->{report_generator_output_format};
-  $self->{report} = $report;
+  my $vc           = $self->vc;
+  my $report       = SL::ReportGenerator->new(\%::myconfig, $::form);
+  my $csv_option   = $::form->{report_generator_output_format};
+  $report->{title} = t8('Delivery Value Report');
+  $self->{report}  = $report;
 
   my @columns     = qw(reqdate customer vendor ordnumber partnumber description unit qty netto_qty
                        not_shipped_qty netto_not_shipped_qty shipped_qty netto_shipped_qty delivered_qty
@@ -142,13 +143,14 @@ sub prepare_report {
 sub make_filter_summary {
   my ($self) = @_;
   my $vc     = $self->vc;
-  my ($business, $employee);
+  my ($business, $employee, $partsgroup);
 
   my $filter = $::form->{filter} || {};
   my @filter_strings;
 
-  $business = SL::DB::Business->new(id => $filter->{order}{customer}{"business_id"})->load->description if $filter->{order}{customer}{"business_id"};
-  $employee = SL::DB::Employee->new(id => $filter->{order}{employee_id})->load->name if $filter->{order}{employee_id};
+  $business   = SL::DB::Business->new(id => $filter->{order}{customer}{"business_id"})->load->description if $filter->{order}{customer}{"business_id"};
+  $employee   = SL::DB::Employee->new(id => $filter->{order}{employee_id})->load->name                    if $filter->{order}{employee_id};
+  $partsgroup = SL::DB::PartsGroup->new(id => $filter->{part}{partsgroup_id})->load->partsgroup           if $filter->{part}{partsgroup_id};
 
   my @filters = (
     [ $filter->{order}{"ordnumber:substr::ilike"},                    $::locale->text('Number')                                             ],
@@ -164,6 +166,7 @@ sub make_filter_summary {
     [ $filter->{order}{customer}{"customernumber:substr::ilike"},     $::locale->text('Customer Number')                                    ],
     [ $business,                                                      $::locale->text('Customer type')                                      ],
     [ $employee,                                                      $::locale->text('Employee')                                           ],
+    [ $partsgroup,                                                    $::locale->text('Partsgroup')                                         ],
   );
 
   # flags for with_object 'part'
@@ -191,6 +194,7 @@ sub make_filter_summary {
 sub init_models {
   my ($self) = @_;
   my $vc     = $self->vc;
+  my $record_type = ($vc eq 'customer' ? SALES_ORDER_TYPE() : PURCHASE_ORDER_TYPE());
   SL::Controller::Helper::GetModels->new(
     controller            => $self,
     model                 => 'OrderItem',
@@ -203,7 +207,7 @@ sub init_models {
     },
     # show only open (sales|purchase) orders
     query                 => [ 'order.closed' => '0',  "order.${vc}_id" => { gt => 0 },
-                               'order.quotation' => 0                                  ],
+                               'order.record_type' => $record_type                       ],
     with_objects          => [ 'order', "order.$vc", 'part' ],
     additional_url_params => { vc => $vc},
   )
@@ -218,6 +222,9 @@ sub init_all_employees {
 sub init_all_businesses {
   return SL::DB::Manager::Business->get_all_sorted;
 }
+sub init_all_partsgroups {
+  return SL::DB::Manager::PartsGroup->get_all_sorted;
+}
 
 
 sub link_to {
@@ -228,10 +235,8 @@ sub link_to {
 
   if ($object->isa('SL::DB::Order')) {
     my $type   = $object->type;
-    my $vc     = $object->is_sales ? 'customer' : 'vendor';
     my $id     = $object->id;
-
-    return "oe.pl?action=$action&type=$type&vc=$vc&id=$id";
+    return "controller.pl?action=Order/$action&type=$type&id=$id";
   }
   if ($object->isa('SL::DB::Part')) {
     my $id     = $object->id;

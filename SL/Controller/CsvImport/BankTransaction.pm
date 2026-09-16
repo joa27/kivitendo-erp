@@ -41,7 +41,7 @@ sub check_objects {
   $self->controller->track_progress(phase => 'building data', progress => 0);
   my $update_policy  = $self->controller->profile->get('update_policy') || 'skip';
 
-  my $i;
+  my $i = 0;
   my $num_data = scalar @{ $self->controller->data };
   foreach my $entry (@{ $self->controller->data }) {
     $self->controller->track_progress(progress => $i/$num_data * 100) if $i % 100 == 0;
@@ -50,6 +50,7 @@ sub check_objects {
     $self->check_currency($entry, take_default => 1);
     $self->join_purposes($entry);
     $self->join_remote_names($entry);
+    $self->extract_end_to_end_id($entry);
     $self->check_existing($entry) unless @{ $entry->{errors} };
   } continue {
     $i++;
@@ -57,6 +58,7 @@ sub check_objects {
 
   $self->add_info_columns({ header => $::locale->text('Bank account'), method => 'local_bank_name' });
   $self->add_raw_data_columns("currency", "currency_id") if grep { /^currency(?:_id)?$/ } @{ $self->csv->header };
+  $self->add_info_columns({ header => $::locale->text('End to end ID'), method => 'end_to_end_id' });
 }
 
 sub check_existing {
@@ -74,8 +76,18 @@ sub check_existing {
     # * transdate
     # * remote_account_number  (may be empty for records of our own bank)
     # * amount
+    # * local_bank_account_id (case flatrate bank charges for two accounts in one bank: same purpose, transdate, remote_account_number(empty), amount. Just different local_bank_account_id)
     my $num;
-    if ( $num = SL::DB::Manager::BankTransaction->get_all_count(query =>[ remote_account_number => $object->remote_account_number, transdate => $object->transdate, purpose => $object->purpose, amount => $object->amount] ) ) {
+
+    my @conditions;
+
+    if ($object->end_to_end_id && $::instance_conf->get_check_bt_duplicates_endtoend) {
+      push @conditions, ( end_to_end_id => $object->end_to_end_id );
+    } else {
+      push @conditions, ( purpose => $object->purpose );
+    }
+
+    if ( $num = SL::DB::Manager::BankTransaction->get_all_count(query =>[ remote_account_number => $object->remote_account_number, transdate => $object->transdate, amount => $object->amount, local_bank_account_id => $object->local_bank_account_id, @conditions] ) ) {
       push(@{$entry->{errors}}, $::locale->text('Skipping due to existing bank transaction in database'));
     };
   } else {
@@ -96,7 +108,22 @@ sub _displayable_columns {
    { name => 'currency',              description => $::locale->text('Currency') },
    { name => 'currency_id',           description => $::locale->text('Currency (database ID)')          },
    { name => 'remote_name',           description => $::locale->text('Name of the goal/source (if field names remote_name and remote_name_1 exist they will be combined into field "remote_name")') },
-   { name => 'purpose',               description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') }
+   { name => 'remote_name_1',          description => $::locale->text('Name of the goal/source (if field names remote_name and remote_name_1 exist they will be combined into field "remote_name")') },
+   { name => 'purpose',               description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose1',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose2',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose3',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose4',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose5',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose6',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose7',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose8',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose9',              description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose10',             description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose11',             description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose12',             description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'purpose13',             description => $::locale->text('Purpose (if field names purpose, purpose1, purpose2 ... exist they will all combined into the field "purpose")') },
+   { name => 'qr_reference',          description => $::locale->text('QR reference') }
  );
 }
 
@@ -152,6 +179,13 @@ sub check_bank_account {
     $object->local_bank_account_id($bank_account->id);
     $entry->{info_data}->{local_bank_name} = $bank_account->name;
   }
+
+  # Check if local bank account is marked for bank import
+  if ($object->local_bank_account_id && !$self->bank_accounts_by->{id}->{ $object->local_bank_account_id }->use_with_bank_import) {
+    push @{ $entry->{errors} }, $::locale->text('Error: local bank account is not marked for bank import, check settings under System -> Bank Accounts');
+    return 0;
+  }
+
   return $object->local_bank_account_id ? 1 : 0;
 }
 
@@ -160,18 +194,12 @@ sub join_purposes {
 
   my $object = $entry->{object};
 
-  my $purpose = join('', $entry->{raw_data}->{purpose},
-                         $entry->{raw_data}->{purpose1},
-                         $entry->{raw_data}->{purpose2},
-                         $entry->{raw_data}->{purpose3},
-                         $entry->{raw_data}->{purpose4},
-                         $entry->{raw_data}->{purpose5},
-                         $entry->{raw_data}->{purpose6},
-                         $entry->{raw_data}->{purpose7},
-                         $entry->{raw_data}->{purpose8},
-                         $entry->{raw_data}->{purpose9},
-                         $entry->{raw_data}->{purpose10},
-                         $entry->{raw_data}->{purpose11} );
+  my $purpose =
+    join ' ',
+    grep { ($_ // '') !~ m{^ *$} }
+    map  { $entry->{raw_data}->{"purpose$_"} }
+    ('', 1..13);
+
   $object->purpose($purpose);
 
 }
@@ -181,9 +209,22 @@ sub join_remote_names {
 
   my $object = $entry->{object};
 
-  my $remote_name = join('', $entry->{raw_data}->{remote_name},
+  my $remote_name = join(' ', $entry->{raw_data}->{remote_name},
                              $entry->{raw_data}->{remote_name_1} );
   $object->remote_name($remote_name);
+}
+
+sub extract_end_to_end_id {
+  my ($self, $entry) = @_;
+
+  my $object = $entry->{object};
+
+  return if $object->purpose !~ m{\b(?:end\W?to\W?end:|eref\+) *([^ ]+)}i;
+
+  my $id = $1;
+
+  $object->end_to_end_id($id) if $id !~ m{notprovided}i;
+  $entry->{info_data}->{end_to_end_id} = $object->end_to_end_id;
 }
 
 sub check_auth {

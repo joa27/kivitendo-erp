@@ -7,7 +7,11 @@ use List::Util qw(first);
 use SL::Common;
 use SL::DBUtils;
 use SL::DB;
+use SL::DB::FollowUpCreatedForEmployee;
+use SL::Mailer;
 use SL::Notes;
+use SL::Template;
+use SL::Template::PlainText;
 
 use strict;
 
@@ -15,7 +19,11 @@ sub save {
   my ($self, %params) = @_;
   $main::lxdebug->enter_sub();
 
+  my $is_new   = !$params{id};
+
   my $rc = SL::DB->client->with_transaction(\&_save, $self, %params);
+
+  FU->send_email_notification(%params) if ($is_new);
 
   $::lxdebug->leave_sub;
   return $rc;
@@ -34,13 +42,13 @@ sub _save {
   if (!$params{id}) {
     ($params{id}) = selectrow_query($form, $dbh, qq|SELECT nextval('follow_up_id')|);
 
-    $query = qq|INSERT INTO follow_ups (created_by, done, note_id, follow_up_date, created_for_user, id)
-                VALUES ((SELECT id FROM employee WHERE login = ?), ?, ?, ?, ?, ?)|;
+    $query = qq|INSERT INTO follow_ups (created_by, note_id, follow_up_date, id)
+                VALUES ((SELECT id FROM employee WHERE login = ?), ?, ?, ?)|;
 
     push @values, $::myconfig{login};
 
   } else {
-    $query = qq|UPDATE follow_ups SET done = ?, note_id = ?, follow_up_date = ?, created_for_user = ? WHERE id = ?|;
+    $query = qq|UPDATE follow_ups SET note_id = ?, follow_up_date = ? WHERE id = ?|;
   }
 
   $params{note_id} = Notes->save('id'           => $params{note_id},
@@ -50,9 +58,15 @@ sub _save {
                                  'body'         => $params{body},
                                  'dbh'          => $dbh,);
 
-  $params{done} = 1 if (!defined $params{done});
+  do_query($form, $dbh, $query, @values, conv_i($params{note_id}), $params{follow_up_date}, conv_i($params{id}));
 
-  do_query($form, $dbh, $query, @values, $params{done} ? 't' : 'f', conv_i($params{note_id}), $params{follow_up_date}, conv_i($params{created_for_user}), conv_i($params{id}));
+  $params{done} = 1 if (!defined $params{done});
+  if ($params{done}) {
+    do_query($form, $dbh, qq|INSERT INTO follow_up_done (follow_up_id, employee_id) VALUES (?, (SELECT id FROM employee WHERE login = ?))|,
+             conv_i($params{id}), $::myconfig{login});
+  } else {
+    do_query($form, $dbh, qq|DELETE FROM follow_up_done WHERE follow_up_id = ?|, conv_i($params{id}));
+  }
 
   do_query($form, $dbh, qq|DELETE FROM follow_up_links WHERE follow_up_id = ?|, conv_i($params{id}));
 
@@ -64,6 +78,15 @@ sub _save {
   }
 
   $sth->finish();
+
+  do_query($form, $dbh, qq|DELETE FROM follow_up_created_for_employees WHERE follow_up_id = ?|, conv_i($params{id}));
+
+  $query = qq|INSERT INTO follow_up_created_for_employees (follow_up_id, employee_id) VALUES (?, ?)|;
+  $sth   = prepare_query($form, $dbh, $query);
+
+  foreach my $employee_id (@{ $params{created_for_employees} }) {
+    do_statement($form, $sth, $query, conv_i($params{id}), $employee_id);
+  }
 
   return 1;
 }
@@ -79,10 +102,14 @@ sub finish {
   my $myconfig = \%main::myconfig;
   my $form     = $main::form;
 
-  SL::DB->client->with_transaction(sub {
-    do_query($form, SL::DB->client->dbh, qq|UPDATE follow_ups SET done = TRUE WHERE id = ?|, conv_i($params{id}));
-    1;
-  }) or do { die SL::DB->client->error };
+  my ($done)   = selectrow_query($::form, SL::DB->client->dbh, qq|SELECT id FROM follow_up_done WHERE follow_up_id = ?|, conv_i($params{id}));
+  if (!$done) {
+    SL::DB->client->with_transaction(sub {
+      do_query($form, SL::DB->client->dbh, qq|INSERT INTO follow_up_done (follow_up_id, employee_id) VALUES (?, (SELECT id FROM employee WHERE login = ?))|,
+               conv_i($params{id}), $myconfig->{login});
+      1;
+    }) or do { die SL::DB->client->error };
+  }
 
   $main::lxdebug->leave_sub();
 }
@@ -127,11 +154,17 @@ sub retrieve {
   my ($query, @values);
 
   my ($employee_id) = selectrow_query($form, $dbh, qq|SELECT id FROM employee WHERE login = ?|, $::myconfig{login});
-  $query            = qq|SELECT fu.*, n.subject, n.body, n.created_by
+  $query            = qq|SELECT fu.*, n.subject, n.body, n.created_by,
+                         follow_up_done.follow_up_id AS done,
+                         date_trunc('second', follow_up_done.done_at) AS done_at,
+                         COALESCE(done_by.name, done_by.login) AS done_by_employee_name
                          FROM follow_ups fu
                          LEFT JOIN notes n ON (fu.note_id = n.id)
+                         LEFT JOIN follow_up_created_for_employees ON (follow_up_created_for_employees.follow_up_id = fu.id)
+                         LEFT JOIN follow_up_done ON (follow_up_done.follow_up_id = fu.id)
+                         LEFT JOIN employee done_by ON (follow_up_done.employee_id = done_by.id)
                          WHERE (fu.id = ?)
-                           AND (   (fu.created_by = ?) OR (fu.created_for_user = ?)
+                           AND (   (fu.created_by = ?) OR (follow_up_created_for_employees.employee_id = ?)
                                 OR (fu.created_by IN (SELECT DISTINCT what FROM follow_up_access WHERE who = ?)))|;
   my $ref           = selectfirst_hashref_query($form, $dbh, $query, conv_i($params{id}), $employee_id, $employee_id, $employee_id);
 
@@ -195,8 +228,10 @@ sub follow_ups {
   my @values_user   = ();
 
   if ($params{trans_id}) {
-    $where .= qq| AND EXISTS (SELECT * FROM follow_up_links ful
-                              WHERE (ful.follow_up_id = fu.id) AND (ful.trans_id = ?))|;
+    $where .= qq| AND fu.id IN (select follow_up_id from follow_up_links where trans_id = ?)|;
+   # $where .= qq| AND (ful.follow_up_id = fu.id) AND (ful.trans_id = ?))|;
+   # $where .= qq| AND EXISTS (SELECT * FROM follow_up_links ful
+   #                           WHERE (ful.follow_up_id = fu.id) AND (ful.trans_id = ?))|;
     push @values, conv_i($params{trans_id});
   }
 
@@ -206,7 +241,7 @@ sub follow_ups {
 
   if ($params{done} ne $params{not_done}) {
     my $not  = $params{not_done} ? 'NOT' : '';
-    $where  .= qq| AND $not COALESCE(fu.done, FALSE)|;
+    $where  .= qq| AND $not EXISTS (SELECT id FROM follow_up_done WHERE follow_up_id = fu.id)|;
   }
 
   if ($params{not_id}) {
@@ -247,11 +282,11 @@ sub follow_ups {
     push @values, conv_date($params{itime_to});
   }
   if ($params{created_for}) {
-    $where .= qq| AND fu.created_for_user = ?|;
+    $where .= qq| AND follow_up_created_for_employees.employee_id = ?|;
     push @values, conv_i($params{created_for});
   }
 
-  if ($params{all_users}) {
+  if ($params{all_users} || $params{trans_id}) {  # trans_id only for documents?
     $where_user = qq|OR (fu.created_by IN (SELECT DISTINCT what FROM follow_up_access WHERE who = ?))|;
     push @values_user, $employee_id;
   }
@@ -262,7 +297,7 @@ sub follow_ups {
     my %sort_columns = (
       'follow_up_date' => [ qw(fu.follow_up_date fu.id) ],
       'created_on'     => [ qw(created_on fu.id) ],
-      'subject'        => [ qw(lower(n.subject)) ],
+      'subject'        => [ qw(n.subject) ],
       );
 
     my $sortdir = !defined $form->{sortdir} ? 'ASC' : $form->{sortdir} ? 'ASC' : 'DESC';
@@ -270,16 +305,17 @@ sub follow_ups {
     $order_by   = 'ORDER BY ' . join(', ', map { "$_ $sortdir" } @{ $sort_columns{$sortkey} });
   }
 
-  $query  = qq|SELECT fu.*, n.subject, n.body, n.created_by,
+  $query  = qq|SELECT DISTINCT fu.*, n.subject, n.body, n.created_by,
                  fu.follow_up_date <= current_date AS due,
                  fu.itime::DATE                    AS created_on,
                  COALESCE(eby.name,  eby.login)    AS created_by_name,
-                 COALESCE(efor.name, efor.login)   AS created_for_user_name
+                 follow_up_done.follow_up_id       AS done
                FROM follow_ups fu
                LEFT JOIN notes    n    ON (fu.note_id          = n.id)
                LEFT JOIN employee eby  ON (n.created_by        = eby.id)
-               LEFT JOIN employee efor ON (fu.created_for_user = efor.id)
-               WHERE ((fu.created_by = ?) OR (fu.created_for_user = ?)
+               LEFT JOIN follow_up_created_for_employees ON (follow_up_created_for_employees.follow_up_id = fu.id)
+               LEFT JOIN follow_up_done ON (follow_up_done.follow_up_id = fu.id)
+               WHERE ((fu.created_by = ?) OR (follow_up_created_for_employees.employee_id = ?)
                       $where_user)
                  $where
                $order_by|;
@@ -293,6 +329,11 @@ sub follow_ups {
 
   foreach my $fu (@{ $follow_ups }) {
     $fu->{LINKS} = $self->retrieve_links(%{ $fu });
+
+    my $fu_created_for_employees = SL::DB::Manager::FollowUpCreatedForEmployee->get_all(
+      where       => [follow_up_id => $fu->{id}],
+      with_obects => ['employee']);
+    $fu->{created_for_user_name} = join "\n", map { $_->employee->safe_name } @{$fu_created_for_employees};
   }
 
   if ($form->{sort} eq 'title') {
@@ -337,29 +378,45 @@ sub link_details {
 
   } elsif ($params{trans_type} eq 'sales_quotation') {
     $link = {
-      'url'   => 'oe.pl?action=edit&type=sales_quotation&id=' . $params{trans_id},
+      'url'   => 'controller.pl?action=Order/edit&type=sales_quotation&id=' . $params{trans_id},
       'title' => $locale->text('Sales quotation') . " $params{trans_info}",
     };
+
+  } elsif ($params{trans_type} eq 'sales_order_intake') {
+      my $script = 'controller.pl';
+      my $action = 'Order/edit';
+      $link = {
+        'url'   => $script . '?action=' . $action . '&type=sales_quotation_intake&id=' . $params{trans_id},
+        'title' => $locale->text('Order Intake') . " $params{trans_info}",
+      };
 
   } elsif ($params{trans_type} eq 'sales_delivery_order') {
 
     $link = {
-      'url'   => 'do.pl?action=edit&type=sales_delivery_order&id=' . $params{trans_id} . '&edit_note_id=' . $form->quote($params{note_id}),
+      'url'   => 'controller.pl?action=DeliveryOrder/edit&id=' . $params{trans_id} . '&edit_note_id=' . $form->quote($params{note_id}),
       'title' => $locale->text('Sales delivery order') .' '. $params{trans_info},
     };
 
   } elsif ($params{trans_type} eq 'purchase_delivery_order') {
 
     $link = {
-      'url'   => 'do.pl?action=edit&type=purchase_delivery_order&id=' . $params{trans_id} . '&edit_note_id=' . $form->quote($params{note_id}),
+      'url'   => 'controller.pl?action=DeliveryOrder/edit&id=' . $params{trans_id} . '&edit_note_id=' . $form->quote($params{note_id}),
       'title' => $locale->text('Purchase delivery order') .' '. $params{trans_info},
     };
 
   } elsif ($params{trans_type} eq 'sales_order') {
     $link = {
-      'url'   => 'oe.pl?action=edit&type=sales_order&id=' . $params{trans_id},
+      'url'   => 'controller.pl?action=Order/edit&type=sales_order&id=' . $params{trans_id},
       'title' => $locale->text('Sales Order') . " $params{trans_info}",
     };
+
+  } elsif ($params{trans_type} eq 'sales_reclamation') {
+      my $script = 'controller.pl';
+      my $action = 'Reclamation/edit';
+      $link = {
+        'url'   => $script . '?action=' . $action . '&type=sales_reclamation&id=' . $params{trans_id},
+        'title' => $locale->text('Sales Reclamation') . " $params{trans_info}",
+      };
 
   } elsif ($params{trans_type} eq 'sales_invoice') {
     $link = {
@@ -387,15 +444,31 @@ sub link_details {
 
   } elsif ($params{trans_type} eq 'request_quotation') {
     $link = {
-      'url'   => 'oe.pl?action=edit&type=request_quotation&id=' . $params{trans_id},
+      'url'   => 'controller.pl?action=Order/edit&type=request_quotation&id=' . $params{trans_id},
       'title' => $locale->text('Request quotation') . " $params{trans_info}",
     };
 
+  } elsif ($params{trans_type} eq 'purchase_quotation_intake') {
+      my $script = 'controller.pl';
+      my $action = 'Order/edit';
+      $link = {
+        'url'   => $script . '?action=' . $action . '&type=purchase_quotation_intake&id=' . $params{trans_id},
+        'title' => $locale->text('Quotation Intake') . " $params{trans_info}",
+      };
+
   } elsif ($params{trans_type} eq 'purchase_order') {
     $link = {
-      'url'   => 'oe.pl?action=edit&type=purchase_order&id=' . $params{trans_id},
+      'url'   => 'controller.pl?action=Order/edit&type=purchase_order&id=' . $params{trans_id},
       'title' => $locale->text('Purchase Order') . " $params{trans_info}",
     };
+
+  } elsif ($params{trans_type} eq 'purchase_reclamation') {
+      my $script = 'controller.pl';
+      my $action = 'Reclamation/edit';
+      $link = {
+        'url'   => $script . '?action=' . $action . '&type=purchase_reclamation&id=' . $params{trans_id},
+        'title' => $locale->text('Purchase Reclamation') . " $params{trans_info}",
+      };
 
   } elsif ($params{trans_type} eq 'vendor_invoice') {
     $link = {
@@ -485,6 +558,81 @@ sub retrieve_access_rights {
   $main::lxdebug->leave_sub();
 
   return $access;
+}
+
+sub send_email_notification {
+  $main::lxdebug->enter_sub();
+  my ($self, %params) = @_;
+
+  my $notify_cfg = $main::lx_office_conf{follow_up_notify};
+  if (!$notify_cfg
+   || !$notify_cfg->{email_subject}
+   || !$notify_cfg->{email_from}
+   || !$notify_cfg->{email_template}) {
+    $main::lxdebug->leave_sub();
+    return;
+  }
+
+  my $employee = SL::DB::Manager::Employee->current;
+
+  my @for_employees_ids = @{$params{created_for_employees}};
+
+  my $placeholders = join ', ', map {'?'} @for_employees_ids;
+  my $query = <<SQL;
+  SELECT login
+  FROM employee
+  WHERE id in ($placeholders)
+SQL
+
+  my $dbh = $employee->dbh;
+  my $hash_key = 'login';
+  my $hashref = $dbh->selectall_hashref(
+    $query, $hash_key, undef, @for_employees_ids
+  );
+  my @logins = keys %$hashref;
+
+  foreach my $login (@logins) {
+    my %recipient  = $main::auth->read_user(
+      login => $login,
+    );
+
+    if (!$recipient{follow_up_notify_by_email} || !$recipient{email}) {
+      next;
+    }
+
+    my %template_params = (
+      follow_up_subject => $params{subject},
+      follow_up_body    => $params{body},
+      follow_up_date    => $params{follow_up_date},
+      creator_name      => $employee->name  || $::form->{login},
+      recipient_name    => $recipient{name} || $recipient{login},
+    );
+
+    my $template = Template->new({ENCODING    => 'utf8'});
+
+    my $body_file = $notify_cfg->{email_template};
+    my $content_type   = $body_file =~ m/.html$/ ? 'text/html' : 'text/plain';
+
+    my $message;
+    $template->process($body_file, \%template_params, \$message)
+    || die $template->error;
+
+    my $param_form = Form->new();
+    $param_form->{$_} = $template_params{$_} for keys %template_params;
+
+    my $mail              = Mailer->new();
+    $mail->{from}         = $notify_cfg->{email_from};
+    $mail->{to}           = $recipient{email};
+    $mail->{subject}      = SL::Template::PlainText->new(form => $param_form)
+                              ->substitute_vars($notify_cfg->{email_subject});
+    $mail->{content_type} = $content_type;
+    $mail->{message}      = $message;
+    $mail->{charset}      = 'UTF-8';
+
+    $mail->send();
+  }
+
+  $main::lxdebug->leave_sub();
 }
 
 1;

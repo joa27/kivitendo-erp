@@ -12,7 +12,7 @@ __PACKAGE__->meta->columns(
   cp_abteilung   => { type => 'text' },
   cp_birthday    => { type => 'date' },
   cp_city        => { type => 'text' },
-  cp_cv_id       => { type => 'integer' },
+  cp_country_id  => { type => 'integer' },
   cp_email       => { type => 'text' },
   cp_fax         => { type => 'text' },
   cp_gender      => { type => 'character', length => 1 },
@@ -21,6 +21,7 @@ __PACKAGE__->meta->columns(
   cp_mobile1     => { type => 'text' },
   cp_mobile2     => { type => 'text' },
   cp_name        => { type => 'text' },
+  cp_number      => { type => 'text' },
   cp_phone1      => { type => 'text' },
   cp_phone2      => { type => 'text' },
   cp_position    => { type => 'text' },
@@ -40,5 +41,12 @@ __PACKAGE__->meta->primary_key_columns([ 'cp_id' ]);
 
 __PACKAGE__->meta->allow_inline_column_values(1);
 
+__PACKAGE__->meta->foreign_keys(
+  cp_country => {
+    class       => 'SL::DB::Country',
+    key_columns => { cp_country_id => 'id' },
+  },
+);
+
 1;
-;
+

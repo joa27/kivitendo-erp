@@ -12,6 +12,14 @@ if [[ ! -d doc ]]; then
 fi
 
 doc=${PWD}/doc
+pub_doc=${PWD}/public/doc
+
+if [[ ! -d doc/build/dobudish ]]; then
+  echo "  ERROR: looks like 'doc/build/dobudish' DIR is missing"
+  echo "   - You need to get 'dobudish-nojre-1.1.4.zip' from https://code.google.com/archive/p/dobudish/downloads"
+  echo "   - Download and unpack ( unzip dobudish-nojre-1.1.4.zip -d doc/build )"
+  echo "   - create dobudish symlink ( ln -sf dobudish-1.1.4 doc/build/dobudish )"
+fi
 
 html=1
 pdf=1
@@ -36,14 +44,7 @@ if [[ ! -z $1 ]] ; then
   done
 fi
 
-dobudish=$(ls -d doc/build/dobudish* 2> /dev/null)
-
-if [[ -z $dobudish ]] || [[ ! -d ${dobudish} ]]; then
-  echo "There's no dobudish directory inside doc/build OR more than one file / dir starting with dobudish (hint: zip file downloaded there?)."
-  exit 1
-fi
-
-cd ${dobudish}
+cd doc/build/dobudish
 
 base=documents/dokumentation
 if [[ ! -d $base ]]; then
@@ -63,23 +64,23 @@ cp -R ${doc}/build/custom-cfg/* ${custom}/
 
 if [[ $pdf = 1 ]] ; then
   ./generator.sh dokumentation pdf
-  cp ${output}/pdf/dokumentation.pdf ${doc}/kivitendo-Dokumentation.pdf
+  cp ${output}/pdf/dokumentation.pdf ${pub_doc}/kivitendo-Dokumentation.pdf
 fi
 
 if [[ $html = 1 ]]; then
   ./generator.sh dokumentation html
-  rm -rf ${doc}/html
-  mkdir ${doc}/html
-  cp -R ${output}/html ${doc}/
+  rm -rf ${pub_doc}/html
+  mkdir ${pub_doc}/html
+  cp -R ${output}/html ${pub_doc}/
 fi
 
 if [[ $images = 1 ]]; then
   # copy system images from Dobudish directory
   image_list=$(mktemp)
-  perl -nle 'print $1 while m{ (?: \.\./ )+ ( system/ [^\"]+ ) }xg' ${doc}/html/*.html | sort | uniq > $image_list
+  perl -nle 'print $1 while m{ (?: \.\./ )+ ( system/ [^\"]+ ) }xg' ${pub_doc}/html/*.html | sort | uniq > $image_list
   if [[ -s $image_list ]]; then
-    tar -c -f - -T $image_list | tar -x -f - -C ${doc}/html
-    perl -pi -e 's{ (\.\./)+ system }{system}xg' ${doc}/html/*.html
+    tar -c -f - -T $image_list | tar -x -f - -C ${pub_doc}/html
+    perl -pi -e 's{ (\.\./)+ system }{system}xg' ${pub_doc}/html/*.html
   fi
 
   rm $image_list

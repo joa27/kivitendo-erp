@@ -50,27 +50,55 @@ sub get_print_options {
       opthash("purchase_order",      $form->{PD}{purchase_order},      $locale->text('Purchase Order')),
       opthash("bin_list",            $form->{PD}{bin_list},            $locale->text('Bin List'))
     ) : undef,
+    ($form->{type} eq 'purchase_order_confirmation') ? (
+      opthash("purchase_order_confirmation", $form->{PD}{purchase_order}, $locale->text('Purchase Order Confirmation')),
+    ) : undef,
     ($form->{type} eq 'credit_note') ?
       opthash("credit_note",         $form->{PD}{credit_note},         $locale->text('Credit Note')) : undef,
+    ($form->{type} eq 'sales_order_intake') ? (
+      opthash("sales_order_intake",  $form->{PD}{sales_order_intake},  $locale->text('Sales Order Intake')),
+    ) : undef,
     ($form->{type} eq 'sales_order') ? (
       opthash("sales_order",         $form->{PD}{sales_order},         $locale->text('Confirmation')),
       opthash("proforma",            $form->{PD}{proforma},            $locale->text('Proforma Invoice')),
+      opthash("payment_in_advance",  $form->{PD}{payment_in_advance},  $locale->text('Payment in Advance')),
       opthash("ic_supply",           $form->{PD}{ic_supply},            $locale->text('Intra-Community supply')),
     ) : undef,
-    ($form->{type} =~ /sales_quotation$/) ?
-      opthash('sales_quotation',     $form->{PD}{sales_quotation},     $locale->text('Quotation')) : undef,
+    ($form->{type} =~ /sales_quotation$/) ? (
+      opthash('sales_quotation',     $form->{PD}{sales_quotation},     $locale->text('Quotation')),
+      opthash('sales_estimate',      $form->{PD}{sales_estimate},      $locale->text('Estimate of Cost')),
+    ) : undef,
     ($form->{type} =~ /request_quotation$/) ?
       opthash('request_quotation',   $form->{PD}{request_quotation},   $locale->text('Request for Quotation')) : undef,
-    ($form->{type} eq 'invoice') ? (
-      opthash("invoice",             $form->{PD}{invoice},             $locale->text('Invoice')),
-      opthash("proforma",            $form->{PD}{proforma},            $locale->text('Proforma Invoice')),
+    ($form->{type} eq 'purchase_quotation_intake') ? (
+      opthash("purchase_quotation_intake", $form->{PD}{purchase_quotation_intake},  $locale->text('Purchase Quotation Intake')),
     ) : undef,
-    ($form->{type} eq 'invoice' && $form->{storno}) ? (
+    ($form->{type} eq 'invoice' && $form->{storno} && $form->{storno_id}) ? (
       opthash("storno_invoice",      $form->{PD}{storno_invoice},      $locale->text('Storno Invoice')),
     ) : undef,
-    ($form->{type} =~ /_delivery_order$/) ? (
+    ($form->{type} eq 'invoice' && !($form->{storno} && $form->{storno_id})) ? (
+      opthash("invoice",             $form->{PD}{invoice},             $locale->text('Invoice')),
+      opthash("proforma",            $form->{PD}{proforma},            $locale->text('Proforma Invoice')),
+      opthash("invoice_copy",        $form->{PD}{invoice_copy},        $locale->text('Invoice Copy')),
+    ) : undef,
+    ($form->{type} eq 'invoice_for_advance_payment') ? (
+      opthash("invoice_for_advance_payment", $form->{PD}{invoice_for_advance_payment},      $locale->text('Invoice for Advance Payment')),
+    ) : undef,
+    ($form->{type} eq 'final_invoice') ? (
+      opthash("final_invoice", $form->{PD}{final_invoice},             $locale->text('Final Invoice')),
+    ) : undef,
+    ($form->{type} =~ /^supplier_delivery_order$/) ? (
+      opthash('supplier_delivery_order', $form->{PD}{supplier_delivery_order},  $locale->text('Supplier Delivery Order')),
+    ) : undef,
+    ($form->{type} =~ /^rma_delivery_order$/) ? (
+      opthash('rma_delivery_order', $form->{PD}{rma_delivery_order},  $locale->text('RMA Delivery Order')),
+    ) : undef,
+    ($form->{type} =~ /(sales|purchase)_delivery_order$/) ? (
       opthash($form->{type},         $form->{PD}{$form->{type}},       $locale->text('Delivery Order')),
       opthash('pick_list',           $form->{PD}{pick_list},           $locale->text('Pick List')),
+    ) : undef,
+    ($form->{type} =~ /_reclamation$/) ? (
+      opthash($form->{type},         $form->{PD}{$form->{type}},       $locale->text('Reclamation')),
     ) : undef,
     ($form->{type} =~ /^letter$/) ? (
       opthash('letter',              $form->{PD}{letter},              $locale->text('Letter')),
@@ -91,9 +119,9 @@ sub get_print_options {
         if ($form->{media} ne 'email');
 
   push @FORMAT, grep $_,
-    ($::lx_office_conf{print_templates}->{opendocument} &&     $::lx_office_conf{applications}->{openofficeorg_writer}  &&     $::lx_office_conf{applications}->{xvfb}
-                                                        && (-x $::lx_office_conf{applications}->{openofficeorg_writer}) && (-x $::lx_office_conf{applications}->{xvfb})
-     && !$options->{no_opendocument_pdf}) ?
+    ($::lx_office_conf{print_templates}->{opendocument} &&     $::lx_office_conf{applications}->{openofficeorg_writer}
+                                                        && (-x $::lx_office_conf{applications}->{openofficeorg_writer})
+                                                        && !$options->{no_opendocument_pdf}) ?
       opthash("opendocument_pdf",    $form->{DF}{"opendocument_pdf"},  $locale->text("PDF (OpenDocument/OASIS)")) : undef,
     ($::lx_office_conf{print_templates}->{latex}) ?
       opthash("pdf",                 $form->{DF}{pdf},                 $locale->text('PDF')) : undef,

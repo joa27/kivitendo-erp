@@ -23,17 +23,24 @@
 
 package Mailer;
 
+use IO::Socket::INET;
+use IO::Socket::SSL;
 use Email::Address;
 use Email::MIME::Creator;
+use Encode;
 use File::MimeInfo::Magic;
 use File::Slurp;
 use List::UtilsBy qw(bundle_by);
+use List::Util qw(sum);
 
 use SL::Common;
 use SL::DB::EmailJournal;
 use SL::DB::EmailJournalAttachment;
 use SL::DB::Employee;
+use SL::Locale::String qw(t8);
 use SL::Template;
+use SL::Version;
+use SL::IMAPClient;
 
 use strict;
 
@@ -43,6 +50,34 @@ my %mail_delivery_modules = (
   sendmail => 'SL::Mailer::Sendmail',
   smtp     => 'SL::Mailer::SMTP',
 );
+
+my %type_to_table = (
+  sales_quotation         => 'oe',
+  request_quotation       => 'oe',
+  sales_order             => 'oe',
+  purchase_order          => 'oe',
+  invoice                 => 'ar',
+  credit_note             => 'ar',
+  purchase_invoice        => 'ap',
+  letter                  => 'letter',
+  purchase_delivery_order => 'delivery_orders',
+  sales_delivery_order    => 'delivery_orders',
+  dunning                 => 'dunning',
+);
+my %type_to_email = (
+  sales_quotation         => sub { $::instance_conf->get_email_sender_sales_quotation         },
+  request_quotation       => sub { $::instance_conf->get_email_sender_request_quotation       },
+  sales_order             => sub { $::instance_conf->get_email_sender_sales_order             },
+  purchase_order          => sub { $::instance_conf->get_email_sender_purchase_order          },
+  invoice                 => sub { $::instance_conf->get_email_sender_invoice                 },
+  credit_note             => sub { $::instance_conf->get_email_sender_invoice                 },
+  purchase_invoice        => sub { $::instance_conf->get_email_sender_purchase_invoice        },
+  letter                  => sub { $::instance_conf->get_email_sender_letter                  },
+  purchase_delivery_order => sub { $::instance_conf->get_email_sender_purchase_delivery_order },
+  sales_delivery_order    => sub { $::instance_conf->get_email_sender_sales_delivery_order    },
+  dunning                 => sub { $::instance_conf->get_email_sender_dunning                 },
+);
+
 
 sub new {
   my ($type, %params) = @_;
@@ -87,7 +122,7 @@ sub _create_message_id {
   $domain     =~ s/.*\@//;
   $domain     =~ s/>.*//;
 
-  return  "kivitendo-$self->{version}-" . time() . "-${$}-${num_sent}\@$domain";
+  return  "kivitendo-" . SL::Version->get_version . "-" . time() . "-${$}-${num_sent}\@$domain";
 }
 
 sub _create_address_headers {
@@ -105,8 +140,21 @@ sub _create_address_headers {
     next if !$self->{$item};
 
     my @header_addresses;
+    my @addresses = Email::Address->parse($self->{$item});
 
-    foreach my $addr_obj (Email::Address->parse($self->{$item})) {
+    # if either no address was parsed or
+    # there are more than 3 characters per parsed email extra, assume the the user has entered bunk
+    if (!@addresses) {
+       die t8('"#1" seems to be a faulty list of email addresses. No addresses could be extracted.',
+         $self->{$item},
+       );
+    } elsif ((length($self->{$item}) - sum map { length $_->original } @addresses) / @addresses > 3) {
+       die t8('"#1" seems to be a faulty list of email addresses. After extracing addresses (#2) too many characters are left.',
+         $self->{$item}, join ', ', map { $_->original } @addresses,
+       );
+    }
+
+    foreach my $addr_obj (@addresses) {
       push @{ $self->{addresses}->{$item} }, $addr_obj->address;
       next if $self->{driver}->keep_from_header($item);
 
@@ -136,8 +184,6 @@ sub _create_attachment_part {
   my $file_id       = 0;
   my $email_journal = $::instance_conf->get_email_journal;
 
-  $::lxdebug->message(LXDebug->DEBUG2(), "mail5 att=" . $attachment . " email_journal=" . $email_journal . " id=" . $attachment->{id});
-
   if (ref($attachment) eq "HASH") {
     $attributes{filename}     = $attachment->{name};
     $file_id                  = $attachment->{id}   || '0';
@@ -162,18 +208,22 @@ sub _create_attachment_part {
   $attachment_content ||= ' ';
   $attributes{charset}  = $self->{charset} if $self->{charset} && ($attributes{content_type} =~ m{^text/});
 
-  $::lxdebug->message(LXDebug->DEBUG2(), "mail6 mtype=" . $attributes{content_type} . " filename=" . $attributes{filename});
-
   my $ent;
   if ( $attributes{content_type} eq 'message/rfc822' ) {
     $ent = Email::MIME->new($attachment_content);
-    $ent->header_str_set('Content-disposition' => 'attachment; filename='.$attributes{filename});
   } else {
     $ent = Email::MIME->create(
       attributes => \%attributes,
       body       => $attachment_content,
     );
   }
+
+  # Due to a bug in Email::MIME it's not enough to hand over the encoded file name in the "attributes" hash in the
+  # "create" call. Email::MIME iterates over the keys in the hash, and depending on which key it has already seen during
+  # the iteration it might revert the encoding. As Perl's hash key order is randomized for each Perl run, this means
+  # that the file name stays unencoded sometimes.
+  # Setting the header manually after the "create" call circumvents this problem.
+  $ent->header_set('Content-disposition' => 'attachment; filename="' . encode('MIME-Q', $attributes{filename}) . '"');
 
   push @{ $self->{mail_attachments}} , SL::DB::EmailJournalAttachment->new(
     name      => $attributes{filename},
@@ -190,12 +240,10 @@ sub _create_message {
 
   my @parts;
 
-  push @{ $self->{headers} }, (Type => "multipart/mixed");
-
   if ($self->{message}) {
     push @parts, Email::MIME->create(
       attributes => {
-        content_type => $self->{contenttype},
+        content_type => $self->{content_type},
         charset      => $self->{charset},
         encoding     => 'quoted-printable',
       },
@@ -203,7 +251,7 @@ sub _create_message {
     );
 
     push @{ $self->{headers} }, (
-      'Content-Type' => qq|$self->{contenttype}; charset="$self->{charset}"|,
+      'Content-Type' => qq|$self->{content_type}; charset="$self->{charset}"|,
     );
   }
 
@@ -222,23 +270,24 @@ sub send {
   $self->{driver} = eval { $self->_create_driver };
   if (!$self->{driver}) {
     my $error = $@;
-    $self->_store_in_journal('failed', 'driver could not be created; check your configuration & log files');
+    $self->_store_in_journal('send_failed', 'driver could not be created; check your configuration & log files');
     $::lxdebug->message(LXDebug::WARN(), "Mailer error during 'send': $error");
 
     return $error;
   }
-
+  $self->_default_from;  # set from for records if configured in client config
   # Set defaults & headers
-  $self->{charset}       =  'UTF-8';
-  $self->{contenttype} ||=  "text/plain";
-  $self->{headers}       =  [
-    Subject              => $self->{subject},
-    'Message-ID'         => '<' . $self->_create_message_id . '>',
-    'X-Mailer'           => "kivitendo $self->{version}",
-  ];
+  $self->{charset}        =  'UTF-8';
+  $self->{content_type} ||=  "text/plain";
+  $self->{headers}      ||=  [];
+  push @{ $self->{headers} }, (
+    Subject               => $self->{subject},
+    'Message-ID'          => '<' . $self->_create_message_id . '>',
+    'X-Mailer'            => "kivitendo " . SL::Version->get_version,
+  );
   $self->{mail_attachments} = [];
-  $self->{content_by_name}  = $::instance_conf->get_email_journal == 1 && $::instance_conf->get_doc_files;
 
+  my $email_as_string;
   my $error;
   my $ok = eval {
     # Clean up To/Cc/Bcc address fields
@@ -247,22 +296,30 @@ sub send {
 
     my $email = $self->_create_message;
 
-    #$::lxdebug->message(0, "message: " . $email->as_string);
-    # return "boom";
-
-    $::lxdebug->message(LXDebug->DEBUG2(), "mail1 from=".$self->{from}." to=".$self->{to});
     my $from_obj = (Email::Address->parse($self->{from}))[0];
 
     $self->{driver}->start_mail(from => $from_obj->address, to => [ $self->_all_recipients ]);
     $self->{driver}->print($email->as_string);
     $self->{driver}->send;
 
+    $email_as_string = $email->as_string;
     1;
   };
 
   $error = $@ if !$ok;
 
+  # TODO: Error is not for sending emial
+  # in SL::Form->send_email error is treated as error for sending email
+  if ($ok) {
+    eval {$self->_store_in_imap_sent_folder($email_as_string); 1} or do {
+      $ok = 0;
+      $error = $@;
+    };
+  }
+
+  # create journal and link to record
   $self->{journalentry} = $self->_store_in_journal;
+  $self->_create_record_link if $self->{journalentry};
 
   return $ok ? '' : ($error || "undefined error");
 }
@@ -273,6 +330,36 @@ sub _all_recipients {
   return map { @{ $self->{addresses}->{$_} || [] } } qw(to cc bcc);
 }
 
+sub _get_header_string {
+  my ($self) = @_;
+  my $header_string =
+    join "\r\n",
+      (bundle_by { join(': ', @_) } 2, @{ $self->{headers} || [] });
+  return $header_string;
+}
+
+sub _store_in_imap_sent_folder {
+  my ($self, $email_as_string) = @_;
+
+  my $from_email = $self->{from};
+  my $user_email = $::myconfig{email};
+  my $imap_config =
+       $::lx_office_conf{"sent_emails_in_imap/email/$from_email"}
+    || $::lx_office_conf{"sent_emails_in_imap/email/$user_email"}
+    || $::lx_office_conf{sent_emails_in_imap}
+    || {};
+  return unless ($imap_config->{enabled});
+
+  my $folder = delete $imap_config->{folder};
+  my $imap_client = SL::IMAPClient->new(%$imap_config);
+  $imap_client->store_email_in_email_folder(
+    email_as_string => $email_as_string,
+    folder => $folder ||'Sent/Kivitendo',
+  );
+
+  return 1;
+}
+
 sub _store_in_journal {
   my ($self, $status, $extended_status) = @_;
 
@@ -281,11 +368,11 @@ sub _store_in_journal {
   return if $journal_enable == 0;
 
   $status          //= $self->{driver}->status if $self->{driver};
-  $status          //= 'failed';
+  $status          //= 'send_failed';
   $extended_status //= $self->{driver}->extended_status if $self->{driver};
   $extended_status //= 'unknown error';
 
-  my $headers = join "\r\n", (bundle_by { join(': ', @_) } 2, @{ $self->{headers} || [] });
+  my $headers = $self->_get_header_string;
 
   my $jentry = SL::DB::EmailJournal->new(
     sender          => SL::DB::Manager::Employee->current,
@@ -302,4 +389,135 @@ sub _store_in_journal {
   return $jentry->id;
 }
 
+
+sub _create_record_link {
+  my ($self) = @_;
+
+  # check for custom/overloaded types and ids (form != controller)
+  my $record_type = $self->{record_type} || $::form->{type} || '';
+  my $record_id   = $self->{record_id}   || $::form->{id};
+
+  # you may send mails for unsaved objects (no record_id => unlinkable case)
+  if ($self->{journalentry} && $record_id && exists($type_to_table{$record_type})) {
+    RecordLinks->create_links(
+      mode       => 'ids',
+      from_table => $type_to_table{$record_type},
+      from_ids   => $record_id,
+      to_table   => 'email_journal',
+      to_id      => $self->{journalentry},
+    );
+  }
+}
+
+
+sub _default_from {
+  my ($self) = @_;
+
+  my $record_type  = $self->{record_type} || $::form->{type} || $self->{driver}{form}{formname} || '';
+  my $record_email = exists $type_to_email{$record_type} ? $type_to_email{$record_type}->() : undef;
+  $self->{from}    = $record_email if $record_email;
+}
+
 1;
+
+
+__END__
+
+=pod
+
+=encoding utf8
+
+=head1 NAME
+
+SL::Mailer - Base class for sending mails from kivitendo
+
+=head1 SYNOPSIS
+
+  package SL::BackgroundJob::CreatePeriodicInvoices;
+
+  use SL::Mailer;
+
+  my $mail              = Mailer->new;
+  $mail->{from}         = $config{periodic_invoices}->{email_from};
+  $mail->{to}           = $email;
+  $mail->{subject}      = $config{periodic_invoices}->{email_subject};
+  $mail->{content_type} = $filename =~ m/.html$/ ? 'text/html' : 'text/plain';
+  $mail->{message}      = $output;
+
+  $mail->send;
+
+=head1 OVERVIEW
+
+Mail can be sent from kivitendo via the sendmail command or the smtp protocol.
+
+
+=head1 INTERNAL DATA TYPES
+
+
+=over 2
+
+=item C<%mail_delivery_modules>
+
+  Currently two modules are supported: smtp or sendmail.
+
+=item C<%type_to_table>
+
+  Due to the lack of a single global mapping for $form->{type},
+  type is mapped to the corresponding database table. All types which
+  implement a mail action are currently mapped and should be mapped.
+  Type is either the value of the old form or the newer controller
+  based object type.
+
+=back
+
+=head1 FUNCTIONS
+
+=over 4
+
+=item C<new>
+
+=item C<_create_driver>
+
+=item C<_cleanup_addresses>
+
+=item C<_create_address_headers>
+
+=item C<_create_message_id>
+
+=item C<_create_attachment_part>
+
+=item C<_create_message>
+
+=item C<send>
+
+  If a mail was sent successfully the internal function _store_in_journal
+  is called if email journaling is enabled. If _store_in_journal was executed
+  successfully and the calling form is already persistent (database id) a
+  record_link will be created.
+
+=item C<_all_recipients>
+
+=item C<_store_in_journal>
+
+=item C<_create_record_link $self->{journalentry}, $::form->{id}, $self->{record_id}>
+
+
+  If $self->{journalentry} and either $self->{record_id} or $::form->{id} (checked in
+  this order) exist a record link from record to email journal is created.
+  It is possible to provide an array reference with more than one id in
+  $self->{record_id} or $::form->{id}. In this case all records are linked to
+  the mail.
+  Will fail silently if record_link creation wasn't successful (same behaviour as
+  _store_in_journal).
+
+=item C<validate>
+
+=back
+
+=head1 BUGS
+
+Nothing here yet.
+
+=head1 AUTHOR
+
+=cut

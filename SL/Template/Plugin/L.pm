@@ -8,6 +8,8 @@ use List::Util qw(max);
 use Scalar::Util qw(blessed);
 
 use SL::Presenter;
+use SL::Presenter::ALL;
+use SL::Presenter::Simple;
 use SL::Util qw(_hashify);
 
 use strict;
@@ -50,14 +52,18 @@ sub _call_presenter {
 
   my $presenter              = $::request->presenter;
 
-  if (!$presenter->can($method)) {
-    $::lxdebug->message(LXDebug::WARN(), "SL::Presenter has no method named '$method'!");
-    return '';
-  }
-
   splice @args, -1, 1, %{ $args[-1] } if @args && (ref($args[-1]) eq 'HASH');
 
-  $presenter->$method(@args);
+  if (my $sub = SL::Presenter::Simple->can($method)) {
+    return $sub->(@args);
+  }
+
+  if ($presenter->can($method)) {
+    return $presenter->$method(@args);
+  }
+
+  $::lxdebug->message(LXDebug::WARN(), "SL::Presenter has no method named '$method'!");
+  return;
 }
 
 sub name_to_id    { return _call_presenter('name_to_id',    @_); }
@@ -66,68 +72,27 @@ sub hidden_tag    { return _call_presenter('hidden_tag',    @_); }
 sub select_tag    { return _call_presenter('select_tag',    @_); }
 sub checkbox_tag  { return _call_presenter('checkbox_tag',  @_); }
 sub input_tag     { return _call_presenter('input_tag',     @_); }
+sub input_tag_trim{ return _call_presenter('input_tag_trim',@_); }
 sub javascript    { return _call_presenter('javascript',    @_); }
 sub truncate      { return _call_presenter('truncate',      @_); }
 sub simple_format { return _call_presenter('simple_format', @_); }
-sub part_picker   { return _call_presenter('part_picker',   @_); }
-sub chart_picker  { return _call_presenter('chart_picker',  @_); }
-sub customer_vendor_picker   { return _call_presenter('customer_vendor_picker',   @_); }
-sub project_picker           { return _call_presenter('project_picker',           @_); }
 sub button_tag               { return _call_presenter('button_tag',               @_); }
 sub submit_tag               { return _call_presenter('submit_tag',               @_); }
 sub ajax_submit_tag          { return _call_presenter('ajax_submit_tag',          @_); }
-sub link                     { return _call_presenter('link',                     @_); }
+sub link                     { return _call_presenter('link_tag',                 @_); }
 sub input_number_tag         { return _call_presenter('input_number_tag',         @_); }
+sub textarea_tag             { return _call_presenter('textarea_tag',             @_); }
+sub date_tag                 { return _call_presenter('date_tag',                 @_); }
+sub div_tag                  { return _call_presenter('div_tag',                  @_); }
+sub radio_button_tag         { return _call_presenter('radio_button_tag',         @_); }
+sub img_tag                  { return _call_presenter('img_tag',                  @_); }
+sub restricted_html          { return _call_presenter('restricted_html',          @_); }
+sub stripped_html            { return _call_presenter('stripped_html',            @_); }
+sub multi_level_select_tag   { return _call_presenter('multi_level_select_tag',   @_); }
 
 sub _set_id_attribute {
   my ($attributes, $name, $unique) = @_;
   SL::Presenter::Tag::_set_id_attribute($attributes, $name, $unique);
-}
-
-sub img_tag {
-  my ($self, %options) = _hashify(1, @_);
-
-  $options{alt} ||= '';
-
-  return $self->html_tag('img', undef, %options);
-}
-
-sub textarea_tag {
-  my ($self, $name, $content, %attributes) = _hashify(3, @_);
-
-  _set_id_attribute(\%attributes, $name);
-  $attributes{rows}  *= 1; # required by standard
-  $attributes{cols}  *= 1; # required by standard
-  $content            = $content ? _H($content) : '';
-
-  return $self->html_tag('textarea', $content, %attributes, name => $name);
-}
-
-sub radio_button_tag {
-  my ($self, $name, %attributes) = _hashify(2, @_);
-
-  $attributes{value}   = 1 unless exists $attributes{value};
-
-  _set_id_attribute(\%attributes, $name, 1);
-  my $label            = delete $attributes{label};
-
-  _set_id_attribute(\%attributes, $name . '_' . $attributes{value});
-
-  if ($attributes{checked}) {
-    $attributes{checked} = 'checked';
-  } else {
-    delete $attributes{checked};
-  }
-
-  my $code  = $self->html_tag('input', undef,  %attributes, name => $name, type => 'radio');
-  $code    .= $self->html_tag('label', $label, for => $attributes{id}) if $label;
-
-  return $code;
-}
-
-sub div_tag {
-  my ($self, $content, @slurp) = @_;
-  return $self->html_tag('div', $content, @slurp);
 }
 
 sub ul_tag {
@@ -160,27 +125,6 @@ sub stylesheet_tag {
   return $code;
 }
 
-my $date_tag_id_idx = 0;
-sub date_tag {
-  my ($self, $name, $value, %params) = _hashify(3, @_);
-
-  _set_id_attribute(\%params, $name);
-  my @onchange = $params{onchange} ? (onChange => delete $params{onchange}) : ();
-  my @classes  = $params{no_cal} || $params{readonly} ? () : ('datepicker');
-  push @classes, delete($params{class}) if $params{class};
-  my %class    = @classes ? (class => join(' ', @classes)) : ();
-
-  $::request->layout->add_javascripts('kivi.Validator.js');
-  $::request->presenter->need_reinit_widgets($params{id});
-
-  return $self->input_tag(
-    $name, blessed($value) ? $value->to_lxoffice : $value,
-    size   => 11,
-    "data-validate" => "date",
-    %params,
-    %class, @onchange,
-  );
-}
 
 # simple version with select_tag
 sub vendor_selector {
@@ -286,9 +230,9 @@ sub areainput_tag {
 
   return $self->textarea_tag($name, $value, %attributes, rows => $rows, cols => $cols) if $rows > 1;
 
-  return '<span>'
+  return '<span class="area-input">'
     . $self->input_tag($name, $value, %attributes, size => $cols)
-    . "<img src=\"image/edit-entry.png\" onclick=\"kivi.switch_areainput_to_textarea('${id}')\" style=\"margin-left: 2px;\">"
+    . "<span class=\"switch-to-textarea\" onclick=\"kivi.switch_areainput_to_textarea('${id}')\"></span>"
     . '</span>';
 }
 
@@ -332,9 +276,13 @@ JAVASCRIPT
     $filter    .= ".map(function(idx, str) { return str.replace('$params{with}_', ''); })";
 
     my $params_js = $params{params} ? qq| + ($params{params})| : '';
+    my $ajax_return = '';
+    if ($params{ajax_return}) {
+      $ajax_return = 'kivi.eval_json_result';
+    }
 
     $stop_event = <<JAVASCRIPT;
-        \$.post('$params{url}'${params_js}, { '${as}[]': \$(\$('${selector}').sortable('toArray'))${filter}.toArray() });
+        \$.post('$params{url}'${params_js}, { '${as}[]': \$(\$('${selector}').sortable('toArray'))${filter}.toArray() }, $ajax_return);
 JAVASCRIPT
   }
 
@@ -480,6 +428,8 @@ The following functions are just forwarded to L<SL::Presenter::Tag>:
 
 =item * C<input_tag $name, $value, %attributes>
 
+=item * C<input_tag_trim $name, $value, %attributes>
+
 =item * C<hidden_tag $name, $value, %attributes>
 
 =item * C<checkbox_tag $name, %attributes>
@@ -511,16 +461,6 @@ tag's C<id> defaults to C<name_to_id($name)>.
 
 Creates a date input field, with an attached javascript that will open a
 calendar on click.
-
-=item C<radio_button_tag $name, %attributes>
-
-Creates a HTML 'input type=radio' tag named C<$name> with arbitrary
-HTML attributes from C<%attributes>. The tag's C<value> defaults to
-C<1>. The tag's C<id> defaults to C<name_to_id($name . "_" . $value)>.
-
-If C<%attributes> contains a key C<label> then a HTML 'label' tag is
-created with said C<label>. No attribute named C<label> is created in
-that case.
 
 =item C<javascript_tag $file1, $file2, $file3...>
 
@@ -594,8 +534,12 @@ C<%params> can contain the following entries:
 =item C<url>
 
 The URL to POST an AJAX request to after a dragged element has been
-dropped. The AJAX request's return value is ignored. If given then
+dropped. The AJAX request's return value is ignored by default. If given then
 C<$params{with}> must be given as well.
+
+=item C<ajax_return>
+
+If trueish then the AJAX request's return is accepted.
 
 =item C<with>
 

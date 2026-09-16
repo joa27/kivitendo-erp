@@ -4,12 +4,37 @@ use strict;
 
 use SL::DB::MetaSetup::Contact;
 use SL::DB::Manager::Contact;
+use SL::DB::Helper::TransNumberGenerator;
 use SL::DB::Helper::CustomVariables (
   module      => 'Contacts',
   cvars_alias => 1,
 );
 
+__PACKAGE__->meta->add_relationship(
+  customers => {
+    type         => 'many to many',
+    map_class    => 'SL::DB::CustomerContact',
+    manager_args => { sort_by => 'customer.customernumber' },
+  },
+  vendors => {
+    type         => 'many to many',
+    map_class    => 'SL::DB::VendorContact',
+    manager_args => { sort_by => 'vendor.vendornumber' },
+  },
+);
+
 __PACKAGE__->meta->initialize;
+
+__PACKAGE__->before_save('_before_save_set_contactnumber');
+
+
+sub _before_save_set_contactnumber {
+  my ($self) = @_;
+
+  $self->create_trans_number if !defined $self->cp_number || $self->cp_number eq '';
+  return 1;
+}
+
 
 sub used {
   my ($self) = @_;
@@ -20,16 +45,19 @@ sub used {
   require SL::DB::Invoice;
   require SL::DB::PurchaseInvoice;
   require SL::DB::DeliveryOrder;
+  require SL::DB::Letter;
+  require SL::DB::LetterDraft;
+  require SL::DB::PeriodicInvoicesConfig;
+  require SL::DB::Reclamation;
 
   return SL::DB::Manager::Order->get_all_count(query => [ cp_id => $self->cp_id ])
        + SL::DB::Manager::Invoice->get_all_count(query => [ cp_id => $self->cp_id ])
        + SL::DB::Manager::PurchaseInvoice->get_all_count(query => [ cp_id => $self->cp_id ])
-       + SL::DB::Manager::DeliveryOrder->get_all_count(query => [ cp_id => $self->cp_id ]);
-}
-
-sub detach {
-  $_[0]->cp_cv_id(undef);
-  $_[0];
+       + SL::DB::Manager::DeliveryOrder->get_all_count(query => [ cp_id => $self->cp_id ])
+       + SL::DB::Manager::Letter->get_all_count(query => [ cp_id => $self->cp_id ])
+       + SL::DB::Manager::LetterDraft->get_all_count(query => [ cp_id => $self->cp_id ])
+       + SL::DB::Manager::PeriodicInvoicesConfig->get_all_count(query => [ email_recipient_contact_id => $self->cp_id ])
+       + SL::DB::Manager::Reclamation->get_all_count(query => [ contact_id => $self->cp_id ]);
 }
 
 sub full_name {

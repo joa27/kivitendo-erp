@@ -51,7 +51,7 @@ sub export {
   my $stamm = SL::DATEV->new->get_datev_stamm;
 
   setup_datev_export_action_bar();
-
+  $::form->{title} = t8('DATEV - Export Assistent');
   $::form->header;
   print $::form->parse_html_template('datev/export', $stamm);
 
@@ -62,11 +62,8 @@ sub export2 {
   $::lxdebug->enter_sub;
   $::auth->assert('datev_export');
 
-  if ($::form->{exporttype} == 0) {
-    export_bewegungsdaten();
-  } else {
-    export_stammdaten();
-  }
+  export_bewegungsdaten();
+
   $::lxdebug->leave_sub;
 }
 
@@ -76,26 +73,16 @@ sub export_bewegungsdaten {
 
   setup_datev_export2_action_bar();
 
+  $::form->{title} = t8('DATEV - Export Assistent');
   $::form->header;
-  $::form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
-  $::form->{show_pk_option}  = SL::DATEV->new->check_vcnumbers_are_valid_pk_numbers;
+  $::form->{ALL_DEPARTMENTS}        = SL::DB::Manager::Department->get_all_sorted;
+  $::form->{show_pk_option}         = SL::DATEV->new->check_vcnumbers_are_valid_pk_numbers;
+  $::form->{show_documents_option}  = SL::DATEV->new->check_document_export;
 
   # check if we have mismatching number length domains
   SL::DATEV->new->check_valid_length_of_accounts;
 
   print $::form->parse_html_template('datev/export_bewegungsdaten');
-
-  $::lxdebug->leave_sub;
-}
-
-sub export_stammdaten {
-  $::lxdebug->enter_sub;
-  $::auth->assert('datev_export');
-
-  setup_datev_export2_action_bar();
-
-  $::form->header;
-  print $::form->parse_html_template('datev/export_stammdaten');
 
   $::lxdebug->leave_sub;
 }
@@ -109,19 +96,18 @@ sub export3 {
     format     => $::form->{exportformat} eq 'kne' ? DATEV_FORMAT_KNE :  DATEV_FORMAT_CSV,
   );
 
-  if ($::form->{exporttype} == DATEV_ET_STAMM) {
-    $data{accnofrom}  = $::form->{accnofrom},
-    $data{accnoto}    = $::form->{accnoto},
-  } elsif ($::form->{exporttype} == DATEV_ET_BUCHUNGEN) {
-    @data{qw(from to)} = _get_dates(
-      $::form->{zeitraum}, $::form->{monat}, $::form->{quartal},
-      $::form->{transdatefrom}, $::form->{transdateto},
-    );
-    $data{use_pk} = $::form->{use_pk};
-  } else {
-    die 'invalid exporttype';
-  }
+  @data{qw(from to)} = _get_dates(
+    $::form->{zeitraum}, $::form->{monat}, $::form->{quartal},
+    $::form->{transdatefrom}, $::form->{transdateto},
+  );
+  $data{use_pk}    = $::form->{use_pk};
+  $data{locked}    = $::form->{locked};
+  $data{imported}  = $::form->{imported};
+  $data{documents} = $::form->{documents};
 
+  if ($data{documents} && !SL::DATEV->new->check_all_bookings_have_documents(from => $data{from}, to => $data{to})) {
+    $::form->error(t8("Cannot export with documents because some transactions don't have a PDF document attached."));
+  }
   my $datev = SL::DATEV->new(%data);
 
   $datev->clean_temporary_directories;
@@ -199,6 +185,9 @@ sub _get_dates {
 
   if ($mode eq "monat") {
     $fromdate = DateTime->new(day => 1, month => $month, year => DateTime->today->year);
+    # december export is usually in january/february
+    $fromdate = $fromdate->subtract(years => 1) if ($month == 12);
+
     $todate   = $fromdate->clone->add(months => 1)->add(days => -1);
   } elsif ($mode eq "quartal") {
     die 'quarter out of of bounds' if $quarter < 1 || $quarter > 4;

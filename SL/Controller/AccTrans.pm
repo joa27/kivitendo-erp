@@ -12,12 +12,12 @@ sub action_list_transactions {
 
   my $transactions = SL::DB::Manager::AccTransaction->get_all(query => [ trans_id => $::form->{trans_id} ], sort_by => 'acc_trans_id ASC');
 
-  return $self->render(\'', { type => 'json' }) unless scalar @{$transactions};
+  return $self->render('acc_trans/no_data', { layout => 0 }) unless scalar @{$transactions};
 
   my $acc_trans_table = $self->_mini_ledger($transactions);
   my $balances_table  = $self->_mini_trial_balance($transactions);
 
-  return $self->render('acc_trans/acc_trans', { header => 0 }, acc_trans_table => $acc_trans_table, balances_table => $balances_table);
+  return $self->render('acc_trans/acc_trans', { layout => 0 }, acc_trans_table => $acc_trans_table, balances_table => $balances_table);
 }
 
 sub _mini_ledger {
@@ -91,7 +91,7 @@ SL::Controller::AccTrans - module to list all transactions and balances of an in
   SL::Controller::AccTrans->action_list_transactions();
 
   The HTML blob can also be opened directly as a url:
-  controller.pl?action=AccTrans/print_table&trans_id=7
+  controller.pl?action=AccTrans/list_transactions&trans_id=7
 
 =head1 TODO
 

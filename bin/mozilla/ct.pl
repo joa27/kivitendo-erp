@@ -55,9 +55,12 @@ use SL::Request qw(flatten);
 use SL::DB::Business;
 use SL::DB::Default;
 use SL::DB::DeliveryTerm;
+use SL::DB::Manager::PaymentTerm;
+use SL::DB::Manager::TaxZone;
 use SL::ReportGenerator;
 use SL::Locale::String qw(t8);
 use SL::MoreCommon qw(uri_encode);
+use SL::ZUGFeRD;
 
 require "bin/mozilla/common.pl";
 require "bin/mozilla/reportgenerator.pl";
@@ -67,18 +70,26 @@ use strict;
 
 # end of main
 
+sub _zugferd_settings {
+  return ([ -1, $::locale->text('Use settings from client configuration') ],
+          @SL::ZUGFeRD::customer_settings);
+}
+
 sub search {
   $main::lxdebug->enter_sub();
-
-  $main::auth->assert('customer_vendor_edit');
 
   my $form     = $main::form;
   my $locale   = $main::locale;
 
   $form->{IS_CUSTOMER} = $form->{db} eq 'customer';
 
+  $::auth->assert('customer_report_view') if  $form->{IS_CUSTOMER};
+  $::auth->assert('vendor_report_view')   if !$form->{IS_CUSTOMER};
+
   $form->get_lists("business_types" => "ALL_BUSINESS_TYPES",
                    "salesmen"       => "ALL_SALESMEN");
+  $form->{ALL_PAYMENT_TERMS} = SL::DB::Manager::PaymentTerm->get_all_sorted;
+  $form->{ALL_TAXZONES}      = SL::DB::Manager::TaxZone    ->get_all_sorted;
   $form->{SHOW_BUSINESS_TYPES} = scalar @{ $form->{ALL_BUSINESS_TYPES} } > 0;
 
   $form->{CUSTOM_VARIABLES}                  = CVar->get_configs('module' => 'CT');
@@ -88,6 +99,8 @@ sub search {
                                                                            'include_value'  => 'Y');
 
   $form->{title}    = $form->{IS_CUSTOMER} ? $locale->text('Customers') : $locale->text('Vendors');
+
+  $form->{ZUGFERD_SETTINGS} = [ _zugferd_settings() ];
 
   setup_ct_search_action_bar();
 
@@ -99,7 +112,8 @@ sub search {
 
 sub search_contact {
   $::lxdebug->enter_sub;
-  $::auth->assert('customer_vendor_edit');
+
+  $::auth->assert('contact_person_report_view');
 
   $::form->{CUSTOM_VARIABLES}                  = CVar->get_configs('module' => 'Contacts');
   ($::form->{CUSTOM_VARIABLES_FILTER_CODE},
@@ -120,11 +134,10 @@ sub search_contact {
 sub list_names {
   $main::lxdebug->enter_sub();
 
-  $main::auth->assert('customer_vendor_edit');
-
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
   my $locale   = $main::locale;
+  my $cgi      = $::request->{cgi};
 
   $form->{IS_CUSTOMER} = $form->{db} eq 'customer';
 
@@ -135,23 +148,33 @@ sub list_names {
   my $cvar_configs = CVar->get_configs('module' => 'CT');
 
   my @options;
-  if ($form->{status} eq 'all') {
-    push @options, $locale->text('All');
-  } elsif ($form->{status} eq 'orphaned') {
-    push @options, $locale->text('Orphaned');
+  if ($form->{status}) {
+    push @options, $::locale->text('Scope') . ': ' . (
+      $form->{status} eq 'all'                ? $locale->text('All')                           :
+      $form->{status} eq 'orphaned'           ? $locale->text('Orphaned (no records)')         :
+      $form->{status} eq 'quotations_at_best' ? $locale->text('Orphaned (quotations at best)') : ''
+    );
   }
 
-  push @options, $locale->text('Name') . " : $form->{name}"                                       if $form->{name};
-  push @options, $locale->text('Contact') . " : $form->{contact}"                                 if $form->{contact};
-  push @options, $locale->text('Number') . qq| : $form->{"$form->{db}number"}|                    if $form->{"$form->{db}number"};
-  push @options, $locale->text('E-mail') . " : $form->{email}"                                    if $form->{email};
-  push @options, $locale->text('Contact person (surname)')           . " : $form->{cp_name}"      if $form->{cp_name};
-  push @options, $locale->text('Billing/shipping address (city)')    . " : $form->{addr_city}"    if $form->{addr_city};
-  push @options, $locale->text('Billing/shipping address (zipcode)') . " : $form->{addr_zipcode}" if $form->{addr_zipcode};
-  push @options, $locale->text('Billing/shipping address (street)')  . " : $form->{addr_street}"  if $form->{addr_street};
-  push @options, $locale->text('Billing/shipping address (country)') . " : $form->{addr_country}" if $form->{addr_country};
-  push @options, $locale->text('Billing/shipping address (GLN)')     . " : $form->{addr_gln}"     if $form->{addr_gln};
-  push @options, $locale->text('Quick Search')                       . " : $form->{all}"          if $form->{all};
+  my @zugferd_settings_list = _zugferd_settings();
+  my $zugferd_filter        = $form->{create_zugferd_invoices} eq '' ? undef : $zugferd_settings_list[$form->{create_zugferd_invoices} + 1]->[1];
+
+  push @options, $locale->text('Name')                               . " : $form->{name}"                  if $form->{name};
+  push @options, $locale->text('Department') . ' 1'                  . " : $form->{department_1}"          if $form->{department_1};
+  push @options, $locale->text('Department') . ' 2'                  . " : $form->{department_2}"          if $form->{department_2};
+  push @options, $locale->text('Contact')                            . " : $form->{contact}"               if $form->{contact};
+  push @options, $locale->text('Number')                           . qq| : $form->{"$form->{db}number"}|   if $form->{"$form->{db}number"};
+  push @options, $locale->text('E-mail')                             . " : $form->{email}"                 if $form->{email};
+  push @options, $locale->text('All phone numbers')                  . " : $form->{all_phonenumbers}"      if $form->{all_phonenumbers};
+  push @options, $locale->text('Contact person (surname)')           . " : $form->{cp_name}"               if $form->{cp_name};
+  push @options, $locale->text('Billing/shipping address (city)')    . " : $form->{addr_city}"             if $form->{addr_city};
+  push @options, $locale->text('Billing/shipping address (zipcode)') . " : $form->{addr_zipcode}"          if $form->{addr_zipcode};
+  push @options, $locale->text('Billing/shipping address (street)')  . " : $form->{addr_street}"           if $form->{addr_street};
+  push @options, $locale->text('Billing/shipping address (country)') . " : " . SL::DB::Country->new(id => $form->{addr_country_id})->load->description_localized($::myconfig{countrycode}) if ($form->{addr_country_id});
+  push @options, $locale->text('Billing/shipping address (GLN)')     . " : $form->{addr_gln}"              if $form->{addr_gln};
+  push @options, $locale->text('Quick Search')                       . " : $form->{all}"                   if $form->{all};
+  push @options, $locale->text('Factur-X/ZUGFeRD settings')          . " : $zugferd_filter"                if $zugferd_filter;
+  push @options, $locale->text('Dunning lock')                       . " : $form->{dunning_lock}"          if $form->{dunning_lock} ne '';
 
   if ($form->{business_id}) {
     my $business = SL::DB::Manager::Business->find_by(id => $form->{business_id});
@@ -167,6 +190,20 @@ sub list_names {
     }
   }
 
+  if ($form->{payment_id}) {
+    my $payment = SL::DB::Manager::PaymentTerm->find_by(id => $form->{payment_id});
+    if ($payment) {
+      push @options, $locale->text('Payment Term') . " : " . $payment->description;
+    }
+  }
+
+  if ($form->{taxzone_id}) {
+    my $tax_zone = SL::DB::Manager::TaxZone->find_by(id => $form->{taxzone_id});
+    if ($tax_zone) {
+      push @options, $locale->text('Tax rate') . " : " . $tax_zone->description;
+    }
+  }
+
   if ( $form->{insertdatefrom} or $form->{insertdateto} ) {
     push @options, $locale->text('Insert Date');
     push @options, $locale->text('From') . " " . $locale->date(\%myconfig, $form->{insertdatefrom}, 1) if $form->{insertdatefrom};
@@ -174,10 +211,14 @@ sub list_names {
   };
 
   my @columns = (
-    'id',        'name',    "$form->{db}number",   'contact',   'phone',    'discount',
+    'ids',
+    'id',        'obsolete', 'name',    "$form->{db}number",   'contact', 'main_contact_person',
+    'department_1',         'department_2',        'phone',   'discount',
     'fax',       'email',   'taxnumber',           'street',    'zipcode' , 'city',
-    'business',  'payment', 'invnumber', 'ordnumber',           'quonumber', 'salesman',
-    'country',   'gln',     'insertdate',           'pricegroup'
+    'business',  'payment', 'taxzone', 'invnumber', 'ordnumber',           'quonumber', 'salesman',
+    'country',   'gln',     'insertdate',           'pricegroup', 'contact_origin', 'invoice_mail',
+    'creditlimit', 'ustid', 'commercial_court', 'delivery_order_mail', 'dunning_lock', 'linked_customer_vendor',
+    'reduction_terms',
   );
 
   my @includeable_custom_variables = grep { $_->{includeable} } @{ $cvar_configs };
@@ -187,10 +228,15 @@ sub list_names {
   push @columns, map { "cvar_$_->{name}" } @includeable_custom_variables;
 
   my %column_defs = (
+    'ids'               => { raw_header_data => SL::Presenter::Tag::checkbox_tag("", id => "multi_all", checkall => "[data-checkall=1]"), align => 'center' },
     'id'                => { 'text' => $locale->text('ID'), },
     "$form->{db}number" => { 'text' => $locale->text('Number'), },
+    'obsolete'          => { 'text' => $locale->text('Validity'), },
     'name'              => { 'text' => $form->{IS_CUSTOMER} ? $::locale->text('Customer Name') : $::locale->text('Vendor Name'), },
     'contact'           => { 'text' => $locale->text('Contact'), },
+    'main_contact_person'  => { 'text' => $locale->text('Main Contact Person'), },
+    'department_1'      => { 'text' => $locale->text('Department') . " 1", },
+    'department_2'      => { 'text' => $locale->text('Department') . " 2", },
     'phone'             => { 'text' => $locale->text('Phone'), },
     'fax'               => { 'text' => $locale->text('Fax'), },
     'email'             => { 'text' => $locale->text('E-mail'), },
@@ -208,18 +254,34 @@ sub list_names {
     'salesman'          => { 'text' => $locale->text('Salesman'), },
     'discount'          => { 'text' => $locale->text('Discount'), },
     'payment'           => { 'text' => $locale->text('Payment Terms'), },
+    'taxzone'           => { 'text' => $locale->text('Tax rate'), },
     'insertdate'        => { 'text' => $locale->text('Insert Date'), },
     'pricegroup'        => { 'text' => $locale->text('Pricegroup'), },
+    'invoice_mail'      => { 'text' => $locale->text('Email of the invoice recipient'), },
+    'delivery_order_mail' => { 'text' => $locale->text('Email of the delivery order recipient'), },
+    'contact_origin'    => { 'text' => $locale->text('Origin of personal data'), },
+    'creditlimit'       => { 'text' => $locale->text('Credit Limit'), },
+    'ustid'             => { 'text' => $locale->text('VAT ID'), },
+    'commercial_court'  => { 'text' => $locale->text('Commercial court'), },
+    create_zugferd_invoices => { text => $locale->text('Factur-X/ZUGFeRD settings'), },
+    'dunning_lock'      => { 'text' => $locale->text('Dunning lock'), },
+    'linked_customer_vendor' => { 'text' => $form->{IS_CUSTOMER} ? $locale->text('Linked Vendor') : $locale->text('Linked Customer') },
+    'reduction_terms'   => { 'text' => $locale->text('Reduction Terms'), },
     %column_defs_cvars,
   );
 
   map { $column_defs{$_}->{visible} = $form->{"l_$_"} eq 'Y' } @columns;
 
+  $column_defs{ids}->{visible} = 'HTML';
+
   my @hidden_variables  = ( qw(
       db status obsolete name contact email cp_name addr_street addr_zipcode
       addr_city addr_country addr_gln business_id salesman_id insertdateto insertdatefrom all
+      all_phonenumbers dunning_lock department_1 department_2 payment_id taxzone_id
     ), "$form->{db}number",
     map({ "cvar_$_->{name}" } @searchable_custom_variables),
+    map({'cvar_'. $_->{name} .'_from'} grep({$_->{type} eq 'date'} @searchable_custom_variables)),
+    map({'cvar_'. $_->{name} .'_to'}   grep({$_->{type} eq 'date'} @searchable_custom_variables)),
     map({'cvar_'. $_->{name} .'_qtyop'} grep({$_->{type} eq 'number'} @searchable_custom_variables)),
     map({ "l_$_" } @columns),
   );
@@ -249,7 +311,7 @@ sub list_names {
 
   my $report = SL::ReportGenerator->new(\%myconfig, $form);
 
-  $report->set_options('top_info_text'         => join("\n", @options),
+  $report->set_options('raw_top_info_text'     => $form->parse_html_template('ct/list_names_top', { options => \@options }),
                        'raw_bottom_info_text'  => $form->parse_html_template('ct/list_names_bottom'),
                        'output_format'         => 'HTML',
                        'title'                 => $form->{title},
@@ -276,16 +338,27 @@ sub list_names {
   foreach my $ref (@{ $form->{CT} }) {
     my $row = { map { $_ => { 'data' => '' } } @columns };
 
+    my $ord_id = $ref->{id};
+    $row->{ids}  = {
+      'raw_data' => $cgi->checkbox('-name' => "multi_ct_id[+]", ' id' => "multi_ct_id[+]", '-value' => $ord_id, 'data-checkall' => 1, '-label' => ''),
+      'valign'   => 'center',
+      'align'    => 'center',
+    };
+
     if ($ref->{id} ne $previous_id) {
       $previous_id = $ref->{id};
       $ref->{discount} = $form->format_amount(\%myconfig, $ref->{discount} * 100.0, 2);
+      $ref->{creditlimit} = $form->format_amount(\%myconfig, $ref->{creditlimit}, 2);
       map { $row->{$_}->{data} = $ref->{$_} } @columns;
 
       $row->{name}->{link}  = build_std_url('script=controller.pl', 'action=CustomerVendor/edit', 'id=' . E($ref->{id}), 'callback', @hidden_nondefault);
       $row->{email}->{link} = 'mailto:' . E($ref->{email});
     }
 
-    my $base_url              = build_std_url("script=$ref->{module}.pl", 'action=edit', 'id=' . E($ref->{invid}), 'callback', @hidden_nondefault);
+    $row->{obsolete}{data} = $ref->{obsolete} ? $locale->text('Obsolete') : $locale->text('Valid');
+
+    my $base_url              = build_std_url("script=controller.pl", 'action=Order/edit', 'id=' . E($ref->{invid}), 'callback', @hidden_nondefault);
+
     $row->{invnumber}->{link} = $base_url;
     $row->{ordnumber}->{link} = $base_url . "&type=${ordertype}";
     $row->{quonumber}->{link} = $base_url . "&type=${quotationtype}";
@@ -295,6 +368,10 @@ sub list_names {
     if (my $number = SL::CTI->sanitize_number(number => $ref->{phone})) {
       $row->{phone}->{link}       = SL::CTI->call_link(number => $number);
       $row->{phone}->{link_class} = 'cti_call_action';
+    }
+
+    if ($ref->{linked_customer_vendor_id}) {
+      $row->{linked_customer_vendor}->{link} = build_std_url('script=controller.pl', 'action=CustomerVendor/edit', 'id=' . E($ref->{linked_customer_vendor_id}), 'callback', 'db=' . ($form->{IS_CUSTOMER} ? 'vendor' : 'customer'));
     }
 
     $report->add_data($row);
@@ -308,7 +385,6 @@ sub list_names {
 
 sub list_contacts {
   $::lxdebug->enter_sub;
-  $::auth->assert('customer_vendor_edit');
 
   $::form->{sortdir} = 1 unless defined $::form->{sortdir};
 
@@ -320,7 +396,7 @@ sub list_contacts {
   my $cvar_configs = CVar->get_configs('module' => 'Contacts');
 
   my @columns      = qw(
-    cp_id vcname vcnumber cp_name cp_givenname cp_street cp_zipcode cp_city cp_phone1 cp_phone2 cp_privatphone
+    cp_id vcname vcnumber cp_name cp_givenname cp_street cp_zipcode cp_city cp_country cp_phone1 cp_phone2 cp_privatphone
     cp_mobile1 cp_mobile2 cp_fax cp_email cp_privatemail cp_abteilung cp_position cp_birthday cp_gender
   );
 
@@ -343,11 +419,12 @@ sub list_contacts {
     'cp_id'        => { 'text' => $::locale->text('ID'), },
     'vcname'       => { 'text' => $::locale->text('Customer/Vendor'), },
     'vcnumber'     => { 'text' => $::locale->text('Customer/Vendor Number'), },
-    'cp_name'      => { 'text' => $::locale->text('Name'), },
+    'cp_name'      => { 'text' => $::locale->text('Surname'), },
     'cp_givenname' => { 'text' => $::locale->text('Given Name'), },
     'cp_street'    => { 'text' => $::locale->text('Street'), },
     'cp_zipcode'   => { 'text' => $::locale->text('Zipcode'), },
     'cp_city'      => { 'text' => $::locale->text('City'), },
+    'cp_country'   => { 'text' => $::locale->text('Country'), },
     'cp_phone1'    => { 'text' => $::locale->text('Phone1'), },
     'cp_phone2'    => { 'text' => $::locale->text('Phone2'), },
     'cp_mobile1'   => { 'text' => $::locale->text('Mobile1'), },
@@ -379,7 +456,7 @@ sub list_contacts {
 
   my @options;
   push @options, $::locale->text('Search term') . ': ' . $::form->{search_term} if $::form->{search_term};
-  for (qw(cp_name cp_givenname cp_title cp_email cp_abteilung cp_project)) {
+  for (qw(cp_name cp_givenname cp_title cp_email vcname cp_abteilung cp_project)) {
     push @options, $column_defs{$_}{text} . ': ' . $::form->{filter}{$_} if $::form->{filter}{$_};
   }
   if ($::form->{filter}{status}) {
@@ -418,6 +495,10 @@ sub list_contacts {
     $row->{vcname}->{link}   = build_std_url('script=controller.pl', 'action=CustomerVendor/edit', 'id=' . E($ref->{vcid}), 'db=' . E($ref->{db}), 'callback', @hidden_nondefault);
     $row->{vcnumber}->{link} = $row->{vcname}->{link};
 
+    for (qw(cp_name cp_givenname)) {
+      $row->{$_}->{link} = build_std_url('script=controller.pl', 'action=Contact/edit', 'id=' . E($ref->{cp_id}), 'callback', @hidden_nondefault);
+    }
+
     for (qw(cp_email cp_privatemail)) {
       $row->{$_}->{link} = 'mailto:' . E($ref->{$_}) if $ref->{$_};
     }
@@ -435,6 +516,31 @@ sub list_contacts {
   $report->generate_with_headers();
 
   $::lxdebug->leave_sub;
+}
+
+sub names_status_multi {
+  $main::lxdebug->enter_sub();
+
+  my $form     = $main::form;
+  my %myconfig = %main::myconfig;
+  my $locale   = $main::locale;
+  my $obsolete = $form->{obsolete} ? 1 : 0;
+
+  $::auth->assert('customer_vendor_all_edit');
+
+  my @ct_ids = @{ $form->{multi_ct_id} // [] };
+
+  if (!scalar @ct_ids) {
+    $form->show_generic_error($locale->text('You have not selected any entry.'));
+  }
+
+  my $class = $form->{db} eq 'customer' ? 'Customer' : 'Vendor';
+  "SL::DB::Manager::$class"->update_all(set => { obsolete => $obsolete }, where => [ 'id' => \@ct_ids ]);
+
+  print $form->redirect_header($form->{callback});
+  $::dispatcher->end_request;
+
+  $main::lxdebug->leave_sub();
 }
 
 sub setup_ct_search_action_bar {
@@ -456,6 +562,21 @@ sub setup_ct_list_names_action_bar {
 
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
+      combobox => [
+        action => [ t8('Validity') ],
+        action => [
+          t8('Mark as obsolete'),
+          submit   => [ '#form', { action => 'names_status_multi', obsolete => 1 } ],
+          confirm  => t8('Do you really want to change the selected entries?'),
+          disabled => $::auth->assert('customer_vendor_all_edit', 1) ? undef : t8('You do not have the permissions to access this function.'),
+        ],
+        action => [
+          t8('Mark as valid'),
+          submit   => [ '#form', { action => 'names_status_multi', obsolete => 0 } ],
+          confirm  => t8('Do you really want to change the selected entries?'),
+          disabled => $::auth->assert('customer_vendor_all_edit', 1) ? undef : t8('You do not have the permissions to access this function.'),
+        ],
+      ],
       action => [
         t8('Add'),
         submit    => [ '#new_form', { action => 'CustomerVendor/add' } ],

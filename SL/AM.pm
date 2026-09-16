@@ -47,8 +47,17 @@ use SL::DB::AuthUser;
 use SL::DB::Default;
 use SL::DB::Employee;
 use SL::DB::Chart;
+use SL::DB::Customer;
+use SL::DB::Part;
+use SL::DB::Vendor;
 use SL::DB;
 use SL::GenericTranslations;
+use SL::Helper::UserPreferences::DisplayPreferences;
+use SL::Helper::UserPreferences::PositionsScrollbar;
+use SL::Helper::UserPreferences::PartPickerSearch;
+use SL::Helper::UserPreferences::TimeRecording;
+use SL::Helper::UserPreferences::UpdatePositions;
+use SL::Helper::UserPreferences::ItemInputPosition;
 
 use strict;
 
@@ -82,14 +91,17 @@ sub get_account {
     my $chart_obj = SL::DB::Manager::Chart->find_by(id => $form->{id}) || die "Can't open chart";
 
     my @chart_fields = qw(accno description charttype category link pos_bilanz
-                          pos_eur pos_er new_chart_id valid_from pos_bwa datevautomatik);
+                          pos_eur pos_er new_chart_id valid_from pos_bwa datevautomatik
+                          invalid);
     foreach my $cf ( @chart_fields ) {
       $form->{"$cf"} = $chart_obj->$cf;
     }
 
     my $active_taxkey = $chart_obj->get_active_taxkey;
-    $form->{$_}  = $active_taxkey->$_ foreach qw(taxkey_id pos_ustva tax_id startdate);
-    $form->{tax} = $active_taxkey->tax_id . '--' . $active_taxkey->taxkey_id;
+    if ($active_taxkey) {
+      $form->{$_}  = $active_taxkey->$_ foreach qw(taxkey_id pos_ustva tax_id startdate);
+      $form->{tax} = $active_taxkey->tax_id . '--' . $active_taxkey->taxkey_id;
+    }
 
     # check if there are any transactions for this chart
     $form->{orphaned} = $chart_obj->has_transaction ? 0 : 1;
@@ -100,7 +112,7 @@ sub get_account {
 
     # get the taxkeys of the account
     $form->{ACCOUNT_TAXKEYS} = [];
-    foreach my $taxkey ( @{ $chart_obj->taxkeys } ) {
+    foreach my $taxkey ( sort { $b->startdate <=> $a->startdate } @{ $chart_obj->taxkeys } ) {
       push @{ $form->{ACCOUNT_TAXKEYS} }, { id             => $taxkey->id,
                                             chart_id       => $taxkey->chart_id,
                                             tax_id         => $taxkey->tax_id,
@@ -114,7 +126,7 @@ sub get_account {
     }
 
     # get new accounts (Folgekonto). Find all charts with the same link
-    $form->{NEWACCOUNT} = $chart_obj->db->dbh->selectall_arrayref('select id, accno,description from chart where link = ? order by accno', {Slice => {}}, $chart_obj->link);
+    $form->{NEWACCOUNT} = $chart_obj->db->dbh->selectall_arrayref('select id, accno,description from chart where link = ? and id != ? order by accno', {Slice => {}}, $chart_obj->link, $form->{id});
 
   } else { # set to orphaned for new charts, so chart_type can be changed (needed by $AccountIsPosted)
     $form->{orphaned} = 1;
@@ -224,7 +236,8 @@ sub _save_account {
                   pos_er = ?,
                   new_chart_id = ?,
                   valid_from = ?,
-                  datevautomatik = ?
+                  datevautomatik = ?,
+                  invalid = ?
                 WHERE id = ?|;
 
     @values = (
@@ -240,6 +253,7 @@ sub _save_account {
                   conv_i($form->{new_chart_id}),
                   conv_date($form->{valid_from}),
                   ($form->{datevautomatik} eq 'T') ? 'true':'false',
+                  $form->{invalid} ? 'true' : 'false',
                 $form->{id},
     );
 
@@ -428,83 +442,57 @@ sub get_language_details {
   return @res;
 }
 
-sub prepare_template_filename {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $myconfig, $form) = @_;
-
-  my ($filename, $display_filename);
-
-  $filename = $form->{formname};
-
-  if ($form->{language}) {
-    my ($id, $template_code) = split(/--/, $form->{language});
-    $filename .= "_${template_code}";
-  }
-
-  if ($form->{printer}) {
-    my ($id, $template_code) = split(/--/, $form->{printer});
-    $filename .= "_${template_code}";
-  }
-
-  $filename .= "." . ($form->{format} eq "html" ? "html" : "tex");
-  if ($form->{"formname"} =~ m|\.\.| || $form->{"formname"} =~ m|^/|) {
-    $filename =~ s|.*/||;
-  }
-  $display_filename = $filename;
-  $filename = SL::DB::Default->get->templates . "/$filename";
-
-  $main::lxdebug->leave_sub();
-
-  return ($filename, $display_filename);
+sub displayable_name_specs_by_module {
+  +{
+     'SL::DB::Customer' => {
+       specs => SL::DB::Customer->displayable_name_specs,
+       prefs => SL::DB::Customer->displayable_name_prefs,
+     },
+     'SL::DB::Vendor' => {
+       specs => SL::DB::Vendor->displayable_name_specs,
+       prefs => SL::DB::Vendor->displayable_name_prefs,
+     },
+     'SL::DB::Part' => {
+       specs => SL::DB::Part->displayable_name_specs,
+       prefs => SL::DB::Part->displayable_name_prefs,
+     },
+  };
 }
 
-
-sub load_template {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $filename) = @_;
-
-  my ($content, $lines) = ("", 0);
-
-  local *TEMPLATE;
-
-  if (open(TEMPLATE, $filename)) {
-    while (<TEMPLATE>) {
-      $content .= $_;
-      $lines++;
-    }
-    close(TEMPLATE);
-  }
-
-  $content = Encode::decode('utf-8-strict', $content);
-
-  $main::lxdebug->leave_sub();
-
-  return ($content, $lines);
+sub positions_scrollbar_height {
+  SL::Helper::UserPreferences::PositionsScrollbar->new()->get_height();
 }
 
-sub save_template {
-  $main::lxdebug->enter_sub();
+sub purchase_search_makemodel {
+  SL::Helper::UserPreferences::PartPickerSearch->new()->get_purchase_search_makemodel();
+}
 
-  my ($self, $filename, $content) = @_;
+sub sales_search_customer_partnumber {
+  SL::Helper::UserPreferences::PartPickerSearch->new()->get_sales_search_customer_partnumber();
+}
 
-  local *TEMPLATE;
+sub positions_show_update_button {
+  SL::Helper::UserPreferences::UpdatePositions->new()->get_show_update_button();
+}
 
-  my $error = "";
+sub time_recording_use_duration {
+  SL::Helper::UserPreferences::TimeRecording->new()->get_use_duration();
+}
 
-  if (open(TEMPLATE, ">", $filename)) {
-    $content = Encode::encode('utf-8-strict', $content);
-    $content =~ s/\r\n/\n/g;
-    print(TEMPLATE $content);
-    close(TEMPLATE);
-  } else {
-    $error = $!;
-  }
+sub longdescription_dialog_size_percentage {
+  SL::Helper::UserPreferences::DisplayPreferences->new()->get_longdescription_dialog_size_percentage();
+}
 
-  $main::lxdebug->leave_sub();
+sub layout_style {
+  SL::Helper::UserPreferences::DisplayPreferences->new()->get_layout_style();
+}
 
-  return $error;
+sub part_picker_search_all_as_list_default {
+  SL::Helper::UserPreferences::PartPickerSearch->new()->get_all_as_list_default();
+}
+
+sub order_item_input_position {
+  SL::Helper::UserPreferences::ItemInputPosition->new()->get_order_item_input_position();
 }
 
 sub save_preferences {
@@ -512,7 +500,7 @@ sub save_preferences {
 
   my ($self, $form) = @_;
 
-  my $employee = SL::DB::Manager::Employee->find_by(login => $::myconfig{login});
+  my $employee = SL::DB::Manager::Employee->current;
   $employee->update_attributes(name => $form->{name});
 
   my $user = SL::DB::Manager::AuthUser->find_by(login => $::myconfig{login});
@@ -521,6 +509,44 @@ sub save_preferences {
       %{ $user->config_values },
       map { ($_ => $form->{$_}) } SL::DB::AuthUser::CONFIG_VARS(),
     });
+
+  # Displayable name preferences
+  my $displayable_name_specs_by_module = displayable_name_specs_by_module();
+  foreach my $specs (@{ $form->{displayable_name_specs} }) {
+    if (!$specs->{value} || $specs->{value} eq $displayable_name_specs_by_module->{$specs->{module}}->{prefs}->get_default()) {
+      $displayable_name_specs_by_module->{$specs->{module}}->{prefs}->delete($specs->{value});
+    } else {
+      $displayable_name_specs_by_module->{$specs->{module}}->{prefs}->store_value($specs->{value});
+    }
+  }
+
+  if (exists $form->{positions_scrollbar_height}) {
+    SL::Helper::UserPreferences::PositionsScrollbar->new()->store_height($form->{positions_scrollbar_height})
+  }
+  if (exists $form->{purchase_search_makemodel}) {
+    SL::Helper::UserPreferences::PartPickerSearch->new()->store_purchase_search_makemodel($form->{purchase_search_makemodel})
+  }
+  if (exists $form->{sales_search_customer_partnumber}) {
+    SL::Helper::UserPreferences::PartPickerSearch->new()->store_sales_search_customer_partnumber($form->{sales_search_customer_partnumber})
+  }
+  if (exists $form->{positions_show_update_button}) {
+    SL::Helper::UserPreferences::UpdatePositions->new()->store_show_update_button($form->{positions_show_update_button})
+  }
+  if (exists $form->{time_recording_use_duration}) {
+    SL::Helper::UserPreferences::TimeRecording->new()->store_use_duration($form->{time_recording_use_duration})
+  }
+  if (exists $form->{longdescription_dialog_size_percentage}) {
+    SL::Helper::UserPreferences::DisplayPreferences->new()->store_longdescription_dialog_size_percentage($form->{longdescription_dialog_size_percentage})
+  }
+  if (exists $form->{layout_style}) {
+    SL::Helper::UserPreferences::DisplayPreferences->new()->store_layout_style($form->{layout_style})
+  }
+  if (exists $form->{part_picker_search_all_as_list_default}) {
+    SL::Helper::UserPreferences::PartPickerSearch->new()->store_all_as_list_default($form->{part_picker_search_all_as_list_default})
+  }
+  if (exists $form->{order_item_input_position}) {
+    SL::Helper::UserPreferences::ItemInputPosition->new()->store_order_item_input_position($form->{order_item_input_position})
+  }
 
   $main::lxdebug->leave_sub();
 
@@ -970,13 +996,16 @@ sub taxes {
                    t.taxkey,
                    t.taxdescription,
                    round(t.rate * 100, 2) AS rate,
-                   (SELECT accno FROM chart WHERE id = chart_id) AS taxnumber,
-                   (SELECT description FROM chart WHERE id = chart_id) AS account_description,
-                   (SELECT accno FROM chart WHERE id = skonto_sales_chart_id) AS skonto_chart_accno,
-                   (SELECT description FROM chart WHERE id = skonto_sales_chart_id) AS skonto_chart_description,
-                   (SELECT accno FROM chart WHERE id = skonto_purchase_chart_id) AS skonto_chart_purchase_accno,
-                   (SELECT description FROM chart WHERE id = skonto_purchase_chart_id) AS skonto_chart_purchase_description
+                   tc.accno               AS taxnumber,
+                   tc.description         AS account_description,
+                   ssc.accno              AS skonto_chart_accno,
+                   ssc.description        AS skonto_chart_description,
+                   spc.accno              AS skonto_chart_purchase_accno,
+                   spc.description        AS skonto_chart_purchase_description
                  FROM tax t
+                 LEFT JOIN chart tc  ON (tc.id = t.chart_id)
+                 LEFT JOIN chart ssc ON (ssc.id = t.skonto_sales_chart_id)
+                 LEFT JOIN chart spc ON (spc.id = t.skonto_purchase_chart_id)
                  ORDER BY taxkey, rate|;
 
   my $sth = $dbh->prepare($query);
@@ -1117,14 +1146,13 @@ sub _save_tax {
   $chart_categories .= 'E' if $form->{expense};
   $chart_categories .= 'C' if $form->{costs};
 
-  my @values = ($form->{taxkey}, $form->{taxdescription}, $form->{rate}, conv_i($form->{chart_id}), conv_i($form->{chart_id}), conv_i($form->{skonto_sales_chart_id}), conv_i($form->{skonto_purchase_chart_id}), $chart_categories);
+  my @values = ($form->{taxkey}, $form->{taxdescription}, $form->{rate}, conv_i($form->{chart_id}), conv_i($form->{skonto_sales_chart_id}), conv_i($form->{skonto_purchase_chart_id}), $chart_categories);
   if ($form->{id} ne "") {
     $query = qq|UPDATE tax SET
                   taxkey                   = ?,
                   taxdescription           = ?,
                   rate                     = ?,
                   chart_id                 = ?,
-                  taxnumber                = (SELECT accno FROM chart WHERE id = ? ),
                   skonto_sales_chart_id    = ?,
                   skonto_purchase_chart_id = ?,
                   chart_categories         = ?
@@ -1138,13 +1166,12 @@ sub _save_tax {
                   taxdescription,
                   rate,
                   chart_id,
-                  taxnumber,
                   skonto_sales_chart_id,
                   skonto_purchase_chart_id,
                   chart_categories,
                   id
                 )
-                VALUES (?, ?, ?, ?, (SELECT accno FROM chart WHERE id = ?), ?, ?,  ?, ?)|;
+                VALUES (?, ?, ?, ?, ?, ?,  ?, ?)|;
   }
   push(@values, $form->{id});
   do_query($form, $dbh, $query, @values);
@@ -1177,6 +1204,8 @@ sub save_warehouse {
   $main::lxdebug->enter_sub();
 
   my ($self, $myconfig, $form) = @_;
+
+  croak('Need at least one new bin') unless $form->{number_of_new_bins} > 0;
 
   SL::DB->client->with_transaction(sub {
     my $dbh = SL::DB->client->dbh;
@@ -1305,12 +1334,15 @@ sub get_warehouse {
   map { $form->{$_} = $ref->{$_} } keys %{ $ref };
 
   $query = <<SQL;
-    SELECT b.*,
-      (   EXISTS(SELECT i.bin_id FROM inventory i WHERE i.bin_id = b.id LIMIT 1)
-       OR EXISTS(SELECT p.bin_id FROM parts     p WHERE p.bin_id = b.id LIMIT 1))
-      AS in_use
-    FROM bin b
-    WHERE b.warehouse_id = ?
+   SELECT b.*, use.in_use
+     FROM bin b
+     LEFT JOIN (
+       SELECT DISTINCT bin_id, TRUE AS in_use FROM inventory
+       UNION
+       SELECT DISTINCT bin_id, TRUE AS in_use FROM parts
+     ) use ON use.bin_id = b.id
+     WHERE b.warehouse_id = ?
+     ORDER by description;
 SQL
 
   $form->{BINS} = selectall_hashref_query($form, $dbh, $query, conv_i($form->{id}));

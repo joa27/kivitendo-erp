@@ -3,14 +3,10 @@ package SL::Menu;
 use strict;
 
 use SL::Auth;
-use YAML ();
 use File::Spec;
 use SL::MoreCommon qw(uri_encode);
-
-our $yaml_xs;
-BEGIN {
-   $yaml_xs =  eval { require YAML::XS };
-}
+use SL::InstanceState;
+use SL::YAML;
 
 our %menu_cache;
 
@@ -29,11 +25,7 @@ sub new {
     for my $file (@files) {
       my $data;
       eval {
-        if ($yaml_xs) {
-          $data = YAML::XS::LoadFile(File::Spec->catfile($path, $file));
-        } else {
-          $data = YAML::LoadFile(File::Spec->catfile($path, $file));
-        }
+        $data = SL::YAML::LoadFile(File::Spec->catfile($path, $file));
         1;
       } or do {
         die "Error while parsing $file: $@";
@@ -49,10 +41,12 @@ sub new {
       _merge($nodes, $nodes_by_id, $data);
     }
 
+    my $instance_state = SL::InstanceState->new;
 
     my $self = bless {
       nodes => $nodes,
       by_id => $nodes_by_id,
+      instance_state => $instance_state,
     }, $package;
 
     $self->build_tree;
@@ -180,7 +174,7 @@ sub parse_access_string {
 
   my $access = $node->{access};
 
-  while ($access =~ m/^([a-z_\/]+|\||\&|\(|\)|\s+)/) {
+  while ($access =~ m/^([a-z_\/]+|\!|\||\&|\(|\)|\s+)/) {
     my $token = $1;
     substr($access, 0, length($1)) = "";
 
@@ -199,12 +193,14 @@ sub parse_access_string {
       }
       $cur_ary = $stack[-1];
 
-    } elsif (($token eq "|") || ($token eq "&")) {
+    } elsif (($token eq "|") || ($token eq "&") || ($token eq "!")) {
       push @{$cur_ary}, $token;
 
     } else {
       if ($token =~ m{^ client / (.*) }x) {
         push @{$cur_ary}, $self->parse_instance_conf_string($1);
+      } elsif ($token =~ m{^ state / (.*) }x) {
+        push @{$cur_ary}, $self->parse_instance_state_string($1);
       } else {
         push @{$cur_ary}, $::auth->check_right($::myconfig{login}, $token, 1);
       }
@@ -248,6 +244,11 @@ sub parse_instance_conf_string {
   return $::instance_conf->data->{$setting};
 }
 
+sub parse_instance_state_string {
+  my ($self, $setting) = @_;
+  return $self->{instance_state}->$setting;
+}
+
 sub clear_access {
   my ($self) = @_;
   for my $node ($self->tree_walk("all")) {
@@ -273,4 +274,3 @@ sub set_access {
 }
 
 1;
-

@@ -2,39 +2,78 @@ package SL::DB::Customer;
 
 use strict;
 
+use List::Util qw(first);
 use Rose::DB::Object::Helpers qw(as_tree);
 
+use SL::Locale::String qw(t8);
 use SL::DBUtils ();
 use SL::DB::MetaSetup::Customer;
 use SL::DB::Manager::Customer;
 use SL::DB::Helper::IBANValidation;
 use SL::DB::Helper::TransNumberGenerator;
+use SL::DB::Helper::VATIDNrValidation;
+use SL::DB::Helper::CustomerVendorLink (mode => 'customer');
 use SL::DB::Helper::CustomVariables (
   module      => 'CT',
   cvars_alias => 1,
+);
+use SL::DB::Helper::DisplayableNamePreferences (
+  title   => t8('Customer'),
+  options => [ {name => 'customernumber', title => t8('Customer Number') },
+               {name => 'name',           title => t8('Name')   },
+               {name => 'street',         title => t8('Street') },
+               {name => 'city',           title => t8('City') },
+               {name => 'zipcode',        title => t8('Zipcode')},
+               {name => 'email',          title => t8('E-Mail') },
+               {name => 'phone',          title => t8('Phone')  },
+               {name => 'country',        title => t8('Country'), sub => sub { $_[0]->country->description_localized($::myconfig{countrycode}) } }, ]
+);
+use SL::DB::Helper::CustomerVendorContacts (
+  join_package  => 'SL::DB::CustomerContact',
+  join_accessor => 'customer_id',
 );
 
 use SL::DB::VC;
 
 __PACKAGE__->meta->add_relationship(
+  additional_billing_addresses => {
+    type         => 'one to many',
+    class        => 'SL::DB::AdditionalBillingAddress',
+    column_map   => { id      => 'customer_id' },
+    manager_args => { sort_by => 'lower(additional_billing_addresses.name),
+                                  lower(additional_billing_addresses.department_1),
+                                  lower(additional_billing_addresses.department_2),
+                                  lower(additional_billing_addresses.street),
+                                  lower(additional_billing_addresses.zipcode),
+                                  lower(additional_billing_addresses.city)' },
+  },
   shipto => {
     type         => 'one to many',
     class        => 'SL::DB::Shipto',
     column_map   => { id      => 'trans_id' },
-    manager_args => { sort_by => 'lower(shipto.shiptoname)' },
+    manager_args => { sort_by => 'lower(shipto.shiptoname),
+                                  lower(shipto.shiptodepartment_1),
+                                  lower(shipto.shiptodepartment_2),
+                                  lower(shipto.shiptostreet),
+                                  lower(shipto.shiptozipcode),
+                                  lower(shipto.shiptocity)' },
     query_args   => [ module   => 'CT' ],
   },
-  contacts => {
-    type         => 'one to many',
-    class        => 'SL::DB::Contact',
-    column_map   => { id      => 'cp_cv_id' },
-    manager_args => { sort_by => 'lower(contacts.cp_name)' },
+  customer_contacts => {
+    type => 'one to many',
+    class => 'SL::DB::CustomerContact',
+    column_map => { id => 'customer_id' },
+  },
+  linked_customer_vendor_rel => {
+    type       => 'many to many',
+    map_class  => 'SL::DB::CustomerVendorLink',
   },
 );
 
 __PACKAGE__->meta->initialize;
 
 __PACKAGE__->before_save('_before_save_set_customernumber');
+
 
 sub _before_save_set_customernumber {
   my ($self) = @_;
@@ -49,6 +88,7 @@ sub validate {
   my @errors;
   push @errors, $::locale->text('The customer name is missing.') if !$self->name;
   push @errors, $self->validate_ibans;
+  push @errors, $self->validate_vat_id_numbers;
 
   return @errors;
 }
@@ -57,12 +97,6 @@ sub short_address {
   my ($self) = @_;
 
   return join ', ', grep { $_ } $self->street, $self->zipcode, $self->city;
-}
-
-sub displayable_name {
-  my $self = shift;
-
-  return join ' ', grep $_, $self->customernumber, $self->name;
 }
 
 sub last_used_ar_chart {
@@ -91,5 +125,49 @@ sub is_customer { 1 };
 sub is_vendor   { 0 };
 sub payment_terms { goto &payment }
 sub number { goto &customernumber }
+
+sub create_zugferd_invoices_for_this_customer {
+  my ($self) = @_;
+
+  no warnings 'once';
+  return $::instance_conf->get_create_zugferd_invoices if $self->create_zugferd_invoices == -1;
+  return $self->create_zugferd_invoices;
+}
+
+sub default_billing_address {
+  my $self = shift;
+
+  die 'not an accessor' if @_ > 1;
+  return first { $_->default_address } @{ $self->additional_billing_addresses };
+}
+
+sub creditremaining {
+  my ($self) = @_;
+
+  # adapted from IS::IS::get_customer
+  my $creditremaining = $self->creditlimit;
+
+  my $query = qq|SELECT SUM(amount - paid) FROM ar WHERE customer_id = ?|;
+  my ($value) = SL::DBUtils::selectrow_query($::form, $self->db->dbh, $query, $self->id);
+  $creditremaining -= $value;
+
+  $query =
+    qq|SELECT o.amount,
+         (SELECT e.buy FROM exchangerate e
+          WHERE e.currency_id = o.currency_id
+            AND e.transdate = o.transdate)
+       FROM oe o
+       WHERE o.customer_id = ?
+         AND o.record_type = 'sales_order'
+         AND o.closed = '0'|;
+  my $sth = SL::DBUtils::prepare_execute_query($::form, $self->db->dbh, $query, $self->id);
+
+  while (my ($amount, $exch) = $sth->fetchrow_array) {
+    $exch = 1 unless $exch;
+    $creditremaining -= $amount * $exch;
+  }
+
+  return $creditremaining;
+}
 
 1;

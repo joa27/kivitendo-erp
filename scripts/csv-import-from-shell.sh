@@ -113,9 +113,21 @@ function do_curl {
   #   Projektnummer (nur, wenn "settings.duplicates" auch gesetzt
   #   ist).
 
+  # Spaltenzuordnungen für Benutzerdefinierte Variablen:
+  #   Beispiel (Achtung, die Reihenfolge ist wichtig):
+
+  #   "mappings[+].from=vm_product_length"
+  #   "mappings[].to=cvar_vm_product_length"
+  #   "mappings[+].from=vm_product_width"
+  #   "mappings[].to=cvar_vm_product_width"
+  #   "mappings[+].from=vm_product_height"
+  #   "mappings[].to=cvar_vm_product_height"
+
   curl \
+    -X 'POST' \
+    -H 'Content-Type:multipart/form-data' \
     --silent --insecure \
-    -F 'action=CsvImport/dispatch' \
+    -F 'action=CsvImport/import' \
     -F "${action}=1" \
     -F 'escape_char=quote' \
     -F 'profile.type=parts' \
@@ -142,10 +154,10 @@ function do_curl {
 tmpf=$(mktemp)
 do_curl 'action_test'  > $tmpf
 
-if grep -q -i 'es wurden.*objekte gefunden, von denen.*' $tmpf; then
+if grep -q -i 'Ihr Import wird verarbeitet' $tmpf; then
   rm $tmpf
   do_curl 'action_import' > $tmpf
-  if grep -i 'von.*objekten wurden importiert' $tmpf ; then
+  if grep -i 'Ihr Import wird verarbeitet' $tmpf ; then
     rm $tmpf
   else
     echo "Import schlug fehl. Ausgabe befindet sich in ${tmpf}"

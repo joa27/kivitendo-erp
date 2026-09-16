@@ -11,17 +11,18 @@ __PACKAGE__->meta->table('delivery_order_items');
 __PACKAGE__->meta->columns(
   active_discount_source => { type => 'text', default => '', not_null => 1 },
   active_price_source    => { type => 'text', default => '', not_null => 1 },
-  base_qty               => { type => 'float', scale => 4 },
+  base_qty               => { type => 'float', precision => 4, scale => 4 },
   cusordnumber           => { type => 'text' },
   delivery_order_id      => { type => 'integer', not_null => 1 },
   description            => { type => 'text' },
-  discount               => { type => 'float', scale => 4 },
+  discount               => { type => 'float', precision => 4, scale => 4 },
   id                     => { type => 'integer', not_null => 1, sequence => 'delivery_order_items_id' },
   itime                  => { type => 'timestamp', default => 'now()' },
   lastcost               => { type => 'numeric', precision => 15, scale => 5 },
   longdescription        => { type => 'text' },
   marge_price_factor     => { type => 'numeric', default => 1, precision => 15, scale => 5 },
   mtime                  => { type => 'timestamp' },
+  orderer_id             => { type => 'integer' },
   ordnumber              => { type => 'text' },
   parts_id               => { type => 'integer', not_null => 1 },
   position               => { type => 'integer', not_null => 1 },
@@ -45,6 +46,11 @@ __PACKAGE__->meta->foreign_keys(
   delivery_order => {
     class       => 'SL::DB::DeliveryOrder',
     key_columns => { delivery_order_id => 'id' },
+  },
+
+  orderer => {
+    class       => 'SL::DB::Employee',
+    key_columns => { orderer_id => 'id' },
   },
 
   part => {
@@ -74,4 +80,4 @@ __PACKAGE__->meta->foreign_keys(
 );
 
 1;
-;
+

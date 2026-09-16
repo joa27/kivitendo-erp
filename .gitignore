@@ -22,7 +22,7 @@
 /users/session_files/
 /users/templates-cache/
 /users/templates-cache-for-tests/
-/users/xvfb_display
+/users/texmf/
 /webdav/*
 crm
 pod2html*

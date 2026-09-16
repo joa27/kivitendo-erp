@@ -133,7 +133,7 @@ sub setup_displayable_columns {
                                  { name => 'projectnumber', description => $::locale->text('Project (number)')       },
                                  { name => 'project',       description => $::locale->text('Project (description)')  },
                                  { name => 'amount',        description => $::locale->text('Amount')                 },
-                                 { name => 'chart',         description => $::locale->text('Account number')         },
+                                 { name => 'accno',         description => $::locale->text('Account number')         },
                                  { name => 'taxkey',        description => $::locale->text('Taxkey')                 },
                                 );
 }
@@ -160,14 +160,17 @@ sub check_objects {
 
   my $i = 0;
   my $num_data = scalar @{ $self->controller->data };
+  my $invoice_entry;
 
   foreach my $entry (@{ $self->controller->data }) {
     $self->controller->track_progress(progress => $i/$num_data * 100) if $i % 100 == 0;
 
     if ($entry->{raw_data}->{datatype} eq $self->_ar_column) {
       $self->handle_invoice($entry);
+      $invoice_entry = $entry;
     } elsif ($entry->{raw_data}->{datatype} eq $self->_transaction_column ) {
-      $self->handle_transaction($entry);
+      die "Cannot process transaction row without an invoice row" if !$invoice_entry;
+      $self->handle_transaction($entry, $invoice_entry);
     } else {
       die "unknown datatype";
     };
@@ -178,10 +181,7 @@ sub check_objects {
 
   $self->add_transactions_to_ar(); # go through all data entries again, adding receivable entry to ar lines while calculating amount and netamount
 
-  foreach my $entry (@{ $self->controller->data }) {
-    next unless ($entry->{raw_data}->{datatype} eq $self->_ar_column);
-    $self->check_verify_amounts($entry->{object});
-  };
+  $self->check_verify_amounts();
 
   foreach my $entry (@{ $self->controller->data }) {
     next unless ($entry->{raw_data}->{datatype} eq $self->_ar_column);
@@ -288,24 +288,23 @@ sub handle_invoice {
 }
 
 sub check_taxkey {
-  my ($self, $entry, $chart) = @_;
+  my ($self, $entry, $invoice_entry, $chart) = @_;
 
   die "check_taxkey needs chart object as an argument" unless ref($chart) eq 'SL::DB::Chart';
   # problem: taxkey is not unique in table tax, normally one of those entries is chosen directly from a dropdown
   # so we check if the chart has an active taxkey, and if it matches the taxkey from the import, use the active taxkey
   # if the chart doesn't have an active taxkey, use the first entry from Tax that matches the taxkey
 
-  my $object = $entry->{object};
+  my $object         = $entry->{object};
+  my $invoice_object = $invoice_entry->{object};
+
   unless ( defined $entry->{raw_data}->{taxkey} ) {
     push @{ $entry->{errors} }, $::locale->text('Error: taxkey missing'); # don't just assume 0, force taxkey in import
     return 0;
   };
 
-  my $tax;
-
-  if ( $entry->{raw_data}->{taxkey} == $chart->get_active_taxkey->tax->taxkey ) {
-    $tax = $chart->get_active_taxkey->tax;
-  } else {
+  my $tax = $chart->get_active_taxkey($invoice_object->deliverydate // $invoice_object->transdate // DateTime->today_local)->tax;
+  if ( $entry->{raw_data}->{taxkey} != $tax->taxkey ) {
    # assume there is only one tax entry with that taxkey, can't guess
     $tax = SL::DB::Manager::Tax->get_first( where => [ taxkey => $entry->{raw_data}->{taxkey} ]);
   };
@@ -340,7 +339,7 @@ sub check_amounts {
 };
 
 sub handle_transaction {
-  my ($self, $entry) = @_;
+  my ($self, $entry, $invoice_entry) = @_;
 
   # Prepare acc_trans data. amount is dealt with in add_transactions_to_ar
 
@@ -355,7 +354,7 @@ sub handle_transaction {
       return 0;
     };
 
-    if ( $self->check_taxkey($entry, $chart_obj) ) {
+    if ( $self->check_taxkey($entry, $invoice_entry, $chart_obj) ) {
       # do nothing, taxkey was assigned, just continue
     } else {
       # missing taxkey, don't do anything
@@ -499,11 +498,6 @@ sub check_verify_amounts {
 
     # check differences
     foreach my $entry (@{ $self->controller->data }) {
-      if ( @{ $entry->{errors} } ) {
-        push @{ $entry->{errors} }, $::locale->text($tv->{err_msg});
-        return 0;
-      };
-
       if ($entry->{raw_data}->{datatype} eq $self->_ar_column) {
         next if !$entry->{raw_data}->{ $tv->{raw_column} };
         my $parsed_value = $::form->parse_amount(\%::myconfig, $entry->{raw_data}->{ $tv->{raw_column} });
@@ -532,10 +526,10 @@ sub add_transactions_to_ar {
         if ( $ar_entry->{object}->{archart} && $ar_entry->{object}->{archart}->isa('SL::DB::Chart') ) {
           $ar_entry->{object}->recalculate_amounts; # determine and set amount and netamount for ar
           $ar_entry->{object}->create_ar_row(chart => $ar_entry->{object}->{archart});
-          $ar_entry->{info_data}->{amount}    = $ar_entry->{object}->amount;
-          $ar_entry->{info_data}->{netamount} = $ar_entry->{object}->netamount;
+          $ar_entry->{info_data}->{calc_amount}    = $ar_entry->{object}->amount_as_number;
+          $ar_entry->{info_data}->{calc_netamount} = $ar_entry->{object}->netamount_as_number;
         } else {
-          push @{ $entry->{errors} }, $::locale->text("ar_chart isn't a valid chart");
+          push @{ $ar_entry->{errors} }, $::locale->text("The receivables chart isn't a valid chart.");
         };
       };
       $ar_entry = $entry; # remember as last ar_entry
@@ -561,8 +555,8 @@ sub add_transactions_to_ar {
   if ( $ar_entry->{object} ) {
     if ( $ar_entry->{object}->{archart} && $ar_entry->{object}->{archart}->isa('SL::DB::Chart') ) {
       $ar_entry->{object}->recalculate_amounts;
-      $ar_entry->{info_data}->{amount}    = $ar_entry->{object}->amount;
-      $ar_entry->{info_data}->{netamount} = $ar_entry->{object}->netamount;
+      $ar_entry->{info_data}->{calc_amount}    = $ar_entry->{object}->amount_as_number;
+      $ar_entry->{info_data}->{calc_netamount} = $ar_entry->{object}->netamount_as_number;
 
       $ar_entry->{object}->create_ar_row(chart => $ar_entry->{object}->{archart});
     } else {

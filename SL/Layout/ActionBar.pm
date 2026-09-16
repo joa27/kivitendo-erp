@@ -10,6 +10,9 @@ use SL::Layout::ActionBar::ComboBox;
 use SL::Layout::ActionBar::Link;
 use SL::Layout::ActionBar::Separator;
 
+use SL::Presenter::EscapedText qw(escape);
+use SL::Presenter::Tag qw(html_tag);
+
 use constant HTML_CLASS => 'layout-actionbar';
 
 use Rose::Object::MakeMethods::Generic (
@@ -28,16 +31,20 @@ my %class_descriptors = (
 sub pre_content {
   my ($self) = @_;
 
+  my $title = escape($::locale->text($::form->{title} || ""));
   my $content = join '', map { $_->render } @{ $self->actions };
-  return if !$content;
-  $::request->presenter->html_tag('div', $content, class => HTML_CLASS);
+
+  html_tag('div',
+    html_tag('h1', $title, id => 'title-headline', 'data-base-title' => $title) .
+    ($content ? html_tag('div', $content, class => HTML_CLASS) : ''),
+    class => 'layout-headline');
 }
 
 sub javascripts_inline {
   join '', map { $_->script } @{ $_[0]->actions };
 }
 
-sub javascripts {
+sub static_javascripts {
   'kivi.ActionBar.js'
 }
 

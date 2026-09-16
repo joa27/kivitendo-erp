@@ -16,7 +16,7 @@ use Rose::Object::MakeMethods::Generic (
   'scalar --get_set_init' => [ qw(project_types models) ],
 );
 
-__PACKAGE__->run_before(sub { $::auth->assert('sales_order_edit'); });
+__PACKAGE__->run_before(sub { $::auth->assert('sales_financial_controlling'); });
 
 my %sort_columns = (
   ordnumber               => t8('Order'),
@@ -46,8 +46,9 @@ sub action_list {
 sub prepare_report {
   my ($self)      = @_;
 
-  my $report      = SL::ReportGenerator->new(\%::myconfig, $::form);
-  $self->{report} = $report;
+  my $report       = SL::ReportGenerator->new(\%::myconfig, $::form);
+  $report->{title} = t8('Financial Controlling Report');
+  $self->{report}  = $report;
 
   my @columns     = qw(customer globalprojectnumber globalproject_type transaction_description ordnumber net_amount delivered_amount delivered_amount_p billed_amount billed_amount_p paid_amount paid_amount_p
                        billable_amount billable_amount_p other_amount);
@@ -277,8 +278,7 @@ sub link_to {
   if ($object->isa('SL::DB::Order')) {
     my $type = $object->type;
     my $id   = $object->id;
-
-    return "oe.pl?action=$action&type=$type&vc=customer&id=$id";
+    return "controller.pl?action=Order/$action&type=$type&id=$id";
   }
   if ($object->isa('SL::DB::Customer')) {
     my $id     = $object->id;

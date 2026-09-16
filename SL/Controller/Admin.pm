@@ -17,6 +17,7 @@ use SL::Helper::Flash;
 use SL::Locale::String qw(t8);
 use SL::System::InstallationLock;
 use SL::User;
+use SL::Version;
 use SL::Layout::AdminLogin;
 
 use Rose::Object::MakeMethods::Generic
@@ -30,7 +31,7 @@ __PACKAGE__->run_before(\&setup_layout);
 __PACKAGE__->run_before(\&setup_client, only => [ qw(list_printers new_printer edit_printer save_printer delete_printer) ]);
 
 sub get_auth_level { "admin" };
-sub keep_auth_vars {
+sub keep_auth_vars_in_form {
   my ($class, %params) = @_;
   return $params{action} eq 'login';
 }
@@ -83,10 +84,9 @@ sub action_create_auth_tables {
   $::auth->set_session_value('admin_password', $::lx_office_conf{authentication}->{admin_password});
   $::auth->create_or_refresh_session;
 
-  return if $self->apply_dbupgrade_scripts;
+  my $scripts_applied = $self->apply_dbupgrade_scripts;
 
-  my $group = (SL::DB::Manager::AuthGroup->get_all(limit => 1))[0];
-  if (!$group) {
+  if (! SL::DB::Manager::AuthGroup->get_all_count) {
     SL::DB::AuthGroup->new(
       name        => t8('Full Access'),
       description => t8('Full access to all functions'),
@@ -94,7 +94,7 @@ sub action_create_auth_tables {
     )->save;
   }
 
-  $self->action_login;
+  $self->action_login unless $scripts_applied;
 }
 
 #
@@ -119,7 +119,7 @@ sub action_new_user {
       countrycode  => $defaults->language('de'),
       numberformat => $defaults->numberformat('1.000,00'),
       dateformat   => $defaults->dateformat('dd.mm.yy'),
-      stylesheet   => "kivitendo.css",
+      stylesheet   => "design40.css",
       menustyle    => "neu",
     },
   ));
@@ -137,6 +137,8 @@ sub action_save_user {
   my $params = delete($::form->{user})          || { };
   my $props  = delete($params->{config_values}) || { };
   my $is_new = !$params->{id};
+  my $check_previously_used = delete($::form->{check_previously_used}) || 0;
+  my $assign_documents = delete($::form->{assign_documents}) || 0;
 
   # Assign empty arrays if the browser doesn't send those controls.
   $params->{clients} ||= [];
@@ -147,11 +149,40 @@ sub action_save_user {
     ->config_values({ %{ $self->user->config_values }, %{ $props } });
 
   my @errors = $self->user->validate;
-
   if (@errors) {
-    flash('error', @errors);
-    $self->edit_user_form(title => $is_new ? t8('Create a new user') : t8('Edit User'));
-    return;
+    $self->js->flash('error', $_) foreach @errors;
+    return $self->js->render();
+  }
+
+  # check if given login name was previously used and show a dialog if so
+  if ($is_new && $check_previously_used && $self->check_loginname_previously_used()) {
+    $self->js->run('show_loginname_previously_used_dialog');
+    return $self->js->render();
+  }
+
+  # rename previous usernames in employee table, if not set to assign
+  if ($is_new && !$assign_documents) {
+    my $clients = SL::DB::Manager::AuthClient->get_all_sorted;
+    for my $client (@$clients) {
+      my $now = DateTime->now_local;
+      my $timestamp = $now->format_cldr('yyyyMMddHHmmss');
+
+      my $dbh = $client->dbconnect(AutoCommit => 1);
+      next if !$dbh;
+      $dbh->do(qq|UPDATE employee SET login = ? WHERE login = ?;|,undef,
+               $params->{'login'} . $timestamp, $params->{'login'});
+      $dbh->disconnect;
+    }
+  } elsif ($assign_documents) {
+    my $clients = SL::DB::Manager::AuthClient->get_all_sorted;
+    for my $client (@$clients) {
+
+      my $dbh = $client->dbconnect(AutoCommit => 1);
+      $dbh->do(qq|UPDATE employee SET deleted = FALSE, name = ?, deleted_email = ?,
+                  deleted_tel = ?, deleted_fax = ?, deleted_signature = ? WHERE login = ?|,undef,
+               $self->user->get_config_value('name'), undef, undef, undef, undef, $params->{'login'});
+      $dbh->disconnect;
+    }
   }
 
   $self->user->save;
@@ -167,31 +198,13 @@ sub action_save_user {
 sub action_delete_user {
   my ($self) = @_;
 
-  my @clients = @{ $self->user->clients || [] };
-
-  # backup user metadata (email, name, etc)
-  my $user_config_values_ref = $self->user->config_values();
   my $login =$self->user->login;
 
-  if (!$self->user->delete) {
+  if (!SL::Auth->delete_user($self->user)) {
     flash('error', t8('The user could not be deleted.'));
     $self->edit_user_form(title => t8('Edit User'));
     return;
   }
-
-  # Flag corresponding entries in 'employee' as deleted.
-  # and restore the most important user data in employee
-  # TODO try and catch the whole transaction {user->delete; update employee} {exception}
-  foreach my $client (@clients) {
-    my $dbh = $client->dbconnect(AutoCommit => 1) || next;
-    $dbh->do(qq|UPDATE employee SET deleted = TRUE, name = ?, deleted_email = ?,
-                deleted_tel = ?, deleted_fax = ?, deleted_signature = ? WHERE login = ?|,undef,
-              $user_config_values_ref->{name}, $user_config_values_ref->{email},
-              $user_config_values_ref->{tel}, $user_config_values_ref->{fax},
-              $user_config_values_ref->{signature}, $self->user->login);
-    $dbh->disconnect;
-  }
-
   flash_later('info', t8('The user has been deleted.'));
   $self->redirect_to(action => 'show');
 }
@@ -232,7 +245,7 @@ sub action_save_client {
   my @errors = $self->client->validate;
 
   if (@errors) {
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     $self->edit_client_form(title => $is_new ? t8('Create a new client') : t8('Edit Client'));
     return;
   }
@@ -308,7 +321,7 @@ sub action_save_group {
   my @errors = $self->group->validate;
 
   if (@errors) {
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     $self->edit_group_form(title => $is_new ? t8('Create a new user group') : t8('Edit User Group'));
     return;
   }
@@ -363,7 +376,7 @@ sub action_save_printer {
   my @errors = $self->printer->validate;
 
   if (@errors) {
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     $self->edit_printer_form(title => $is_new ? t8('Create a new printer') : t8('Edit Printer'));
     return;
   }
@@ -418,7 +431,7 @@ sub action_do_create_dataset {
   push @errors, $superuser{error}               if !$superuser{have_privileges} && $superuser{error};
 
   if (@errors) {
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     return $self->create_dataset_form(superuser => \%superuser);
   }
 
@@ -450,7 +463,7 @@ sub action_do_delete_dataset {
   push @errors, t8("Dataset missing!") if !$::form->{db};
 
   if (@errors) {
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     return $self->delete_dataset_form;
   }
 
@@ -505,7 +518,7 @@ sub init_all_groups        { SL::DB::Manager::AuthGroup ->get_all_sorted        
 sub init_all_printers      { SL::DB::Manager::Printer   ->get_all_sorted                                                     }
 sub init_all_dateformats   { [ qw(mm/dd/yy dd/mm/yy dd.mm.yy yyyy-mm-dd)      ]                                              }
 sub init_all_numberformats { [ '1,000.00', '1000.00', '1.000,00', '1000,00', "1'000.00" ]                                    }
-sub init_all_stylesheets   { [ qw(lx-office-erp.css Mobile.css kivitendo.css) ]                                              }
+sub init_all_stylesheets   { [ qw(design40.css) ]                                                                            }
 sub init_all_dbsources             { [ sort User->dbsources($::form)                               ] }
 sub init_all_used_dbsources        { { map { (join(':', $_->dbhost || 'localhost', $_->dbport || 5432, $_->dbname) => $_->name) } @{ $_[0]->all_clients }  } }
 sub init_all_accounting_methods    { [ { id => 'accrual',   name => t8('Accrual accounting')  }, { id => 'cash',     name => t8('Cash accounting')       } ] }
@@ -566,7 +579,6 @@ sub setup_layout {
 
   my $defaults = SL::DefaultManager->new($::lx_office_conf{system}->{default_manager});
   $::request->layout(SL::Layout::Dispatcher->new(style => 'admin'));
-  $::form->{favicon} = "favicon.ico";
   %::myconfig        = (
     countrycode      => $defaults->language('de'),
     numberformat     => $defaults->numberformat('1.000,00'),
@@ -595,8 +607,8 @@ sub use_multiselect_js {
 sub login_form {
   my ($self, %params) = @_;
   $::request->layout(SL::Layout::AdminLogin->new);
-  my $version         = $::form->read_version;
-  $self->render('admin/adminlogin', title => t8('kivitendo v#1 administration', $version), %params, version => $version);
+  my $version         = SL::Version->get_version;
+  $self->render('admin/adminlogin', title => t8('kivitendo v#1 administration', $version), %params, version => $version );
 }
 
 sub edit_user_form {
@@ -753,6 +765,24 @@ sub check_database_superuser_privileges {
   return (%result, error => $::locale->text('No superuser credentials were entered.')) if !$::form->{database_superuser_user};
   return %result                                                                       if $result{error};
   return (%result, error => $::locale->text('The database user \'#1\' does not have superuser privileges.', $result{username}));
+}
+
+sub check_loginname_previously_used() {
+  my ($self) = @_;
+
+  my $clients = SL::DB::Manager::AuthClient->get_all_sorted;
+  for my $client (@$clients) {
+    my $dbh = $client->dbconnect();
+    next if !$dbh;
+    my ($result) = $dbh->selectrow_array(qq|SELECT login FROM employee WHERE login = ?;|,undef,
+                                        $self->user->{'login'});
+    $dbh->disconnect;
+
+    if ($result) {
+      return 1;
+    }
+  }
+  return 0;
 }
 
 1;

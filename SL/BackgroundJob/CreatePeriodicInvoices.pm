@@ -9,15 +9,19 @@ use DateTime::Format::Strptime;
 use English qw(-no_match_vars);
 use List::MoreUtils qw(uniq);
 
+use SL::Common;
 use SL::DB::AuthUser;
 use SL::DB::Default;
 use SL::DB::Order;
 use SL::DB::Invoice;
+use SL::DB::Invoice::TypeData qw(:types);
 use SL::DB::PeriodicInvoice;
 use SL::DB::PeriodicInvoicesConfig;
+use SL::File;
 use SL::Helper::CreatePDF qw(create_pdf find_template);
 use SL::Mailer;
 use SL::Util qw(trim);
+use SL::System::Process;
 
 sub create_job {
   $_[0]->create_standard_job('0 3 1 * *'); # first day of month at 3:00 am
@@ -27,65 +31,69 @@ sub run {
   my $self        = shift;
   $self->{db_obj} = shift;
 
-  $self->{job_errors} = [];
+  $self->{$_} = [] for qw(job_errors posted_invoices printed_invoices printed_failed emailed_invoices emailed_failed disabled_orders);
 
-  my $configs = SL::DB::Manager::PeriodicInvoicesConfig->get_all(query => [ active => 1 ]);
+  if (!$self->{db_obj}->db->with_transaction(sub {
+    1;                          # make Emacs happy
 
-  foreach my $config (@{ $configs }) {
-    my $new_end_date = $config->handle_automatic_extension;
-    _log_msg("Periodic invoice configuration ID " . $config->id . " extended through " . $new_end_date->strftime('%d.%m.%Y') . "\n") if $new_end_date;
-  }
+    my $configs = SL::DB::Manager::PeriodicInvoicesConfig->get_all(query => [ active => 1 ]);
 
-  my (@new_invoices, @invoices_to_print, @invoices_to_email, @disabled_orders);
+    foreach my $config (@{ $configs }) {
+      my $new_end_date = $config->handle_automatic_extension;
+      _log_msg("Periodic invoice configuration ID " . $config->id . " extended through " . $new_end_date->strftime('%d.%m.%Y') . "\n") if $new_end_date;
+    }
 
-  _log_msg("Number of configs: " . scalar(@{ $configs}));
+    my (@invoices_to_print, @invoices_to_email);
 
-  foreach my $config (@{ $configs }) {
-    # A configuration can be set to inactive by
-    # $config->handle_automatic_extension. Therefore the check in
-    # ...->get_all() does not suffice.
-    _log_msg("Config " . $config->id . " active " . $config->active);
-    next unless $config->active;
+    _log_msg("Number of configs: " . scalar(@{ $configs}));
 
-    my @dates = _calculate_dates($config);
+    foreach my $config (@{ $configs }) {
+      # A configuration can be set to inactive by
+      # $config->handle_automatic_extension. Therefore the check in
+      # ...->get_all() does not suffice.
+      _log_msg("Config " . $config->id . " active " . $config->active);
+      next unless $config->active;
 
-    _log_msg("Dates: " . join(' ', map { $_->to_lxoffice } @dates));
+      my @dates = _calculate_dates($config);
 
-    foreach my $date (@dates) {
-      my $data = $self->_create_periodic_invoice($config, $date);
-      next unless $data;
+      _log_msg("Dates: " . join(' ', map { $_->to_lxoffice } @dates));
 
-      _log_msg("Invoice " . $data->{invoice}->invnumber . " posted for config ID " . $config->id . ", period start date " . $::locale->format_date(\%::myconfig, $date) . "\n");
+      foreach my $date (@dates) {
+        my $data = $self->_create_periodic_invoice($config, $date);
+        next unless $data;
 
-      push @new_invoices,      $data;
-      push @invoices_to_print, $data if $config->print;
-      push @invoices_to_email, $data if $config->send_email;
+        _log_msg("Invoice " . $data->{invoice}->invnumber . " posted for config ID " . $config->id . ", period start date " . $::locale->format_date(\%::myconfig, $date) . "\n");
 
-      my $inactive_ordnumber = $config->disable_one_time_config;
-      if ($inactive_ordnumber) {
-        # disable one time configs and skip eventual invoices
-        _log_msg("Order " . $inactive_ordnumber . " deavtivated \n");
-        push @disabled_orders, $inactive_ordnumber;
-        last;
+        push @{ $self->{posted_invoices} }, $data->{invoice};
+        push @invoices_to_print, $data if $config->print;
+        push @invoices_to_email, $data if $config->send_email;
+
+        my $inactive_ordnumber = $config->disable_one_time_config;
+        if ($inactive_ordnumber) {
+          # disable one time configs and skip eventual invoices
+          _log_msg("Order " . $inactive_ordnumber . " deavtivated \n");
+          push @{ $self->{disabled_orders} }, $inactive_ordnumber;
+          last;
+        }
       }
     }
-  }
 
-  foreach my $inv ( @invoices_to_print ) { $self->_print_invoice($inv); }
-  foreach my $inv ( @invoices_to_email ) { $self->_email_invoice($inv); }
+    foreach my $inv ( @invoices_to_print ) { $self->_print_invoice($inv); }
+    foreach my $inv ( @invoices_to_email ) { $self->_email_invoice($inv); }
 
-  $self->_send_summary_email(
-    [ map { $_->{invoice} } @new_invoices      ],
-    [ map { $_->{invoice} } @invoices_to_print ],
-    [ map { $_->{invoice} } @invoices_to_email ],
-                             \@disabled_orders  ,
-  );
+    $self->_send_summary_email;
 
-  if (@{ $self->{job_errors} }) {
-    my $msg = join "\n", @{ $self->{job_errors} };
-    _log_msg("Errors: $msg");
-    die $msg;
-  }
+      1;
+    })) {
+      $::lxdebug->message(LXDebug->WARN(), "_create_invoice failed: " . join("\n", (split(/\n/, $self->{db_obj}->db->error))[0..2]));
+      return undef;
+    }
+
+    if (@{ $self->{job_errors} }) {
+      my $msg = join "\n", @{ $self->{job_errors} };
+      _log_msg("Errors: $msg");
+      die $msg;
+    }
 
   return 1;
 }
@@ -99,7 +107,9 @@ sub _log_msg {
 sub _generate_time_period_variables {
   my $config            = shift;
   my $period_start_date = shift;
-  my $period_end_date   = $period_start_date->clone->add(months => $config->get_billing_period_length)->subtract(days => 1);
+
+  my $period_length   = $config->periodicity eq 'o' ? $config->get_order_value_period_length : $config->get_billing_period_length;
+  my $period_end_date = $period_start_date->clone->add(months => $period_length)->subtract(days => 1);
 
   my @month_names       = ('',
                            $::locale->text('January'), $::locale->text('February'), $::locale->text('March'),     $::locale->text('April'),   $::locale->text('May'),      $::locale->text('June'),
@@ -136,16 +146,15 @@ sub _replace_vars {
   my $sub_fmt  = lc($params{attribute_format} // 'text');
 
   my ($start_tag, $end_tag) = $sub_fmt eq 'html' ? ('&lt;%', '%&gt;') : ('<%', '%>');
+  my @invoice_keys          = $params{invoice} ? (map { $_->name } $params{invoice}->meta->columns) : ();
+  my $key_name_re           = join '|', map { quotemeta } (@invoice_keys, keys %{ $params{vars} });
 
-  $str =~ s{ ${start_tag} ([a-z0-9_]+) ( \s+ format \s*=\s* (.*?) \s* )? ${end_tag} }{
+  $str =~ s{ ${start_tag} ($key_name_re) ( \s+ format \s*=\s* (.*?) \s* )? ${end_tag} }{
     my ($key, $format) = ($1, $3);
     $key               = $::locale->unquote_special_chars('html', $key) if $sub_fmt eq 'html';
     my $new_value;
 
-    if (!$params{vars}->{$key}) {
-      $new_value = '';
-
-    } elsif ($format) {
+    if ($params{vars}->{$key} && $format) {
       $format    = $::locale->unquote_special_chars('html', $format) if $sub_fmt eq 'html';
 
       $new_value = DateTime::Format::Strptime->new(
@@ -154,11 +163,15 @@ sub _replace_vars {
         time_zone   => 'local',
       )->format_datetime($params{vars}->{$key}->[0]);
 
-    } else {
+    } elsif ($params{vars}->{$key}) {
       $new_value = $params{vars}->{$1}->[1]->($params{vars}->{$1}->[0]);
+
+    } elsif ($params{invoice} && $params{invoice}->can($key)) {
+      $new_value = $params{invoice}->$key;
     }
 
-    $new_value = $::locale->quote_special_chars('html', $new_value) if $sub_fmt eq 'html';
+    $new_value //= '';
+    $new_value   = $::locale->quote_special_chars('html', $new_value) if $sub_fmt eq 'html';
 
     $new_value;
 
@@ -169,6 +182,8 @@ sub _replace_vars {
 
 sub _adjust_sellprices_for_period_lengths {
   my (%params) = @_;
+
+  return if $params{config}->periodicity eq 'o';
 
   my $billing_len     = $params{config}->get_billing_period_length;
   my $order_value_len = $params{config}->get_order_value_period_length;
@@ -215,12 +230,20 @@ sub _create_periodic_invoice {
   if (!$self->{db_obj}->db->with_transaction(sub {
     1;                          # make Emacs happy
 
-    $invoice = SL::DB::Invoice->new_from($order);
+    $invoice = SL::DB::Invoice->new_from($order, record_type => INVOICE_TYPE, honor_recurring_billing_mode => 1);
+
+    my $tax_point = ($invoice->tax_point // $time_period_vars->{period_end_date}->[0])->clone;
+
+    while ($tax_point < $period_start_date) {
+      $tax_point->add(months => $config->get_billing_period_length);
+    }
 
     my $intnotes  = $invoice->intnotes ? $invoice->intnotes . "\n\n" : '';
     $intnotes    .= "Automatisch am " . $invdate->to_lxoffice . " erzeugte Rechnung";
 
     $invoice->assign_attributes(deliverydate => $period_start_date,
+                                tax_point_start => $period_start_date,
+                                tax_point    => $tax_point,
                                 intnotes     => $intnotes,
                                 employee     => $order->employee, # new_from sets employee to import user
                                 direct_debit => $config->direct_debit,
@@ -236,21 +259,8 @@ sub _create_periodic_invoice {
 
     $invoice->post(ar_id => $config->ar_chart_id) || die;
 
-    $order->link_to_record($invoice);
-
-    foreach my $item (@{ $invoice->items }) {
-      foreach (qw(orderitems)) {    # expand if needed (delivery_order_items)
-          if ($item->{"converted_from_${_}_id"}) {
-            die unless $item->{id};
-            RecordLinks->create_links('mode'       => 'ids',
-                                      'from_table' => $_,
-                                      'from_ids'   => $item->{"converted_from_${_}_id"},
-                                      'to_table'   => 'invoice',
-                                      'to_id'      => $item->{id},
-            ) || die;
-            delete $item->{"converted_from_${_}_id"};
-         }
-      }
+    foreach my $item (grep { ($_->recurring_billing_mode eq 'once') && !$_->recurring_billing_invoice_id } @{ $order->orderitems }) {
+      $item->update_attributes(recurring_billing_invoice_id => $invoice->id);
     }
 
     SL::DB::PeriodicInvoice->new(config_id         => $config->id,
@@ -282,14 +292,20 @@ sub _calculate_dates {
 }
 
 sub _send_summary_email {
-  my ($self, $posted_invoices, $printed_invoices, $emailed_invoices,
-      $disabled_orders) = @_;
+  my ($self) = @_;
   my %config = %::lx_office_conf;
 
-  return if !$config{periodic_invoices} || !$config{periodic_invoices}->{send_email_to} || !scalar @{ $posted_invoices };
+  return if !$config{periodic_invoices} || !$config{periodic_invoices}->{send_email_to} || !scalar @{ $self->{posted_invoices} };
 
-  my $user  = SL::DB::Manager::AuthUser->find_by(login => $config{periodic_invoices}->{send_email_to});
-  my $email = $user ? $user->get_config_value('email') : undef;
+  return if $config{periodic_invoices}->{send_for_errors_only} && !@{ $self->{printed_failed} } && !@{ $self->{emailed_failed} };
+
+  my $email = $config{periodic_invoices}->{send_email_to};
+  if ($email !~ m{\@}) {
+    my $user = SL::DB::Manager::AuthUser->find_by(login => $email);
+    $email   = $user ? $user->get_config_value('email') : undef;
+  }
+
+  _log_msg("_send_summary_email: about to send to '" . ($email || '') . "'");
 
   return unless $email;
 
@@ -302,14 +318,11 @@ sub _send_summary_email {
   return unless $template;
 
   my $email_template = $config{periodic_invoices}->{email_template};
-  my $filename       = $email_template || ( (SL::DB::Default->get->templates || "templates/webpages") . "/oe/periodic_invoices_email.txt" );
-  my %params         = ( POSTED_INVOICES  => $posted_invoices,
-                         PRINTED_INVOICES => $printed_invoices,
-                         EMAILED_INVOICES => $emailed_invoices,
-                         DISABLED_ORDERS  => $disabled_orders );
+  my $filename       = $email_template || ( (SL::DB::Default->get->templates || "templates/design40_webpages") . "/oe/periodic_invoices_email.txt" );
+  my %params         = map { (uc($_) => $self->{$_}) } qw(posted_invoices printed_invoices printed_failed emailed_invoices emailed_failed disabled_orders);
 
   my $output;
-  $template->process($filename, \%params, \$output);
+  $template->process($filename, \%params, \$output) || die $template->error;
 
   my $mail              = Mailer->new;
   $mail->{from}         = $config{periodic_invoices}->{email_from};
@@ -319,6 +332,49 @@ sub _send_summary_email {
   $mail->{message}      = $output;
 
   $mail->send;
+}
+
+sub _store_pdf_in_webdav {
+  my ($self, $pdf_file_name, $invoice) = @_;
+
+  return unless $::instance_conf->get_webdav_documents;
+
+  my $form = Form->new('');
+
+  $form->{cwd}              = SL::System::Process->exe_dir;
+  $form->{tmpdir}           = ($pdf_file_name =~ m{(.+)/})[0];
+  $form->{tmpfile}          = ($pdf_file_name =~ m{.+/(.+)})[0];
+  $form->{format}           = 'pdf';
+  $form->{formname}         = 'invoice';
+  $form->{type}             = 'invoice';
+  $form->{vc}               = 'customer';
+  $form->{invnumber}        = $invoice->invnumber;
+  $form->{recipient_locale} = $invoice->language ? $invoice->language->template_code : '';
+
+  Common::copy_file_to_webdav_folder($form);
+}
+
+sub _store_pdf_in_filemanagement {
+  my ($self, $pdf_file, $invoice) = @_;
+
+  return unless $::instance_conf->get_doc_storage;
+
+  # create a form for generate_attachment_filename
+  my $form = Form->new('');
+  $form->{invnumber} = $invoice->invnumber;
+  $form->{type}      = 'invoice';
+  $form->{format}    = 'pdf';
+  $form->{formname}  = 'invoice';
+  $form->{language}  = '_' . $invoice->language->template_code if $invoice->language;
+  my $doc_name       = $form->generate_attachment_filename();
+
+  SL::File->save(object_id   => $invoice->id,
+                 object_type => 'invoice',
+                 mime_type   => 'application/pdf',
+                 source      => 'created',
+                 file_type   => 'document',
+                 file_name   => $doc_name,
+                 file_path   => $pdf_file);
 }
 
 sub _print_invoice {
@@ -348,9 +404,11 @@ sub _print_invoice {
   $form->throw_on_error(sub {
     eval {
       $form->parse_template(\%::myconfig);
+      push @{ $self->{printed_invoices} }, $invoice;
       1;
     } or do {
-      push @{ $self->{job_errors} }, $EVAL_ERROR->getMessage;
+      push @{ $self->{job_errors} }, $::locale->text('Printing periodic invoice #1 failed: #2', $invoice->invnumber, $EVAL_ERROR->error);
+      push @{ $self->{printed_failed} }, [ $invoice, $EVAL_ERROR->error ];
     };
   });
 }
@@ -368,18 +426,23 @@ sub _email_invoice {
     grep { $_       }
     map  { trim($_) }
     (split(m{,}, $data->{config}->email_recipient_address),
-     $data->{config}->email_recipient_contact ? ($data->{config}->email_recipient_contact->cp_email) : ());
+     $data->{config}->email_recipient_contact   ? ($data->{config}->email_recipient_contact->cp_email) : (),
+     $data->{invoice}->{customer}->invoice_mail ? ($data->{invoice}->{customer}->invoice_mail) : ()
+    );
 
   return unless @recipients;
 
+  my $language      = $data->{invoice}->language ? $data->{invoice}->language->template_code : undef;
   my %create_params = (
-    template               => $self->find_template(name => 'invoice'),
+    template               => scalar($self->find_template(name => 'invoice', language => $language)),
     variables              => Form->new(''),
     return                 => 'file_name',
+    record                 => $data->{invoice},
     variable_content_types => {
       longdescription => 'html',
       partnotes       => 'html',
       notes           => 'html',
+      $::form->get_variable_content_types_for_cvars,
     },
   );
 
@@ -387,42 +450,59 @@ sub _email_invoice {
   $create_params{variables}->prepare_for_printing;
 
   my $pdf_file_name;
+  my $label = $language && Locale::is_supported($language) ? Locale->new($language)->text('Invoice') : $::locale->text('Invoice');
 
   eval {
     $pdf_file_name = $self->create_pdf(%create_params);
 
+    $self->_store_pdf_in_webdav        ($pdf_file_name, $data->{invoice});
+    $self->_store_pdf_in_filemanagement($pdf_file_name, $data->{invoice});
+
     for (qw(email_subject email_body)) {
       _replace_vars(
         object           => $data->{config},
+        invoice          => $data->{invoice},
         vars             => $data->{time_period_vars},
         attribute        => $_,
-        attribute_format => 'text'
+        attribute_format => ($_ eq 'email_body' ? 'html' : 'text')
       );
     }
 
     my $global_bcc = SL::DB::Default->get->global_bcc;
+    my $overall_error;
 
     for my $recipient (@recipients) {
       my $mail             = Mailer->new;
+      $mail->{record_id}   = $data->{invoice}->id,
+      $mail->{record_type} = 'invoice',
       $mail->{from}        = $data->{config}->email_sender || $::lx_office_conf{periodic_invoices}->{email_from};
       $mail->{to}          = $recipient;
       $mail->{bcc}         = $global_bcc;
       $mail->{subject}     = $data->{config}->email_subject;
       $mail->{message}     = $data->{config}->email_body;
+      $mail->{message}    .= SL::DB::Default->get->signature;
+      $mail->{content_type} = 'text/html';
       $mail->{attachments} = [{
         path     => $pdf_file_name,
-        name     => sprintf('%s %s.pdf', $::locale->text('Invoice'), $data->{invoice}->invnumber),
+        name     => sprintf('%s %s.pdf', $label, $data->{invoice}->invnumber),
       }];
 
       my $error        = $mail->send;
 
-      push @{ $self->{job_errors} }, $error if $error;
+      if ($error) {
+        push @{ $self->{job_errors} }, $::locale->text('Sending email for periodic invoice #1 failed: #2', $data->{invoice}->invnumber, $error);
+        push @{ $self->{emailed_failed} }, [ $data->{invoice}, $error ];
+        $overall_error = 1;
+      }
     }
+
+    push @{ $self->{emailed_invoices} }, $data->{invoice} unless $overall_error;
 
     1;
 
   } or do {
-    push @{ $self->{job_errors} }, $EVAL_ERROR;
+    push @{ $self->{job_errors} }, $::locale->text('Sending email for periodic invoice #1 failed: #2', $data->{invoice}->invnumber, $EVAL_ERROR);
+    push @{ $self->{emailed_failed} }, [ $data->{invoice}, $EVAL_ERROR ];
   };
 
   unlink $pdf_file_name if $pdf_file_name;

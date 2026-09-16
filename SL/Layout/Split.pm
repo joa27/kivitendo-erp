@@ -3,7 +3,7 @@ package SL::Layout::Split;
 use strict;
 use parent qw(SL::Layout::Base);
 
-use SL::Presenter;
+use SL::Presenter::Tag qw(html_tag);
 
 use Rose::Object::MakeMethods::Generic (
   'scalar'                => [ qw(left right) ],
@@ -18,7 +18,8 @@ sub pre_content {
   my $left  = join '', map { $_->pre_content } @{ $_[0]->left  || [] };
   my $right = join '', map { $_->pre_content } @{ $_[0]->right || [] };
 
-  SL::Presenter->get->html_tag('div', $left, class => 'layout-split-left')
+  '<div class="frame-main">'.
+  html_tag('div', $left, class => 'layout-split-left')
   .'<div class="layout-split-right">' . $right;
 }
 
@@ -27,7 +28,8 @@ sub post_content {
   my $right = join '', map { $_->post_content } @{ $_[0]->right || [] };
 
   $right . '</div>'
-  . SL::Presenter->get->html_tag('div', $left, class => 't-layout-left');
+  .'</div>'
+  . html_tag('div', $left, class => 't-layout-left');
 }
 
 1;
@@ -42,9 +44,9 @@ SL::Layout::Split
 
 =head1 SYNOPSIS
 
-  use SL::Layout::TLayout;
+  use SL::Layout::Split;
 
-  SL::Layout::TLayout->new(
+  SL::Layout::Split->new(
     left  => [ LIST OF SUBLAYOUTS ],
     right => [ LIST OF SUBLAYOUTS ],
   );

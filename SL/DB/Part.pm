@@ -3,26 +3,38 @@ package SL::DB::Part;
 use strict;
 
 use Carp;
-use List::MoreUtils qw(any);
+use List::MoreUtils qw(any uniq);
+use List::Util qw(sum);
 use Rose::DB::Object::Helpers qw(as_tree);
 
+use SL::Locale::String qw(t8);
+use SL::Helper::Inventory;
 use SL::DBUtils;
 use SL::DB::MetaSetup::Part;
 use SL::DB::Manager::Part;
-use SL::DB::Chart;
 use SL::DB::Helper::AttrHTML;
+use SL::DB::Helper::AttrSorted;
 use SL::DB::Helper::TransNumberGenerator;
 use SL::DB::Helper::CustomVariables (
   module      => 'IC',
   cvars_alias => 1,
 );
-use List::Util qw(sum);
+use SL::DB::Helper::DisplayableNamePreferences (
+  title   => t8('Article'),
+  options => [ {name => 'partnumber',  title => t8('Part Number')     },
+               {name => 'description', title => t8('Description')    },
+               {name => 'notes',       title => t8('Notes')},
+               {name => 'onhand',      title => t8('Onhand'),     sub => sub { $_[0]->onhand_as_number } },
+               {name => 'partsgroup',  title => t8('Partsgroup'), sub => sub { $_[0]->partsgroup && $_[0]->partsgroup->partsgroup } },
+               {name => 'ean',         title => t8('EAN')            }, ],
+);
+
 
 __PACKAGE__->meta->add_relationships(
   assemblies                     => {
     type         => 'one to many',
     class        => 'SL::DB::Assembly',
-    manager_args => { sort_by => 'position, oid' },
+    manager_args => { sort_by => 'position' },
     column_map   => { id => 'id' },
   },
   prices         => {
@@ -37,6 +49,16 @@ __PACKAGE__->meta->add_relationships(
     manager_args => { sort_by => 'sortorder' },
     column_map   => { id => 'parts_id' },
   },
+  businessmodels     => {
+    type         => 'one to many',
+    class        => 'SL::DB::BusinessModel',
+    column_map   => { id => 'parts_id' },
+  },
+  customerprices => {
+    type         => 'one to many',
+    class        => 'SL::DB::PartCustomerPrice',
+    column_map   => { id => 'parts_id' },
+  },
   translations   => {
     type         => 'one to many',
     class        => 'SL::DB::Translation',
@@ -46,6 +68,7 @@ __PACKAGE__->meta->add_relationships(
     type         => 'one to many',
     class        => 'SL::DB::AssortmentItem',
     column_map   => { id => 'assortment_id' },
+    manager_args => { sort_by => 'position' },
   },
   history_entries   => {
     type            => 'one to many',
@@ -60,18 +83,52 @@ __PACKAGE__->meta->add_relationships(
     column_map   => { id => 'part_id' },
     manager_args => { with_objects => [ 'shop' ] },
   },
+  last_price_update => {
+    type         => 'one to one',
+    class        => 'SL::DB::PartsPriceHistory',
+    column_map   => { id => 'part_id' },
+    manager_args => { sort_by => 'valid_from DESC, id DESC', limit => 1 },
+  },
+  purchase_basket_item => {
+    type         => 'one to one',
+    class        => 'SL::DB::PurchaseBasketItem',
+    column_map   => { id => 'part_id' },
+  },
+  price_histories  => {
+    type         => 'one to many',
+    class        => 'SL::DB::PartsPriceHistory',
+    column_map   => { id => 'part_id' },
+  },
 );
 
 __PACKAGE__->meta->initialize;
 
+use Rose::Object::MakeMethods::Generic (
+  'scalar --get_set_init' => [ qw(onhandqty stockqty get_open_ordered_qty) ],
+);
+__PACKAGE__->attr_html('intnotes');
 __PACKAGE__->attr_html('notes');
+__PACKAGE__->attr_sorted({ unsorted => 'makemodels',     position => 'sortorder' });
+__PACKAGE__->attr_sorted({ unsorted => 'customerprices', position => 'sortorder' });
+__PACKAGE__->attr_sorted('businessmodels');
 
 __PACKAGE__->before_save('_before_save_set_partnumber');
+__PACKAGE__->before_save('_before_save_set_assembly_weight');
 
 sub _before_save_set_partnumber {
   my ($self) = @_;
 
   $self->create_trans_number if !$self->partnumber;
+  return 1;
+}
+
+sub _before_save_set_assembly_weight {
+  my ($self) = @_;
+
+  if ( $self->part_type eq 'assembly' ) {
+    my $weight_sum = $self->items_weight_sum;
+    $self->weight($self->items_weight_sum) if $weight_sum;
+  }
   return 1;
 }
 
@@ -94,7 +151,7 @@ sub items_checksum {
   # changed when saving
 
   return join(' ', sort map { $_->part->id } @{$self->items});
-};
+}
 
 sub validate {
   my ($self) = @_;
@@ -104,9 +161,16 @@ sub validate {
   push @errors, $::locale->text('The unit is missing.')           unless $self->unit;
   push @errors, $::locale->text('The buchungsgruppe is missing.') unless $self->buchungsgruppen_id or $self->buchungsgruppe;
 
+  if ( $::instance_conf->get_partsgroup_required
+       && ( !$self->partsgroup_id or ( $self->id && !$self->partsgroup_id && $self->partsgroup ) ) ) {
+    # when unsetting an existing partsgroup in the interface, $self->partsgroup_id will be undef but $self->partsgroup will still have a value
+    # this needs to be checked, as partsgroup dropdown has an empty value
+    push @errors, $::locale->text('The partsgroup is missing.');
+  }
+
   unless ( $self->id ) {
     push @errors, $::locale->text('The partnumber already exists.') if SL::DB::Manager::Part->get_all_count(where => [ partnumber => $self->partnumber ]);
-  };
+  }
 
   if ($self->is_assortment && $self->orphaned && scalar @{$self->assortment_items} == 0) {
     # when assortment isn't orphaned form doesn't contain any items
@@ -170,7 +234,7 @@ sub new_assortment {
 sub last_modification {
   my ($self) = @_;
   return $self->mtime // $self->itime;
-};
+}
 
 sub used_in_record {
   my ($self) = @_;
@@ -190,6 +254,7 @@ sub used_in_record {
   }
   return 0;
 }
+
 sub orphaned {
   my ($self) = @_;
   die 'not an accessor' if @_ > 1;
@@ -262,6 +327,7 @@ sub get_taxkey {
 
 sub get_chart {
   my ($self, %params) = @_;
+  require SL::DB::Chart;
 
   my $type    = (any { $_ eq $params{type} } qw(income expense inventory)) ? $params{type} : croak("Invalid 'type' parameter '$params{type}'");
   my $taxzone = $params{ defined($params{taxzone}) ? 'taxzone' : 'taxzone_id' } * 1;
@@ -314,7 +380,7 @@ sub get_stock {
   my ($stock) = selectrow_query($::form, $self->db->dbh, $query, @values);
 
   return $stock || 0; # never return undef
-};
+}
 
 
 # this is designed to ignore chargenumbers, expiration dates and just give a list of how much <-> where
@@ -336,8 +402,91 @@ sub get_simple_stock {
   sub bin       { require SL::DB::Bin;       SL::DB::Manager::Bin      ->find_by_or_create(id => $_[0]->{bin_id}) }
 }
 
-sub displayable_name {
-  join ' ', grep $_, map $_[0]->$_, qw(partnumber description);
+sub get_simple_stock_sql {
+  my ($self, %params) = @_;
+
+  return [] unless $self->id;
+
+  my $query = <<SQL;
+     SELECT w.description                         AS warehouse_description,
+            b.description                         AS bin_description,
+            SUM(i.qty)                            AS qty,
+            SUM(i.qty * p.lastcost / COALESCE(pfac.factor, 1))               AS stock_value,
+            p.unit                                AS unit,
+            LEAD(w.description)           OVER pt AS wh_lead,            -- to detect warehouse changes for subtotals in template
+            SUM( SUM(i.qty) )             OVER pt AS run_qty,            -- running total of total qty
+            SUM( SUM(i.qty) )             OVER wh AS wh_run_qty,         -- running total of warehouse qty
+            SUM( SUM(i.qty * p.lastcost / COALESCE(pfac.factor, 1))) OVER pt AS run_stock_value,    -- running total of total stock_value
+            SUM( SUM(i.qty * p.lastcost / COALESCE(pfac.factor, 1))) OVER wh AS wh_run_stock_value  -- running total of warehouse stock_value
+       FROM inventory i
+            LEFT JOIN parts p     ON (p.id           = i.parts_id)
+            LEFT JOIN warehouse w ON (i.warehouse_id = w.id)
+            LEFT JOIN bin b       ON (i.bin_id       = b.id)
+            LEFT JOIN price_factors pfac ON (p.price_factor_id = pfac.id)
+      WHERE parts_id = ?
+   GROUP BY w.description, w.sortkey, b.description, p.unit, i.parts_id
+     HAVING SUM(qty) != 0
+     WINDOW pt AS (PARTITION BY i.parts_id    ORDER BY w.sortkey, b.description, p.unit),
+            wh AS (PARTITION by w.description ORDER BY w.sortkey, b.description, p.unit)
+   ORDER BY w.sortkey, b.description, p.unit
+SQL
+
+  my $stock_info = selectall_hashref_query($::form, $self->db->dbh, $query, $self->id);
+  return $stock_info;
+}
+
+sub get_mini_journal {
+  my ($self) = @_;
+
+  # inventory ids of the most recent 10 inventory trans_ids
+
+  # duplicate code copied from SL::Controller::Inventory mini_journal, except
+  # for the added filter on parts_id
+
+  my $parts_id = $self->id;
+  my $query = <<"SQL";
+with last_inventories as (
+   select id,
+          trans_id,
+          itime
+     from inventory
+    where parts_id = $parts_id
+ order by itime desc
+    limit 20
+),
+grouped_ids as (
+   select trans_id,
+          array_agg(id) as ids
+     from last_inventories
+ group by trans_id
+ order by max(itime)
+     desc limit 10
+)
+select unnest(ids)
+  from grouped_ids
+ limit 20  -- so the planner knows how many ids to expect, the cte is an optimisation fence
+SQL
+
+  my $objs  = SL::DB::Manager::Inventory->get_all(
+    query        => [ id => [ \"$query" ] ],                           # make emacs happy "]]
+    with_objects => [ 'parts', 'trans_type', 'bin', 'bin.warehouse' ], # prevent lazy loading in template
+    sort_by      => 'itime DESC',
+  );
+  # remember order of trans_ids from query, for ordering hash later
+  my @sorted_trans_ids = uniq map { $_->trans_id } @$objs;
+
+  # at most 2 of them belong to a transaction and the qty determines in or out.
+  my %transactions;
+  for (@$objs) {
+    $transactions{ $_->trans_id }{ $_->qty > 0 ? 'in' : 'out' } = $_;
+    $transactions{ $_->trans_id }{base} = $_;
+  }
+
+  # because the inventory transactions were built in a hash, we need to sort the
+  # hash by using the original sort order of the trans_ids
+  my @sorted = map { $transactions{$_} } @sorted_trans_ids;
+
+  return \@sorted;
 }
 
 sub clone_and_reset_deep {
@@ -346,16 +495,16 @@ sub clone_and_reset_deep {
   my $clone = $self->clone_and_reset; # resets id and partnumber (primary key and unique constraint)
   $clone->makemodels(   map { $_->clone_and_reset } @{$self->makemodels}   ) if @{$self->makemodels};
   $clone->translations( map { $_->clone_and_reset } @{$self->translations} ) if @{$self->translations};
-
+  $clone->custom_variables( map { $_->clone_and_reset } @{$self->custom_variables} ) if @{$self->custom_variables};
   if ( $self->is_assortment ) {
     # use clone rather than reset_and_clone because the unique constraint would also remove parts_id
     $clone->assortment_items( map { $_->clone } @{$self->assortment_items} );
     $_->assortment_id(undef) foreach @{ $clone->assortment_items }
-  };
+  }
 
   if ( $self->is_assembly ) {
     $clone->assemblies( map { $_->clone_and_reset } @{$self->assemblies});
-  };
+  }
 
   if ( $self->prices ) {
     $clone->prices( map { $_->clone } @{$self->prices}); # pricegroup_id gets reset here because it is part of a unique contraint
@@ -363,9 +512,9 @@ sub clone_and_reset_deep {
       foreach my $price ( @{$clone->prices} ) {
         $price->id(undef);
         $price->parts_id(undef);
-      };
-    };
-  };
+      }
+    }
+  }
 
   return $clone;
 }
@@ -390,7 +539,7 @@ sub item_diffs {
   @removals  = grep { !exists( $comparison{$_} ) } @self_part_ids       if @self_part_ids;
 
   return \@additions, \@removals;
-};
+}
 
 sub items_sellprice_sum {
   my ($self, %params) = @_;
@@ -411,7 +560,59 @@ sub items_lastcost_sum {
   return unless $self->is_assortment or $self->is_assembly;
   return unless $self->items;
   sum map { $_->linetotal_lastcost } @{$self->items};
-};
+}
+
+sub items_weight_sum {
+  my ($self) = @_;
+
+  return unless $self->is_assembly;
+  return unless $self->items;
+  sum map { $_->linetotal_weight} @{$self->items};
+}
+
+sub set_lastcost_assemblies_and_assortiments {
+  my ($self) = @_;
+
+  return 1 unless $self->id;  # not saved yet
+
+  require SL::DB::AssortmentItem;
+  require SL::DB::Assembly;
+
+  # 1. check all
+  my $assortments = SL::DB::Manager::AssortmentItem->get_all(where => [parts_id => $self->id ]);
+  my $assemblies  = SL::DB::Manager::Assembly->get_all(      where => [parts_id => $self->id ]);
+
+  foreach my $assembly (@{ $assemblies }) {
+    my $a = $assembly->assembly_part;
+    $a->update_attributes(lastcost => $a->items_lastcost_sum);
+    $a->set_lastcost_assemblies_and_assortiments;
+  }
+  foreach my $assortment (@{ $assortments }) {
+    my $a = $assortment->assortment;
+    $a->update_attributes(lastcost => $a->items_lastcost_sum);
+    $a->set_lastcost_assemblies_and_assortiments;
+  }
+  return 1;
+}
+
+sub init_onhandqty{
+  my ($self) = @_;
+  my $qty = SL::Helper::Inventory::get_onhand(part => $self->id) || 0;
+  return $qty;
+}
+
+sub init_stockqty{
+  my ($self) = @_;
+  my $qty = SL::Helper::Inventory::get_stock(part => $self->id) || 0;
+  return $qty;
+}
+
+sub init_get_open_ordered_qty {
+  my ($self) = @_;
+  my $result = SL::DB::Manager::Part->get_open_ordered_qty($self->id);
+
+  return $result;
+}
 
 1;
 
@@ -554,6 +755,23 @@ assemblies.
 Used to set the accounting information from a L<SL:DB::Buchungsgruppe> object.
 Please note, that this is a write only accessor, the original Buchungsgruppe can
 not be retrieved from an article once set.
+
+=item C<get_simple_stock_sql>
+
+Fetches the qty and the stock value for the current part for each bin and
+warehouse where the part is in stock (or rather different from 0, might be
+negative).
+
+Runs some additional window functions to add the running totals (total running
+total and total per warehouse) for qty and stock value to each line.
+
+Using the LEAD(w.description) the template can check if the warehouse
+description is about to change, i.e. the next line will contain numbers from a
+different warehouse, so that a subtotal line can be added.
+
+The last row will contain the running qty total (run_qty) and the running total
+stock value (run_stock_value) over all warehouses/bins and can be used to add a
+line for the grand totals.
 
 =item C<items_lastcost_sum>
 

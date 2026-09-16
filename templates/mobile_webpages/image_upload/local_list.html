@@ -1,0 +1,69 @@
+[%- USE LxERP -%] [%- USE L %]
+[%- USE HTML %]
+[%- USE P %]
+[%- USE T8 %]
+
+<h4>[% source.title | html %]</h4>
+
+  <p>Schritt 1: Bilder machen</p>
+
+  <div id="stored-images" class="container">
+  </div>
+
+
+  <div class="container">
+    <div class="row">
+
+      <div class="file-field input-field col s12">
+        <div class="btn m3 s12 col">
+          <span><i class='material-icons col s12 center'>add_a_photo</i></span>
+          <input
+            name="uploadfiles[]" type="file" [% IF multiple %]multiple[% END %]
+            id="upload_files" accept="[% SELF.accept_types %]" capture="camera"
+            onchange="kivi.ImageUpload.add_files(this)">
+        </div>
+        <div class="file-path-wrapper m9 s12">
+          <input class="file-path validate" type="hidden">
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+    <hr>
+
+    <p>Schritt 2: Dateien hochladen</p>
+  <div class="container">
+    <div class="row">
+      [% P.M.input_tag("object_number", "", label=LxERP.t8("Number"), class="col s4", onkeyup="kivi.ImageUpload.resolve_object(event)") %]
+      <div id="object_description" class="col s8">-</div>
+      [% P.M.button_tag("kivi.ImageUpload.upload_files()", LxERP.t8("Upload Images"), id="upload_images_submit", class="col s12") %]
+    </div>
+
+
+  </div>
+</div>
+
+<div id="warn_modal" class="modal">
+  <div class="modal-content">
+    <h4>Warning</h4>
+
+    <p></p>
+  </div>
+</div>
+
+<div id="upload_modal" class="modal">
+  <div class="modal-content">
+    <h4>[% 'Uploading Data' | $T8 %]</h4>
+
+    <div id="upload_progress" class="progress">
+      <div class="indeterminate"></div>
+    </div>
+
+    [% P.M.button_tag("kivi.ImageUpload.upload_in_progress.abort()", LxERP.t8("Abort"), class="modal-close") %]
+  </div>
+</div>
+
+
+[% L.hidden_tag("object_type", FORM.object_type) %]
+[% L.hidden_tag("object_id") %]

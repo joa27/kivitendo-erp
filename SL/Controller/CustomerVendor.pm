@@ -3,39 +3,48 @@ package SL::Controller::CustomerVendor;
 use strict;
 use parent qw(SL::Controller::Base);
 
-use List::MoreUtils qw(any);
+use List::MoreUtils qw(any none);
 
 use SL::JSON;
 use SL::DBUtils;
 use SL::Helper::Flash;
 use SL::Locale::String;
+use SL::Util qw(trim);
+use SL::VATIDNr;
+use SL::Webdav;
+use SL::ZUGFeRD;
 use SL::Controller::Helper::GetModels;
+use SL::Controller::Helper::ReportGenerator;
+use SL::Controller::Helper::ParseFilter;
 
+use SL::DB::AuthGroup;
 use SL::DB::Customer;
 use SL::DB::Vendor;
 use SL::DB::Business;
 use SL::DB::Employee;
+use SL::DB::Greeting;
 use SL::DB::Language;
 use SL::DB::TaxZone;
 use SL::DB::Note;
 use SL::DB::PaymentTerm;
 use SL::DB::Pricegroup;
-use SL::DB::Contact;
+use SL::DB::Price;
 use SL::DB::FollowUp;
 use SL::DB::FollowUpLink;
 use SL::DB::History;
 use SL::DB::Currency;
+use SL::DB::Invoice;
+use SL::DB::PurchaseInvoice;
+use SL::DB::Order;
+
+use Data::Dumper;
 
 use Rose::Object::MakeMethods::Generic (
-  'scalar --get_set_init' => [ qw(customer_models vendor_models) ],
+  scalar                  => [ qw(user_has_edit_rights) ],
+  'scalar --get_set_init' => [ qw(customer_models vendor_models zugferd_settings) ],
 );
 
 # safety
-__PACKAGE__->run_before(
-  sub {
-    $::auth->assert('customer_vendor_edit');
-  }
-);
 __PACKAGE__->run_before(
   '_instantiate_args',
   only => [
@@ -47,9 +56,10 @@ __PACKAGE__->run_before(
     'save_and_order',
     'save_and_quotation',
     'save_and_rfq',
+    'save_and_new_contact',
     'delete',
-    'delete_contact',
     'delete_shipto',
+    'delete_additional_billing_address',
   ]
 );
 
@@ -60,31 +70,13 @@ __PACKAGE__->run_before(
     'show',
     'update',
     'ajaj_get_shipto',
-    'ajaj_get_contact',
+    'ajaj_get_additional_billing_address',
+    'ajax_list_prices',
   ]
 );
 
 # make sure this comes after _load_customer_vendor
-__PACKAGE__->run_before(
-  '_check_customer_vendor_all_edit',
-  only => [
-    'edit',
-    'show',
-    'update',
-    'delete',
-    'save',
-    'save_and_ap_transaction',
-    'save_and_ar_transaction',
-    'save_and_close',
-    'save_and_invoice',
-    'save_and_order',
-    'save_and_quotation',
-    'save_and_rfq',
-    'delete',
-    'delete_contact',
-    'delete_shipto',
-  ]
-);
+__PACKAGE__->run_before('_check_auth');
 
 __PACKAGE__->run_before(
   '_create_customer_vendor',
@@ -95,12 +87,19 @@ __PACKAGE__->run_before(
 
 __PACKAGE__->run_before('normalize_name');
 
+my @ADDITIONAL_BILLING_ADDRESS_COLUMNS = qw(name department_1 department_2 contact street zipcode city country_id gln email dunning_mail phone fax taxnumber ustid default_address);
 
 sub action_add {
   my ($self) = @_;
 
   $self->_pre_render();
-  $self->{cv}->assign_attributes(hourly_rate => $::instance_conf->get_customer_hourly_rate) if $self->{cv}->is_customer;
+
+  if ($self->{cv}->is_customer) {
+    $self->{cv}->assign_attributes(hourly_rate => $::instance_conf->get_customer_hourly_rate);
+    $self->{cv}->salesman_id(SL::DB::Manager::Employee->current->id) if !$::auth->assert('customer_vendor_all_edit', 1);
+  } elsif ($self->{cv}->is_vendor) {
+    $self->{cv}->buyer_id(SL::DB::Manager::Employee->current->id) if !$::auth->assert('customer_vendor_all_edit', 1);
+  }
 
   $self->render(
     'customer_vendor/form',
@@ -112,10 +111,13 @@ sub action_add {
 sub action_edit {
   my ($self) = @_;
 
+  my $title = $self->is_vendor() ? $::locale->text('Edit Vendor') : $::locale->text('Edit Customer');
+  $title .= ' - ' . $self->{cv}->displayable_name;
+
   $self->_pre_render();
   $self->render(
     'customer_vendor/form',
-    title => ($self->is_vendor() ? $::locale->text('Edit Vendor') : $::locale->text('Edit Customer')),
+    title => $title,
     %{$self->{template_args}}
   );
 }
@@ -136,12 +138,68 @@ sub action_show {
   }
 }
 
+sub _check_ustid_taxnumber_unique {
+  my ($self) = @_;
+
+  my %cfg;
+  if ($self->is_vendor()) {
+    %cfg = (should_check  => $::instance_conf->get_vendor_ustid_taxnummer_unique,
+            manager_class => 'SL::DB::Manager::Vendor',
+            err_ustid     => t8('A vendor with the same VAT ID already exists.'),
+            err_taxnumber => t8('A vendor with the same taxnumber already exists.'),
+    );
+
+  } elsif ($self->is_customer()) {
+    %cfg = (should_check  => $::instance_conf->get_customer_ustid_taxnummer_unique,
+            manager_class => 'SL::DB::Manager::Customer',
+            err_ustid     => t8('A customer with the same VAT ID already exists.'),
+            err_taxnumber => t8('A customer with the same taxnumber already exists.'),
+    );
+
+  } else {
+    return;
+  }
+
+  my @errors;
+
+  if ($cfg{should_check}) {
+    my $do_clean_taxnumber = sub { my $n = $_[0]; $n //= ''; $n =~ s{[[:space:].-]+}{}g; return $n};
+
+    my $clean_ustid     = SL::VATIDNr->clean($self->{cv}->ustid);
+    my $clean_taxnumber = $do_clean_taxnumber->($self->{cv}->taxnumber);
+
+    if (!($clean_ustid || $clean_taxnumber)) {
+      return t8('VAT ID and/or taxnumber must be given.');
+
+    } else {
+      my $clean_number = $clean_ustid;
+      if ($clean_number) {
+        my $entries = $cfg{manager_class}->get_all(query => ['!id' => $self->{cv}->id, '!ustid' => undef, '!ustid' => ''], select => ['ustid'], distinct => 1);
+        if (any { $clean_number eq SL::VATIDNr->clean($_->ustid) } @$entries) {
+          push @errors, $cfg{err_ustid};
+        }
+      }
+
+      $clean_number = $clean_taxnumber;
+      if ($clean_number) {
+        my $entries = $cfg{manager_class}->get_all(query => ['!id' => $self->{cv}->id, '!taxnumber' => undef, '!taxnumber' => ''], select => ['taxnumber'], distinct => 1);
+        if (any { $clean_number eq $do_clean_taxnumber->($_->taxnumber) } @$entries) {
+          push @errors, $cfg{err_taxnumber};
+        }
+      }
+    }
+  }
+
+  return join "\n", @errors if @errors;
+  return;
+}
+
 sub _save {
   my ($self) = @_;
 
   my @errors = $self->{cv}->validate;
   if (@errors) {
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     $self->_pre_render();
     $self->render(
       'customer_vendor/form',
@@ -149,6 +207,32 @@ sub _save {
       %{$self->{template_args}}
     );
     $::dispatcher->end_request;
+  }
+
+  $self->{cv}->greeting(trim $self->{cv}->greeting);
+  my $save_greeting           = $self->{cv}->greeting
+    && $::instance_conf->get_vc_greetings_use_textfield
+    && SL::DB::Manager::Greeting->get_all_count(where => [description => $self->{cv}->greeting]) == 0;
+
+  # handle customer_vendor link
+  if ($::form->{customer_vendor_link} eq 'none' && $self->{cv}->linked_customer_vendor) {
+    $self->{cv}->linked_customer_vendor_rel([]);
+  }
+  if ($::form->{customer_vendor_link} eq 'existing') {
+    if (!$self->{cv}->linked_customer_vendor || ($::form->{customer_vendor_link_id} != $self->{cv}->linked_customer_vendor->id)) {
+      $self->{cv}->linked_customer_vendor($::form->{customer_vendor_link_id});
+
+      # check whether this is already linked to some other
+      # this is only okay if it's self->cv, otherwise throw an error
+      if ($self->{cv}->linked_customer_vendor->linked_customer_vendor && (!$self->{cv}->id || $self->{cv}->id != $self->{cv}->linked_customer_vendor->linked_customer_vendor->id)) {
+        $::form->error($::locale->text('Can not link to a customer/vendor that is already linked.'));
+      }
+    }
+  }
+  if ($::form->{customer_vendor_link} eq 'new') {
+    my $new_cv = $self->is_vendor ? SL::DB::Customer->new : SL::DB::Vendor->new;
+    $self->{cv}->linked_customer_vendor($new_cv);
+    $self->{cv}->sync_linked_customer_vendor;
   }
 
   my $db = $self->{cv}->db;
@@ -174,22 +258,45 @@ sub _save {
       }
     }
 
+    my $ustid_taxnumber_error = $self->_check_ustid_taxnumber_unique;
+    $::form->error($ustid_taxnumber_error) if $ustid_taxnumber_error;
+
     $self->{cv}->save(cascade => 1);
 
-    $self->{contact}->cp_cv_id($self->{cv}->id);
-    if( $self->{contact}->cp_name ne '' || $self->{contact}->cp_givenname ne '' ) {
-      $self->{contact}->save(cascade => 1);
-    }
+    SL::DB::Greeting->new(description => $self->{cv}->greeting)->save if $save_greeting;
+
+    # reconcile linked contacts
+    my $old_contacts = $self->{cv}->contacts;
+    my $new_contacts = $::form->{linked_contacts} ? SL::DB::Manager::Contact->get_all(query => [ cp_id => [ map { $_->{cp_id} } @{$::form->{linked_contacts}} ] ]) : [];
+    my %old_ids = map { $_->cp_id => 1 } @$old_contacts;
+    my %new_ids = map { $_->cp_id => 1 } @$new_contacts;
+    my %new_main_ids = map { $_->{cp_id} => 1 } grep { $_->{main} } @{$::form->{linked_contacts}};
+
+    $self->{cv}->link_contact($_)   for grep { !$old_ids{$_->cp_id} } @$new_contacts;
+    $self->{cv}->detach_contact($_) for grep { !$new_ids{$_->cp_id} } @$old_contacts;
+
+    my $class = $self->is_customer ? 'Customer' : 'Vendor';
+    my $db    = $self->is_customer ? 'customer' : 'vendor';
+    "SL::DB::Manager::${class}Contact"->update_all(
+      set   => { main => 0 },
+      where => [ main => 1, "${db}_id" => $self->{cv}->id ]);
+    $self->{cv}->link_contact($_, main => 1) for grep { $new_main_ids{$_->cp_id} } @$new_contacts;
 
     if( $self->{note}->subject ne '' && $self->{note}->body ne '' ) {
 
       if ( !$self->{note_followup}->follow_up_date ) {
         $::form->error($::locale->text('Date missing!'));
       }
+      if (!$self->{note_followup}->{created_for_employees}) {
+        $::form->error($::locale->text('You must chose a user.'));
+      }
 
       $self->{note}->trans_id($self->{cv}->id);
       $self->{note}->save();
 
+      if (delete $self->{note_followup}->{not_done}) {
+        $self->{note_followup}->done->delete if $self->{note_followup}->done;
+      }
       $self->{note_followup}->save();
 
       $self->{note_followup_link}->follow_up_id($self->{note_followup}->id);
@@ -202,6 +309,21 @@ sub _save {
     $self->{shipto}->trans_id($self->{cv}->id);
     if(any { $self->{shipto}->$_ ne '' } qw(shiptoname shiptodepartment_1 shiptodepartment_2 shiptostreet shiptozipcode shiptocity shiptocountry shiptogln shiptocontact shiptophone shiptofax shiptoemail)) {
       $self->{shipto}->save(cascade => 1);
+    }
+
+    if ($self->is_customer && any { $self->{additional_billing_address}->$_ ne '' } grep { $_ ne 'default_address' } @ADDITIONAL_BILLING_ADDRESS_COLUMNS) {
+      $self->{additional_billing_address}->customer_id($self->{cv}->id);
+      $self->{additional_billing_address}->save(cascade => 1);
+
+      # Make sure only one address per customer has "default address" set.
+      if ($self->{additional_billing_address}->default_address) {
+        SL::DB::Manager::AdditionalBillingAddress->update_all(
+          set   => { default_address => 0, },
+          where => [
+            customer_id => $self->{cv}->id,
+            '!id'       => $self->{additional_billing_address}->id,
+          ]);
+      }
     }
 
     my $snumbers = $self->is_vendor() ? 'vendornumber_'. $self->{cv}->vendornumber : 'customernumber_'. $self->{cv}->customernumber;
@@ -241,12 +363,12 @@ sub action_save {
     db     => ($self->is_vendor() ? 'vendor' : 'customer'),
   );
 
-  if ( $self->{contact}->cp_id ) {
-    push(@redirect_params, contact_id => $self->{contact}->cp_id);
-  }
-
   if ( $self->{shipto}->shipto_id ) {
     push(@redirect_params, shipto_id => $self->{shipto}->shipto_id);
+  }
+
+  if ( $self->is_customer && $self->{additional_billing_address}->id ) {
+    push(@redirect_params, additional_billing_address_id => $self->{additional_billing_address}->id);
   }
 
   $self->redirect_to(@redirect_params);
@@ -272,10 +394,16 @@ sub _transaction {
 
   my $name = $::form->escape($self->{cv}->name, 1);
   my $db = $self->is_vendor() ? 'vendor' : 'customer';
+  my $action = 'add';
+
+  if ('oe.pl' eq $script) {
+    $script = 'controller.pl';
+    $action = 'Order/' . $action;
+  }
 
   my $url = $self->url_for(
     controller => $script,
-    action     => 'add',
+    action     => $action,
     vc         => $db,
     $db .'_id' => $self->{cv}->id,
     $db        => $name,
@@ -346,6 +474,16 @@ sub action_save_and_quotation {
   $self->_transaction('oe.pl');
 }
 
+sub action_save_and_new_contact {
+  my ($self) = @_;
+
+  $self->_save();
+
+  my $db  = $self->is_vendor() ? 'vendor' : 'customer';
+
+  $self->redirect_to(controller => 'Contact', action => 'edit', link_with_cv_id => $self->{cv}->id, link_with_cv_db => $db);
+}
+
 sub action_delete {
   my ($self) = @_;
 
@@ -371,35 +509,6 @@ sub action_delete {
     $::form->redirect($msg);
   }
 
-}
-
-
-sub action_delete_contact {
-  my ($self) = @_;
-
-  my $db = $self->{contact}->db;
-
-  if ( !$self->{contact}->cp_id ) {
-    SL::Helper::Flash::flash('error', $::locale->text('No contact selected to delete'));
-  } else {
-
-    $db->with_transaction(sub {
-      if ( $self->{contact}->used ) {
-        $self->{contact}->detach();
-        $self->{contact}->save();
-        SL::Helper::Flash::flash('info', $::locale->text('Contact is in use and was flagged invalid.'));
-      } else {
-        $self->{contact}->delete(cascade => 1);
-        SL::Helper::Flash::flash('info', $::locale->text('Contact deleted.'));
-      }
-
-      1;
-    }) || die($db->error);
-
-    $self->{contact} = $self->_new_contact_object;
-  }
-
-  $self->action_edit();
 }
 
 sub action_delete_shipto {
@@ -430,6 +539,32 @@ sub action_delete_shipto {
   $self->action_edit();
 }
 
+sub action_delete_additional_billing_address {
+  my ($self) = @_;
+
+  my $db = $self->{additional_billing_address}->db;
+
+  if ( !$self->{additional_billing_address}->id ) {
+    SL::Helper::Flash::flash('error', $::locale->text('No address selected to delete'));
+  } else {
+    $db->with_transaction(sub {
+      if ( $self->{additional_billing_address}->used ) {
+        $self->{additional_billing_address}->detach;
+        $self->{additional_billing_address}->save(cascade => 1);
+        SL::Helper::Flash::flash('info', $::locale->text('Address is in use and was flagged invalid.'));
+      } else {
+        $self->{additional_billing_address}->delete(cascade => 1);
+        SL::Helper::Flash::flash('info', $::locale->text('Address deleted.'));
+      }
+
+      1;
+    }) || die($db->error);
+
+    $self->{additional_billing_address} = SL::DB::AdditionalBillingAddress->new;
+  }
+
+  $self->action_edit;
+}
 
 sub action_search {
   my ($self) = @_;
@@ -460,11 +595,11 @@ sub action_search_contact {
   print $::form->redirect_header($url);
 }
 
-
 sub action_get_delivery {
   my ($self) = @_;
 
-  $::auth->assert('sales_all_edit');
+  $::auth->assert('sales_all_edit')    if $self->is_customer();
+  $::auth->assert('purchase_all_edit') if $self->is_vendor();
 
   my $dbh = $::form->get_standard_dbh();
 
@@ -546,7 +681,7 @@ sub action_ajaj_get_shipto {
         my $name = 'shipto'. $_;
         $name => $self->{shipto}->$name;
       }
-      qw(_id name department_1 department_2 street zipcode city gln country contact phone fax email)
+      qw(_id name department_1 department_2 street zipcode city gln country_id contact phone fax email)
     )
   };
 
@@ -555,30 +690,14 @@ sub action_ajaj_get_shipto {
   $self->render(\SL::JSON::to_json($data), { type => 'json', process => 0 });
 }
 
-sub action_ajaj_get_contact {
+sub action_ajaj_get_additional_billing_address {
   my ($self) = @_;
 
-  my $data;
-
-  $data->{contact} = {
-    map(
-      {
-        my $name = 'cp_'. $_;
-
-        if ( $_ eq 'birthday' && $self->{contact}->$name ) {
-          $name => $self->{contact}->$name->to_lxoffice;
-        } else {
-          $name => $self->{contact}->$name;
-        }
-      }
-      qw(
-        id gender abteilung title position givenname name email phone1 phone2 fax mobile1 mobile2
-        satphone satfax project street zipcode city privatphone privatemail birthday
-      )
-    )
+  my $data = {
+    additional_billing_address => {
+      map { ($_ => $self->{additional_billing_address}->$_) } ('id', @ADDITIONAL_BILLING_ADDRESS_COLUMNS)
+    },
   };
-
-  $data->{contact_cvars} = $self->_prepare_cvar_configs_for_ajaj($self->{contact}->cvars_by_config);
 
   $self->render(\SL::JSON::to_json($data), { type => 'json', process => 0 });
 }
@@ -602,15 +721,14 @@ sub action_ajaj_autocomplete {
   }
 
   # if someone types something, and hits enter, assume he entered the full name.
-  # if something matches, treat that as sole match
-  # unfortunately get_models can't do more than one per package atm, so we d it
+  # if something matches, treat that as the sole match
+  # unfortunately get_models can't do more than one per package atm, so we do it
   # the oldfashioned way.
   if ($::form->{prefer_exact}) {
     my $exact_matches;
     if (1 == scalar @{ $exact_matches = $manager->get_all(
       query => [
         obsolete => 0,
-        (salesman_id => SL::DB::Manager::Employee->current->id) x !$::auth->assert('customer_vendor_all_edit', 1),
         or => [
           name    => { ilike => $::form->{filter}{'all:substr:multi::ilike'} },
           $number => { ilike => $::form->{filter}{'all:substr:multi::ilike'} },
@@ -640,7 +758,104 @@ sub action_ajaj_autocomplete {
 }
 
 sub action_test_page {
-  $_[0]->render('customer_vendor/test_page');
+  $_[0]->render('customer_vendor/test_page', title => 'Customer Vendor Autocomplete Testpage');
+}
+
+sub action_ajax_list_prices {
+  my ($self, %params) = @_;
+
+  my $report   = SL::ReportGenerator->new(\%::myconfig, $::form);
+  my @columns  = qw(partnumber description price);
+  my @visible  = qw(partnumber description price);
+  my @sortable = qw(partnumber description price);
+
+  my %column_defs = (
+    partnumber  => { text => $::locale->text('Part Number'),      sub => sub { $_[0]->parts->partnumber  } },
+    description => { text => $::locale->text('Part Description'), sub => sub { $_[0]->parts->description } },
+    price       => { text => $::locale->text('Price'),            sub => sub { $::form->format_amount(\%::myconfig, $_[0]->price, 2) }, align => 'right' },
+  );
+
+  $::form->{sort_by}  ||= 'partnumber';
+  $::form->{sort_dir} //= 1;
+
+  for my $col (@sortable) {
+    $column_defs{$col}{link} = $self->url_for(
+      action   => 'ajax_list_prices',
+      callback => $::form->{callback},
+      db       => $::form->{db},
+      id       => $self->{cv}->id,
+      sort_by  => $col,
+      sort_dir => ($::form->{sort_by} eq $col ? 1 - $::form->{sort_dir} : $::form->{sort_dir})
+    );
+  }
+
+  map { $column_defs{$_}{visible} = 1 } @visible;
+
+  my $pricegroup;
+  $pricegroup = $self->{cv}->pricegroup->pricegroup if $self->{cv}->pricegroup;
+
+  $report->set_columns(%column_defs);
+  $report->set_column_order(@columns);
+  $report->set_options(allow_pdf_export => 0, allow_csv_export => 0);
+  $report->set_sort_indicator($::form->{sort_by}, $::form->{sort_dir});
+  $report->set_export_options(@{ $params{report_generator_export_options} || [] });
+  $report->set_options(
+    %{ $params{report_generator_options} || {} },
+    output_format        => 'HTML',
+    top_info_text        => $::locale->text('Pricegroup') . ': ' . $pricegroup,
+    title                => $::locale->text('Price List'),
+  );
+
+  my $sort_param = $::form->{sort_by} eq 'price'       ? 'price'             :
+                   $::form->{sort_by} eq 'description' ? 'parts.description' :
+                   'parts.partnumber';
+  $sort_param .= ' ' . ($::form->{sort_dir} ? 'ASC' : 'DESC');
+  my $prices = SL::DB::Manager::Price->get_all(where        => [ pricegroup_id => $self->{cv}->pricegroup_id ],
+                                               sort_by      => $sort_param,
+                                               with_objects => 'parts');
+
+  $self->report_generator_list_objects(report => $report, objects => $prices, layout => 0, header => 0);
+}
+
+# open the dialog for customer/vendor details
+# called from SL::Presenter::customer_vendor
+sub action_show_customer_vendor_details_dialog {
+  my ($self) = @_;
+
+  my $is_customer = 'customer' eq $::form->{cv};
+  my $cv;
+  if ($is_customer) {
+    $cv = SL::DB::Customer->new(id => $::form->{cv_id})->load;
+  } else {
+    $cv = SL::DB::Vendor->new(id => $::form->{cv_id})->load;
+  }
+
+  my %details = map { $_ => $cv->$_ } @{$cv->meta->columns};
+  $details{discount_as_percent} = $cv->discount_as_percent;
+  $details{creditlimt}          = $cv->creditlimit_as_number;
+  $details{business}            = $cv->business->description      if $cv->business;
+  $details{language}            = $cv->language_obj->description  if $cv->language_obj;
+  $details{delivery_terms}      = $cv->delivery_term->description if $cv->delivery_term;
+  $details{payment_terms}       = $cv->payment->description       if $cv->payment;
+  $details{pricegroup}          = $cv->pricegroup->pricegroup     if $is_customer && $cv->pricegroup;
+  $details{country}             = $cv->country->description_localized($::myconfig{countrycode});
+
+  if ($is_customer) {
+    foreach my $entry (@{ $cv->additional_billing_addresses }) {
+      push @{ $details{ADDITIONAL_BILLING_ADDRESSES} },   { map { $_ => $entry->$_ } @{$entry->meta->columns} };
+    }
+  }
+  foreach my $entry (@{ $cv->shipto }) {
+    push @{ $details{SHIPTO} },   { map { $_ => $entry->$_ } @{$entry->meta->columns} };
+  }
+  foreach my $entry (@{ $cv->contacts }) {
+    push @{ $details{CONTACTS} }, { map { $_ => $entry->$_ } @{$entry->meta->columns} };
+  }
+
+  $_[0]->render('common/show_vc_details', { layout => 0 },
+                is_customer => $is_customer,
+                %details);
+
 }
 
 sub is_vendor {
@@ -659,7 +874,7 @@ sub is_orphaned {
   }
 
   my $arap      = $self->is_vendor ? 'ap' : 'ar';
-  my $num_args  = 3;
+  my $num_args  = 4;
 
   my $cv = $self->is_vendor ? 'vendor' : 'customer';
 
@@ -681,7 +896,13 @@ sub is_orphaned {
     SELECT a.id
     FROM delivery_orders a
     JOIN '. $cv .' ct ON (a.'. $cv .'_id = ct.id)
-    WHERE ct.id = ?';
+    WHERE ct.id = ?
+
+    UNION
+
+    SELECT id
+    FROM price_rule_items
+    WHERE type LIKE \''. $cv .'\' AND value_int = ?';
 
 
   if ( $self->is_vendor ) {
@@ -733,6 +954,7 @@ sub _instantiate_args {
     $self->{note} = SL::DB::Note->new(id => $::form->{note}->{id})->load();
     $self->{note_followup} = $self->{note}->follow_up;
     $self->{note_followup_link} = $self->{note_followup}->follow_up_link;
+
   } else {
     $self->{note} = SL::DB::Note->new();
     $self->{note_followup} = SL::DB::FollowUp->new();
@@ -747,6 +969,13 @@ sub _instantiate_args {
   $self->{note_followup}->note($self->{note});
   $self->{note_followup}->created_by($curr_employee->id);
 
+  if (delete $::form->{note_followup_done}) {
+    $self->{note_followup}->done(SL::DB::FollowUpDone->new) if !$self->{note_followup}->done;
+    $self->{note_followup}->done->employee_id(SL::DB::Manager::Employee->current->id);
+  } else {
+    $self->{note_followup}->{not_done} = 1;
+  }
+
   $self->{note_followup_link}->trans_type($self->is_vendor() ? 'vendor' : 'customer');
   $self->{note_followup_link}->trans_info($self->{cv}->name);
 
@@ -758,15 +987,16 @@ sub _instantiate_args {
   $self->{shipto}->assign_attributes(%{$::form->{shipto}});
   $self->{shipto}->module('CT');
 
-  if ( $::form->{contact}->{cp_id} ) {
-    $self->{contact} = SL::DB::Contact->new(cp_id => $::form->{contact}->{cp_id})->load();
-  } else {
-    $self->{contact} = $self->_new_contact_object;
+  if ($self->is_customer) {
+    if ( $::form->{additional_billing_address}->{id} ) {
+      $self->{additional_billing_address} = SL::DB::AdditionalBillingAddress->new(id => $::form->{additional_billing_address}->{id})->load;
+    } else {
+      $self->{additional_billing_address} = SL::DB::AdditionalBillingAddress->new;
+    }
+    $self->{additional_billing_address}->assign_attributes(%{ $::form->{additional_billing_address} });
   }
-  $self->{contact}->assign_attributes(%{$::form->{contact}});
 
   $self->_copy_form_to_cvars(target => $self->{cv},      source => $::form->{cv_cvars});
-  $self->_copy_form_to_cvars(target => $self->{contact}, source => $::form->{contact_cvars});
   $self->_copy_form_to_cvars(target => $self->{shipto},  source => $::form->{shipto_cvars});
 }
 
@@ -799,38 +1029,56 @@ sub _load_customer_vendor {
     $self->{shipto} = SL::DB::Shipto->new();
   }
 
-  if ( $::form->{contact_id} ) {
-    $self->{contact} = SL::DB::Contact->new(cp_id => $::form->{contact_id})->load();
+  if ($self->is_customer) {
+    if ( $::form->{additional_billing_address_id} ) {
+      $self->{additional_billing_address} = SL::DB::AdditionalBillingAddress->new(id => $::form->{additional_billing_address_id})->load;
+      die($::locale->text('Error')) if $self->{additional_billing_address}->customer_id != $self->{cv}->id;
 
-    if ( $self->{contact}->cp_cv_id != $self->{cv}->id ) {
-      die($::locale->text('Error'));
+    } else {
+      $self->{additional_billing_address} = SL::DB::AdditionalBillingAddress->new;
     }
-  } else {
-    $self->{contact} = $self->_new_contact_object;
   }
 }
 
-sub _check_customer_vendor_all_edit {
-  my ($self) = @_;
+sub _may_access_action {
+  my ($self, $action)   = @_;
 
-  unless ($::auth->assert('customer_vendor_all_edit', 1)) {
-    die($::locale->text("You don't have the rights to edit this customer.") . "\n")
-      if $self->{cv}->is_customer and
-         SL::DB::Manager::Employee->current->id != $self->{cv}->salesman_id;
-  };
-};
+  my $is_new            = !$self->{cv} || !$self->{cv}->id;
+  my $is_own_customer   = !$is_new
+                       && $self->{cv}->is_customer
+                       && (SL::DB::Manager::Employee->current->id == $self->{cv}->salesman_id);
+  my $has_edit_rights   = $::auth->assert('customer_vendor_all_edit', 1);
+  $has_edit_rights    ||= $::auth->assert('customer_vendor_edit',     1) && ($is_new || $is_own_customer);
+  my $needs_edit_rights = $action =~ m{^(?:add|save|delete|update)};
+
+  $self->user_has_edit_rights($has_edit_rights);
+
+  return 1 if $has_edit_rights;
+  return 0 if $needs_edit_rights;
+  return 1;
+}
+
+sub _check_auth {
+  my ($self, $action) = @_;
+
+  if (!$self->_may_access_action($action)) {
+    $::auth->deny_access;
+  }
+}
 
 sub _create_customer_vendor {
   my ($self) = @_;
 
   $self->{cv} = $self->_new_customer_vendor_object;
   $self->{cv}->currency_id($::instance_conf->get_currency_id());
+  $self->{cv}->country_id($::instance_conf->get_address_country_id);
 
   $self->{note} = SL::DB::Note->new();
 
   $self->{note_followup} = SL::DB::FollowUp->new();
 
   $self->{shipto} = SL::DB::Shipto->new();
+  $self->{additional_billing_address} = SL::DB::AdditionalBillingAddress->new if $self->is_customer;
 
   $self->{contact} = $self->_new_contact_object;
 }
@@ -844,35 +1092,15 @@ sub _pre_render {
 
   $self->{all_business} = SL::DB::Manager::Business->get_all();
 
-  $self->{all_employees} = SL::DB::Manager::Employee->get_all(query => [ deleted => 0 ]);
+  $self->{all_employees}   = SL::DB::Manager::Employee->get_all_sorted(query => [ deleted => 0 ]);
+  $self->{all_auth_groups} = SL::DB::Manager::AuthGroup->get_all_sorted;
 
-  $query =
-    'SELECT DISTINCT(greeting)
-     FROM customer
-     WHERE greeting IS NOT NULL AND greeting != \'\'
-     UNION
-       SELECT DISTINCT(greeting)
-       FROM vendor
-       WHERE greeting IS NOT NULL AND greeting != \'\'
-     ORDER BY greeting';
-  $self->{all_greetings} = [
-    map(
-      { $_->{greeting}; }
-      selectall_hashref_query($::form, $dbh, $query)
-    )
-  ];
+  $self->{all_greetings} = SL::DB::Manager::Greeting->get_all_sorted();
+  if ($self->{cv}->id && $self->{cv}->greeting && !grep {$self->{cv}->greeting eq $_->description} @{$self->{all_greetings}}) {
+    unshift @{$self->{all_greetings}}, (SL::DB::Greeting->new(description => $self->{cv}->greeting));
+  }
 
-  $query =
-    'SELECT DISTINCT(cp_title) AS title
-     FROM contacts
-     WHERE cp_title IS NOT NULL AND cp_title != \'\'
-     ORDER BY cp_title';
-  $self->{all_titles} = [
-    map(
-      { $_->{title}; }
-      selectall_hashref_query($::form, $dbh, $query)
-    )
-  ];
+
 
   $self->{all_currencies} = SL::DB::Manager::Currency->get_all();
 
@@ -880,26 +1108,8 @@ sub _pre_render {
 
   $self->{all_taxzones} = SL::DB::Manager::TaxZone->get_all_sorted();
 
-  if ( $::instance_conf->get_vertreter() ) {
-    $query =
-      'SELECT id
-       FROM business
-       WHERE salesman';
-    my $business_ids = [
-      map(
-        { $_->{id}; }
-        selectall_hashref_query($::form, $dbh, $query)
-      )
-    ];
-
-    if ( $business_ids->[0] ) {
-      $self->{all_salesman_customers} = SL::DB::Manager::Customer->get_all(query => [business_id => $business_ids]);
-    } else {
-      $self->{all_salesman_customers} = [];
-    }
-  } else {
-    $self->{all_salesmen} = SL::DB::Manager::Employee->get_all(query => [ or => [ id => $self->{cv}->salesman_id,  deleted => 0 ] ]);
-  }
+  $self->{all_salesmen} = SL::DB::Manager::Employee->get_all(query => [ or => [ id => $self->{cv}->salesman_id,  deleted => 0 ] ]);
+  $self->{all_buyer}    = SL::DB::Manager::Employee->get_all(query => [ or => [ id => $self->{cv}->buyer_id,  deleted => 0 ] ]) if ($self->is_vendor);
 
   $self->{all_payment_terms} = SL::DB::Manager::PaymentTerm->get_all_sorted(where => [ or => [ id       => $self->{cv}->payment_id,
                                                                                                obsolete => 0 ] ]);
@@ -910,23 +1120,16 @@ sub _pre_render {
     $self->{all_pricegroups} = SL::DB::Manager::Pricegroup->get_all_sorted(query => [ or => [ id => $self->{cv}->pricegroup_id, obsolete => 0 ] ]);
   }
 
-  $query =
-    'SELECT DISTINCT(cp_abteilung) AS department
-     FROM contacts
-     WHERE cp_abteilung IS NOT NULL AND cp_abteilung != \'\'
-     ORDER BY cp_abteilung';
-  $self->{all_departments} = [
-    map(
-      { $_->{department}; }
-      selectall_hashref_query($::form, $dbh, $query)
-    )
-  ];
 
-  $self->{contacts} = $self->{cv}->contacts;
-  $self->{contacts} ||= [];
+  $self->{all_contacts} = SL::DB::Manager::Contact->get_all;
 
   $self->{shiptos} = $self->{cv}->shipto;
   $self->{shiptos} ||= [];
+
+  if ($self->is_customer) {
+    $self->{additional_billing_addresses} = $self->{cv}->additional_billing_addresses;
+    $self->{additional_billing_addresses} ||= [];
+  }
 
   $self->{notes} = SL::DB::Manager::Note->get_all(
     query => [
@@ -936,16 +1139,65 @@ sub _pre_render {
     with_objects => ['follow_up'],
   );
 
+  if ( $self->is_vendor()) {
+    $self->{open_items} = SL::DB::Manager::PurchaseInvoice->get_all_count(
+      query => [
+        vendor_id => $self->{cv}->id,
+        paid => {lt_sql => 'amount'},
+      ],
+    );
+  } else {
+    $self->{open_items} = SL::DB::Manager::Invoice->get_all_count(
+      query => [
+        customer_id => $self->{cv}->id,
+        paid => {lt_sql => 'amount'},
+      ],
+    );
+  }
+
+  if ( $self->is_vendor() ) {
+    $self->{open_orders} = SL::DB::Manager::Order->get_all_count(
+      query => [
+        vendor_id => $self->{cv}->id,
+        closed => 'F',
+      ],
+    );
+  } else {
+    $self->{open_orders} = SL::DB::Manager::Order->get_all_count(
+      query => [
+        customer_id => $self->{cv}->id,
+        closed => 'F',
+      ],
+    );
+  }
+
+  if ($self->{cv}->number && $::instance_conf->get_webdav) {
+    my $webdav = SL::Webdav->new(
+      type     => $self->is_customer ? 'customer'
+                : $self->is_vendor   ? 'vendor'
+                : undef,
+      number   => $self->{cv}->number,
+    );
+    my @all_objects = $webdav->get_all_objects;
+    @{ $self->{template_args}->{WEBDAV} } = map { { name => $_->filename,
+                                                    type => t8('File'),
+                                                    link => File::Spec->catfile($_->full_filedescriptor),
+                                                } } @all_objects;
+  }
+
   $self->{template_args} ||= {};
 
-  $::request->{layout}->add_javascripts('kivi.CustomerVendor.js');
-  $::request->{layout}->add_javascripts('kivi.File.js');
+  $::request->{layout}->add_javascripts("$_.js") for qw (kivi.CustomerVendor kivi.File chart kivi.CustomerVendorTurnover follow_up);
 
   $self->_setup_form_action_bar;
 }
 
 sub _setup_form_action_bar {
   my ($self) = @_;
+
+  my $no_rights = $self->user_has_edit_rights ? undef
+                : $self->{cv}->is_customer    ? t8("You don't have the rights to edit this customer.")
+                :                               t8("You don't have the rights to edit this vendor.");
 
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
@@ -955,11 +1207,13 @@ sub _setup_form_action_bar {
           submit    => [ '#form', { action => "CustomerVendor/save" } ],
           checks    => [ 'check_taxzone_and_ustid' ],
           accesskey => 'enter',
+          disabled  => $no_rights,
         ],
         action => [
           t8('Save and Close'),
           submit => [ '#form', { action => "CustomerVendor/save_and_close" } ],
           checks => [ 'check_taxzone_and_ustid' ],
+          disabled => $no_rights,
         ],
       ], # end of combobox "Save"
 
@@ -969,32 +1223,44 @@ sub _setup_form_action_bar {
           t8('Save and AP Transaction'),
           submit => [ '#form', { action => "CustomerVendor/save_and_ap_transaction" } ],
           checks => [ 'check_taxzone_and_ustid' ],
+          disabled => $no_rights,
         ]) x !!$self->is_vendor,
         (action => [
           t8('Save and AR Transaction'),
           submit => [ '#form', { action => "CustomerVendor/save_and_ar_transaction" } ],
           checks => [ 'check_taxzone_and_ustid' ],
+          disabled => $no_rights,
         ]) x !$self->is_vendor,
         action => [
           t8('Save and Invoice'),
           submit => [ '#form', { action => "CustomerVendor/save_and_invoice" } ],
           checks => [ 'check_taxzone_and_ustid' ],
+          disabled => $no_rights,
         ],
         action => [
           t8('Save and Order'),
           submit => [ '#form', { action => "CustomerVendor/save_and_order" } ],
           checks => [ 'check_taxzone_and_ustid' ],
+          disabled => $no_rights,
         ],
         (action => [
           t8('Save and RFQ'),
           submit => [ '#form', { action => "CustomerVendor/save_and_rfq" } ],
           checks => [ 'check_taxzone_and_ustid' ],
+          disabled => $no_rights,
         ]) x !!$self->is_vendor,
         (action => [
           t8('Save and Quotation'),
           submit => [ '#form', { action => "CustomerVendor/save_and_quotation" } ],
           checks => [ 'check_taxzone_and_ustid' ],
+          disabled => $no_rights,
         ]) x !$self->is_vendor,
+        action => [
+          t8('Save and create new Contact'),
+          submit => [ '#form', { action => "CustomerVendor/save_and_new_contact" } ],
+          checks => [ 'check_taxzone_and_ustid' ],
+          disabled => $no_rights,
+        ],
       ], # end of combobox "Workflow"
 
       action => [
@@ -1003,7 +1269,7 @@ sub _setup_form_action_bar {
         confirm  => t8('Do you really want to delete this object?'),
         disabled => !$self->{cv}->id    ? t8('This object has not been saved yet.')
                   : !$self->is_orphaned ? t8('This object has already been used.')
-                  :                       undef,
+                  :                       $no_rights,
       ],
 
       'separator',
@@ -1086,9 +1352,6 @@ sub init_customer_models {
       },
       customernumber => t8('Customer Number'),
     },
-    query => [
-     ( salesman_id => SL::DB::Manager::Employee->current->id) x !$::auth->assert('customer_vendor_all_edit', 1),
-    ],
   );
 }
 
@@ -1108,15 +1371,25 @@ sub init_vendor_models {
   );
 }
 
+sub init_zugferd_settings {
+  return [
+    [ -1, t8('Use settings from client configuration') ],
+    @SL::ZUGFeRD::customer_settings,
+  ],
+}
+
 sub _new_customer_vendor_object {
   my ($self) = @_;
 
   my $class  = 'SL::DB::' . ($self->is_vendor ? 'Vendor' : 'Customer');
-  return $class->new(
-    contacts         => [],
+  my $object = $class->new(
     shipto           => [],
     custom_variables => [],
   );
+
+  $object->additional_billing_addresses([]) if $self->is_customer;
+
+  return $object;
 }
 
 sub _new_contact_object {

@@ -6,9 +6,17 @@ use Archive::Zip;
 use Encode;
 use HTML::Entities;
 use POSIX 'setsid';
+use XML::LibXML;
+use File::Basename;
 
 use SL::Iconv;
 use SL::Template::OpenDocument::Styles;
+
+use SL::Helper::QrBill;
+use SL::Helper::QrBillFunctions qw(
+  get_ref_number_formatted get_iban_formatted get_amount_formatted
+  get_street_name_from_address_line get_building_number_from_address_line
+);
 
 use Cwd;
 # use File::Copy;
@@ -194,7 +202,7 @@ sub find_end {
 
     } elsif ((substr($text, $pos + 4, 4) eq 'else') && (1 == $depth)) {
       if (!$var) {
-        $self->{"error"} = '<%else%> outside of <%if%> / <%ifnot%>.';
+        $self->{error} = '<%else%> outside of <%if%> / <%ifnot%>.';
         return undef;
       }
 
@@ -250,7 +258,7 @@ sub parse_block {
 
           ($table_row, $contents) = $self->find_end($contents, length($1));
           if (!$table_row) {
-            $self->{"error"} = "Unclosed <\%foreachrow\%>." unless ($self->{"error"});
+            $self->{error} = "Unclosed <\%foreachrow\%>." unless ($self->{"error"});
             $main::lxdebug->leave_sub();
             return undef;
           }
@@ -305,7 +313,7 @@ sub parse_block {
         substr($contents, 0, $pos_foreach) = "";
 
         if ($contents !~ m|^(\&lt;\%foreach (.*?)\%\&gt;)|) {
-          $self->{"error"} = "Malformed <\%foreach\%>.";
+          $self->{error} = "Malformed <\%foreach\%>.";
           $main::lxdebug->leave_sub();
           return undef;
         }
@@ -317,7 +325,7 @@ sub parse_block {
         my $block;
         ($block, $contents) = $self->find_end($contents);
         if (!$block) {
-          $self->{"error"} = "Unclosed <\%foreach\%>." unless ($self->{"error"});
+          $self->{error} = "Unclosed <\%foreach\%>." unless ($self->{error});
           $main::lxdebug->leave_sub();
           return undef;
         }
@@ -346,28 +354,43 @@ sub parse_block {
 sub parse {
   $main::lxdebug->enter_sub();
   my $self = $_[0];
+
   local *OUT = $_[1];
-  my $form = $self->{"form"};
+  my $form = $self->{form};
 
   close(OUT);
 
+  my $is_qr_bill = $::instance_conf->get_create_qrbill_invoices &&
+                   ($form->{formname} eq 'invoice' ||
+                    $form->{formname} eq 'invoice_for_advance_payment') &&
+                   $form->{template_meta}->{printer}->{template_code} =~ m/qr/ ?
+                   1 : 0;
+
+  my $qr_image_path;
+  if ($is_qr_bill) {
+    # the biller account information, biller address and the reference number,
+    # are needed in the template aswell as in the qr-code generation, therefore
+    # assemble these and add to $::form
+    $qr_image_path = $self->generate_qr_code;
+  }
+
   my $file_name;
-  if ($form->{"IN"} =~ m|^/|) {
-    $file_name = $form->{"IN"};
+  if ($form->{IN} =~ m|^/|) {
+    $file_name = $form->{IN};
   } else {
-    $file_name = $form->{"templates"} . "/" . $form->{"IN"};
+    $file_name = $form->{templates} . "/" . $form->{IN};
   }
 
   my $zip = Archive::Zip->new();
   if (Archive::Zip->AZ_OK != $zip->read($file_name)) {
-    $self->{"error"} = "File not found/is not a OpenDocument file.";
+    $self->{error} = "File not found/is not a OpenDocument file.";
     $main::lxdebug->leave_sub();
     return 0;
   }
 
   my $contents = Encode::decode('utf-8-strict', $zip->contents("content.xml"));
   if (!$contents) {
-    $self->{"error"} = "File is not a OpenDocument file.";
+    $self->{error} = "File is not a OpenDocument file.";
     $main::lxdebug->leave_sub();
     return 0;
   }
@@ -420,10 +443,32 @@ sub parse {
     $zip->contents("styles.xml", Encode::encode('utf-8-strict', $new_styles));
   }
 
-  $zip->writeToFileNamed($form->{"tmpfile"}, 1);
+  if ($is_qr_bill) {
+    # get placeholder path from odt XML
+    my $qr_placeholder_path;
+    my $dom = XML::LibXML->load_xml(string => $contents, expand_entities => 0);
+    my @nodelist = $dom->getElementsByTagName("draw:frame");
+    for my $node (@nodelist) {
+      my $attr = $node->getAttribute('draw:name');
+      if ($attr eq 'QRCodePlaceholder') {
+        my @children = $node->getChildrenByTagName('draw:image');
+        $qr_placeholder_path = $children[0]->getAttribute('xlink:href');
+      }
+    }
+    if (!defined($qr_placeholder_path)) {
+      $::form->error($::locale->text('QR-Code placeholder image: QRCodePlaceholder not found in template.'));
+    }
+    # replace QR-Code Placeholder Image in zip file (odt) with generated one
+    $zip->updateMember(
+     $qr_placeholder_path,
+     $qr_image_path
+    );
+  }
+
+  $zip->writeToFileNamed($form->{tmpfile}, 1);
 
   my $res = 1;
-  if ($form->{"format"} =~ /pdf/) {
+  if ($form->{format} =~ /pdf/) {
     $res = $self->convert_to_pdf();
   }
 
@@ -431,131 +476,144 @@ sub parse {
   return $res;
 }
 
-sub is_xvfb_running {
+sub generate_qr_code {
   $main::lxdebug->enter_sub();
+  my $self = $_[0];
+  my $form = $self->{form};
 
-  my ($self) = @_;
+  # assemble data for QR-Code
 
-  local *IN;
-  my $dfname = $self->{"userspath"} . "/xvfb_display";
-  my $display;
+  if (!$form->{qrbill_iban}) {
+    $::form->error($::locale->text('No bank account flagged for QRBill usage was found.'));
+  }
 
-  $main::lxdebug->message(LXDebug->DEBUG2(), "    Looking for $dfname\n");
-  if ((-f $dfname) && open(IN, $dfname)) {
-    my $pid = <IN>;
-    chomp($pid);
-    $display = <IN>;
-    chomp($display);
-    my $xauthority = <IN>;
-    chomp($xauthority);
-    close(IN);
+  my %biller_information = (
+    iban => $form->{qrbill_iban}
+  );
 
-    $main::lxdebug->message(LXDebug->DEBUG2(), "      found with $pid and $display\n");
+  if (!$form->{qrbill_biller_countrycode}) {
+    $::form->error($::locale->text('Error mapping biller countrycode.'));
+  }
+  my %biller_data = (
+    address_type => 'S',
+    company => $::instance_conf->get_company(),
+    street => get_street_name_from_address_line($::instance_conf->get_address_street1()),
+    street_no => get_building_number_from_address_line($::instance_conf->get_address_street1()),
+    postalcode => $::instance_conf->get_address_zipcode(),
+    city => $::instance_conf->get_address_city(),
+    countrycode => $form->{qrbill_biller_countrycode},
+  );
 
-    if ((! -d "/proc/$pid") || !open(IN, "/proc/$pid/cmdline")) {
-      $main::lxdebug->message(LXDebug->DEBUG2(), "  no/wrong process #1\n");
-      unlink($dfname, $xauthority);
-      $main::lxdebug->leave_sub();
-      return undef;
-    }
-    my $line = <IN>;
-    close(IN);
-    if ($line !~ /xvfb/i) {
-      $main::lxdebug->message(LXDebug->DEBUG2(), "      no/wrong process #2\n");
-      unlink($dfname, $xauthority);
-      $main::lxdebug->leave_sub();
-      return undef;
-    }
-
-    $ENV{"XAUTHORITY"} = $xauthority;
-    $ENV{"DISPLAY"} = $display;
+  my ($amount, $amount_formatted);
+  if ($form->{qrbill_without_amount}) {
+    $amount = '';
+    $amount_formatted = '';
   } else {
-    $main::lxdebug->message(LXDebug->DEBUG2(), "      not found\n");
+    $amount = $form->{qrbill_amount};
+
+    # format amount for template
+    $amount_formatted = get_amount_formatted($amount);
+    if (!$amount_formatted) {
+      $::form->error($::locale->text('Amount has wrong format.'));
+    }
   }
+
+  my %payment_information = (
+    amount => $amount,
+    currency => $form->{currency},
+  );
+
+  # get address data from billing address if given, otherwise from invoice
+  my $street_name = get_street_name_from_address_line($form->{billing_address_id} ?
+      $form->{billing_address_street} :
+      $form->{street});
+  my $building_number = get_building_number_from_address_line($form->{billing_address_id} ?
+      $form->{billing_address_street} :
+      $form->{street});
+  my $postalcode = $form->{billing_address_id} ?
+      $form->{billing_address_zipcode} :
+      $form->{zipcode};
+  my $city = $form->{billing_address_id} ?
+      $form->{billing_address_city} :
+      $form->{city};
+
+  # validate address data
+  if ($postalcode !~ m/^\d{4,}$/) {
+    $::form->error($::locale->text('Zipcode missing or wrong format.'));
+  }
+  if (!$city) {
+    $::form->error($::locale->text('No city given.'));
+  }
+  if (!$form->{qrbill_customer_countrycode}) {
+    $::form->error($::locale->text('Error mapping customer countrycode.'));
+  }
+
+  my %invoice_recipient_data = (
+    address_type => 'S',
+    name => $form->{billing_address_id} ?
+              $form->{billing_address_name} :
+              $form->{name},
+    street => $street_name,
+    street_no => $building_number,
+    postalcode => $postalcode,
+    city => $city,
+    countrycode => $form->{qrbill_customer_countrycode},
+  );
+
+  my %ref_nr_data;
+  if ($::instance_conf->get_create_qrbill_invoices == 1) {
+    # fill reference number with zeros when printing preview (before booking)
+    my $reference_number = $form->{id} ? $form->{qr_reference} : '0' x 27;
+
+    %ref_nr_data = (
+      type => 'QRR',
+      ref_number => $reference_number,
+    );
+    # get ref. number/iban formatted with spaces and set into form for template
+    # processing
+    $form->{ref_number} = $reference_number;
+    $form->{ref_number_formatted} = get_ref_number_formatted($reference_number);
+  } elsif ($::instance_conf->get_create_qrbill_invoices == 2) {
+    %ref_nr_data = (
+      type => 'NON',
+      ref_number => '',
+    );
+  } else {
+    $::form->error($::locale->text('Error getting QR-Bill type.'));
+  }
+
+  my %additional_information = (
+    unstructured_message => $form->{qr_unstructured_message}
+  );
+
+  # set into form for template processing
+  $form->{biller_information} = \%biller_information;
+  $form->{biller_data} = \%biller_data;
+  $form->{iban_formatted} = get_iban_formatted($form->{qrbill_iban});
+  $form->{amount_formatted} = $amount_formatted;
+  $form->{unstructured_message} = $form->{qr_unstructured_message};
+
+  # set outfile
+  my $outfile = $form->{tmpdir} . '/' . 'qr-code.png';
+
+  # generate QR-Code Image
+  eval {
+   my $qr_image = SL::Helper::QrBill->new(
+     \%biller_information,
+     \%biller_data,
+     \%payment_information,
+     \%invoice_recipient_data,
+     \%ref_nr_data,
+     \%additional_information
+   );
+   $qr_image->generate($outfile);
+  } or do {
+   local $_ = $@; chomp; my $error = $_;
+   $::form->error($::locale->text('QR-Image generation failed: ' . $error));
+  };
 
   $main::lxdebug->leave_sub();
-
-  return $display;
-}
-
-sub spawn_xvfb {
-  $main::lxdebug->enter_sub();
-
-  my ($self) = @_;
-
-  $main::lxdebug->message(LXDebug->DEBUG2, "spawn_xvfb()\n");
-
-  my $display = $self->is_xvfb_running();
-
-  if ($display) {
-    $main::lxdebug->leave_sub();
-    return $display;
-  }
-
-  $display = 99;
-  while ( -f "/tmp/.X${display}-lock") {
-    $display++;
-  }
-  $display = ":${display}";
-  $main::lxdebug->message(LXDebug->DEBUG2(), "  display $display\n");
-
-  my $mcookie = `mcookie`;
-  die("Installation error: mcookie not found.") if ($? != 0);
-  chomp($mcookie);
-
-  $main::lxdebug->message(LXDebug->DEBUG2(), "  mcookie $mcookie\n");
-
-  my $xauthority = "/tmp/.Xauthority-" . $$ . "-" . time() . "-" . int(rand(9999999));
-  $ENV{"XAUTHORITY"} = $xauthority;
-
-  $main::lxdebug->message(LXDebug->DEBUG2(), "  xauthority $xauthority\n");
-
-  if (system("xauth add \"${display}\" . \"${mcookie}\"") == -1) {
-    die "system call to xauth failed: $!";
-  }
-  if ($? != 0) {
-    $self->{"error"} = "Conversion to PDF failed because OpenOffice could not be started (xauth: $!)";
-    $main::lxdebug->leave_sub();
-    return undef;
-  }
-
-  $main::lxdebug->message(LXDebug->DEBUG2(), "  about to fork()\n");
-
-  my $pid = fork();
-  if (0 == $pid) {
-    $main::lxdebug->message(LXDebug->DEBUG2(), "  Child execing\n");
-    exec($::lx_office_conf{applications}->{xvfb}, $display, "-screen", "0", "640x480x8", "-nolisten", "tcp");
-  }
-  sleep(3);
-  $main::lxdebug->message(LXDebug->DEBUG2(), "  parent dont sleeping\n");
-
-  local *OUT;
-  my $dfname = $self->{"userspath"} . "/xvfb_display";
-  if (!open(OUT, ">", $dfname)) {
-    $self->{"error"} = "Conversion to PDF failed because OpenOffice could not be started ($dfname: $!)";
-    unlink($xauthority);
-    kill($pid);
-    $main::lxdebug->leave_sub();
-    return undef;
-  }
-  print(OUT "$pid\n$display\n$xauthority\n");
-  close(OUT);
-
-  $main::lxdebug->message(LXDebug->DEBUG2(), "  parent re-testing\n");
-
-  if (!$self->is_xvfb_running()) {
-    $self->{"error"} = "Conversion to PDF failed because OpenOffice could not be started.";
-    unlink($xauthority, $dfname);
-    kill($pid);
-    $main::lxdebug->leave_sub();
-    return undef;
-  }
-
-  $main::lxdebug->message(LXDebug->DEBUG2(), "  spawn OK\n");
-
-  $main::lxdebug->leave_sub();
-
-  return $display;
+  return $outfile;
 }
 
 sub _run_python_uno {
@@ -620,9 +678,9 @@ sub spawn_openoffice {
         my $ssres = setsid();
         $main::lxdebug->message(LXDebug->DEBUG2(), "  Child execing\n");
         my @cmdline = ($::lx_office_conf{applications}->{openofficeorg_writer},
-                       "-minimized", "-norestore", "-nologo", "-nolockcheck",
-                       "-headless",
-                       "-accept=socket,host=localhost,port=" .
+                       "--minimized", "--norestore", "--nologo", "--nolockcheck",
+                       "--headless",
+                       "--accept=socket,host=localhost,port=" .
                        $::lx_office_conf{print_templates}->{openofficeorg_daemon_port} . ";urp;");
         exec(@cmdline);
       } else {
@@ -641,7 +699,7 @@ sub spawn_openoffice {
   }
 
   if (!$res) {
-    $self->{"error"} = "Conversion from OpenDocument to PDF failed because " .
+    $self->{error} = "Conversion from OpenDocument to PDF failed because " .
       "OpenOffice could not be started.";
   }
 
@@ -655,30 +713,27 @@ sub convert_to_pdf {
 
   my ($self) = @_;
 
-  my $form = $self->{"form"};
+  my $form = $self->{form};
 
-  my $filename = $form->{"tmpfile"};
+  my $filename = $form->{tmpfile};
   $filename =~ s/.odt$//;
   if (substr($filename, 0, 1) ne "/") {
     $filename = getcwd() . "/${filename}";
   }
 
-  if (substr($self->{"userspath"}, 0, 1) eq "/") {
-    $ENV{'HOME'} = $self->{"userspath"};
+  if (substr($self->{userspath}, 0, 1) eq "/") {
+    $ENV{HOME} = $self->{userspath};
   } else {
-    $ENV{'HOME'} = getcwd() . "/" . $self->{"userspath"};
+    $ENV{HOME} = getcwd() . "/" . $self->{userspath};
   }
 
-  if (!$self->spawn_xvfb()) {
-    $main::lxdebug->leave_sub();
-    return 0;
-  }
+  my $outdir = dirname($filename);
 
   if (!$::lx_office_conf{print_templates}->{openofficeorg_daemon}) {
     if (system($::lx_office_conf{applications}->{openofficeorg_writer},
-               "-minimized", "-norestore", "-nologo", "-nolockcheck", "-headless",
-               "file:${filename}.odt",
-               "macro://" . (split('/', $filename))[-1] . "/Standard.Conversion.ConvertSelfToPDF()") == -1) {
+               "--minimized", "--norestore", "--nologo", "--nolockcheck", "--headless",
+               "--convert-to", "pdf", "--outdir", $outdir,
+               "file:${filename}.odt") == -1) {
       die "system call to $::lx_office_conf{applications}->{openofficeorg_writer} failed: $!";
     }
   } else {
@@ -692,7 +747,7 @@ sub convert_to_pdf {
 
   my $res = $?;
   if ((0 == $?) || (-f "${filename}.pdf" && -s "${filename}.pdf")) {
-    $form->{"tmpfile"} =~ s/odt$/pdf/;
+    $form->{tmpfile} =~ s/odt$/pdf/;
 
     unlink($filename . ".odt");
 
@@ -702,7 +757,7 @@ sub convert_to_pdf {
   }
 
   unlink($filename . ".odt", $filename . ".pdf");
-  $self->{"error"} = "Conversion from OpenDocument to PDF failed. " .
+  $self->{error} = "Conversion from OpenDocument to PDF failed. " .
     "Exit code: $res";
 
   $main::lxdebug->leave_sub();
@@ -723,7 +778,7 @@ sub format_string {
 sub get_mime_type() {
   my ($self) = @_;
 
-  if ($self->{"form"}->{"format"} =~ /pdf/) {
+  if ($self->{form}->{format} =~ /pdf/) {
     return "application/pdf";
   } else {
     return "application/vnd.oasis.opendocument.text";

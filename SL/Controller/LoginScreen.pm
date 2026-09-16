@@ -13,6 +13,7 @@ use SL::DB::AuthUser;
 use SL::DB::Employee;
 use SL::Locale::String qw(t8);
 use SL::User;
+use SL::Version;
 
 use Rose::Object::MakeMethods::Generic (
   'scalar --get_set_init' => [ qw(clients default_client_id) ],
@@ -46,18 +47,15 @@ sub action_logout {
 sub action_login {
   my ($self) = @_;
 
-  my $login     = $::form->{'{AUTH}login'}     || $::auth->get_session_value('login');
-  my $client_id = $::form->{'{AUTH}client_id'} || $::auth->get_session_value('client_id');
-  my $error     = t8('Incorrect username or password or no access to selected client!');
+  my $error = t8('Incorrect username or password or no access to selected client!');
 
-  if (!$::auth->set_client($client_id)) {
-    $::auth->punish_wrong_login;
-    return $self->show_login_form(error => $error);
-  }
-
-  %::myconfig      = $login ? $::auth->read_user(login => $login) : ();
-  $::locale        = Locale->new($::myconfig{countrycode}) if $::myconfig{countrycode};
-  SL::Dispatcher::AuthHandler::User->new->handle(countrycode => $::myconfig{countrycode});
+  my $auth_result  = SL::Dispatcher::AuthHandler::User->new->handle(
+    login     => delete $::form->{'{AUTH}login'},
+    password  => delete $::form->{'{AUTH}password'},
+    client_id => delete $::form->{'{AUTH}client_id'},
+    callback  => $::form->{callback},
+  );
+  $::dispatcher->end_request unless $auth_result;
 
   $::request->layout(SL::Layout::Dispatcher->new(style => $::myconfig{menustyle}));
 
@@ -162,7 +160,9 @@ sub error_state {
 }
 
 sub set_layout {
-  $::request->{layout} = SL::Layout::Dispatcher->new(style => 'login');
+  $::request->{layout} = $::request->is_mobile
+    ? SL::Layout::Dispatcher->new(style => 'mobile_login')
+    : SL::Layout::Dispatcher->new(style => 'login');
 }
 
 sub init_clients {
@@ -178,7 +178,7 @@ sub init_default_client_id {
 sub show_login_form {
   my ($self, %params) = @_;
 
-  $self->render('login_screen/user_login', %params, version => $::form->read_version);
+  $self->render('login_screen/user_login', %params, version => SL::Version->get_version, callback => $::form->{callback});
 }
 
 1;

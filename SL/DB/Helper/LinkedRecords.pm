@@ -4,10 +4,10 @@ use strict;
 
 require Exporter;
 our @ISA    = qw(Exporter);
-our @EXPORT = qw(linked_records link_to_record);
+our @EXPORT = qw(linked_records link_to_record sales_order_centric_linked_records);
 
 use Carp;
-use List::MoreUtils qw(any);
+use List::MoreUtils qw(any none);
 use List::UtilsBy qw(uniq_by);
 use Sort::Naturally;
 use SL::DBUtils;
@@ -210,7 +210,7 @@ sub _linked_records_implementation {
     }
 
     # don't use rose retrieval here. too slow.
-    # instead use recursive sql to get all the linked record_links entrys, and retrieve the objects from there
+    # instead use recursive sql to get all the linked record_links entries and retrieve the objects from there
     my $query = <<"";
       WITH RECURSIVE record_links_rec_${wanted}(id, from_table, from_id, to_table, to_id, depth, path, cycle) AS (
         SELECT id, from_table, from_id, to_table, to_id,
@@ -306,13 +306,16 @@ sub sort_linked_records {
   $sort_dir = $sort_dir * 1 ? 1 : -1;
 
   my %numbers = ( 'SL::DB::SalesProcess'    => sub { $_[0]->id },
-                  'SL::DB::Order'           => sub { $_[0]->quotation ? $_[0]->quonumber : $_[0]->ordnumber },
+                  'SL::DB::Order'           => sub { $_[0]->record_number },
                   'SL::DB::DeliveryOrder'   => sub { $_[0]->donumber },
                   'SL::DB::Invoice'         => sub { $_[0]->invnumber },
                   'SL::DB::PurchaseInvoice' => sub { $_[0]->invnumber },
                   'SL::DB::RequirementSpec' => sub { $_[0]->id },
                   'SL::DB::Letter'          => sub { $_[0]->letternumber },
                   'SL::DB::ShopOrder'       => sub { $_[0]->shop_ordernumber },
+                  'SL::DB::EmailJournal'    => sub { $_[0]->id },
+                  'SL::DB::Dunning'         => sub { $_[0]->dunning_id },
+                  'SL::DB::GLTransaction'   => sub { $_[0]->reference },
                   UNKNOWN                   => '9999999999999999',
                 );
   my $number_xtor = sub {
@@ -328,22 +331,27 @@ sub sort_linked_records {
   };
 
   my %scores;
-  %scores = ( 'SL::DB::SalesProcess'    =>  10,
-              'SL::DB::RequirementSpec' =>  15,
-              'SL::DB::Order'           =>  sub { $scores{ $_[0]->type } },
-              sales_quotation           =>  20,
-              sales_order               =>  30,
-              sales_delivery_order      =>  40,
-              'SL::DB::DeliveryOrder'   =>  sub { $scores{ $_[0]->type } },
-              'SL::DB::Invoice'         =>  50,
-              request_quotation         => 120,
-              purchase_order            => 130,
-              purchase_delivery_order   => 140,
-              'SL::DB::PurchaseInvoice' => 150,
-              'SL::DB::PurchaseInvoice' => 150,
-              'SL::DB::Letter'          => 200,
-              'SL::DB::ShopOrder'       => 250,
-              UNKNOWN                   => 999,
+  %scores = ( 'SL::DB::SalesProcess'      => 10,
+              'SL::DB::RequirementSpec'   => 15,
+              'SL::DB::Order'             => sub { $scores{ $_[0]->type } },
+              sales_quotation             => 20,
+              sales_order_intake          => 25,
+              sales_order                 => 30,
+              sales_delivery_order        => 40,
+              'SL::DB::DeliveryOrder'     => sub { $scores{ $_[0]->type } },
+              'SL::DB::Invoice'           => 50,
+              request_quotation           => 120,
+              purchase_quotation_intake   => 125,
+              purchase_order              => 130,
+              purchase_order_confirmation => 135,
+              purchase_delivery_order     => 140,
+              'SL::DB::PurchaseInvoice'   => 150,
+              'SL::DB::GLTransaction'     => 170,
+              'SL::DB::Letter'            => 200,
+              'SL::DB::ShopOrder'         => 250,
+              'SL::DB::EmailJournal'      => 300,
+              'SL::DB::Dunning'           => 350,
+              UNKNOWN                     => 999,
             );
   my $score_xtor = sub {
     my $score = $scores{ ref($_[0]) };
@@ -390,6 +398,61 @@ sub filter_linked_records {
   return \@records;
 }
 
+sub sales_order_centric_linked_records {
+  my ($self, %params) = @_;
+
+  my $with_sales_quotations = $params{with_sales_quotations};
+  my $with_myself           = $params{with_myself};
+
+  my $all_linked_records = $self->linked_records(direction => 'both', recursive => 1, save_path => 1);
+
+  if (!$with_sales_quotations) {
+    $all_linked_records = [ grep { !('SL::DB::Order' eq ref $_ && $_->is_sales && $_->quotation) } @$all_linked_records ];
+  }
+
+  if ($with_myself) {
+    $self->{_record_link_to_myself} = 1;
+    push @$all_linked_records, $self;
+  }
+
+  my $filtered_orders = [ grep {
+    'SL::DB::Order' eq ref $_ &&
+    ($_->is_type('sales_order') || $_->is_type('sales_order_intake')) &&
+    $_->{_record_link_direction} eq 'from'
+  } @$all_linked_records ];
+
+  # no orders no call to linked_records via batch mode
+  # but instead return default list
+  return $all_linked_records unless scalar @$filtered_orders;
+
+  # we have an order, therefore get the tree view from the top (order)
+  my $id_ref = [ map { $_->id } @$filtered_orders ];
+
+  my $linked_records = SL::DB::Order->new->linked_records(direction => 'to', recursive => 1, batch => $id_ref);
+
+  # Remove entries that are already in all_linked_records.
+  $linked_records = [ grep { my $id = $_->id; none { $_->id == $id } @$all_linked_records } @$linked_records ];
+
+  # Remove quotations if requested.
+  if (!$with_sales_quotations) {
+    $linked_records = [ grep { !('SL::DB::Order' eq ref $_ && $_->is_sales && $_->quotation) } @$linked_records ];
+  }
+
+  # Mark or remove myself.
+  if ($with_myself) {
+    $_->{_record_link_to_myself}  = 1 for grep { $_->id == $self->id } @$linked_records;
+  } else {
+    $linked_records = [ grep { $_->id != $self->id } @$linked_records ];
+  }
+
+  # All remaining links found via order are two more steps away from myself.
+  $_->{_record_link_depth} += 2 for @{ $linked_records };
+
+  push @{ $linked_records }, @$all_linked_records;
+
+  return $linked_records;
+}
+
 1;
 
 __END__
@@ -400,7 +463,7 @@ __END__
 
 SL::DB::Helper::LinkedRecords - Mixin for retrieving linked records via the table C<record_links>
 
-SYNOPSIS
+=head1 SYNOPSIS
 
   # In SL::DB::<Object>
   use SL::DB::Helper::LinkedRecords;
@@ -451,6 +514,12 @@ SYNOPSIS
   my @linked_objects = $order->linked_records(
     direction => 'to',
     %params,
+  );
+
+  # get order centric linked records
+  $invoice->sales_order_centric_linked_records(
+    with_myself           => 1,
+    with_sales_quotations => 1
   );
 
   # add a new link
@@ -675,13 +744,40 @@ Note: If the latter has a default setting it will always mask the creation time.
 
 Returns an array reference.
 
-Can only be called both as a class function since it is not exported.
+Can only be called as a class function since it is not exported.
+
+=item C<sales_order_centric_linked_records %params>
+
+Get linked records from the view of a reachable sales order in the path
+prior to this record. If no sales order is found, recursive linked records
+for both directions are returned.
+
+=over 2
+
+=item * C<with_sales_quotations>
+
+Since the view from a sales order is requested, normally no sales quotation
+prior to the sales order will be returned. If this parameter is truish, then
+a sales quotation would be included.
+This parameter is optional and defaults to false.
+
+=item * C<with_myself>
+
+The records returned by L</linked_records> do not include the requesting record
+itself. However, if you want to display the same linked records for every
+record in the same workflow, it can be usefull to include the record itself.
+C<_record_link_to_myself> will be set to a truish value in that record in
+that case.
+This parameter is optional and defaults to false.
+
+=back
 
 =back
 
 =head1 EXPORTS
 
-This mixin exports the functions L</linked_records> and
+This mixin exports the functions L</linked_records>,
+L</sales_order_centric_linked_records> and
 L</link_to_record>.
 
 =head1 BUGS

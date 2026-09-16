@@ -19,7 +19,6 @@ use SL::Template::LaTeX;
 use SL::Template::OpenDocument;
 use SL::Template::PlainText;
 use SL::Template::ShellCommand;
-use SL::Template::XML;
 
 sub create {
   my %params  = @_;
@@ -47,8 +46,8 @@ sub available_templates {
   my @alldir  = sort grep {
        -d ($::lx_office_conf{paths}->{templates} . "/$_")
     && !/^\.\.?$/
-    && !m/\.(?:html|tex|sty|odt|xml|txb)$/
-    && !m/^(?:webpages$|print$|mail$|\.)/
+    && !m/\.(?:html|tex|sty|odt)$/
+    && !m/^(?:webpages$|mobile_webpages$|design40_webpages$|pdf$|print$|mail$|\.)/
   } keys %dir_h;
 
   tie %dir_h, 'IO::Dir', "$::lx_office_conf{paths}->{templates}/print";

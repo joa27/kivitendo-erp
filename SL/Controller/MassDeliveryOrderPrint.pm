@@ -18,7 +18,7 @@ use SL::DB::Part;
 use SL::DB::Printer;
 use SL::Helper::MassPrintCreatePDF qw(:all);
 use SL::Helper::CreatePDF qw(:all);
-use SL::Helper::File qw(store_pdf append_general_pdf_attachments);
+use SL::Helper::File qw(store_pdf append_general_pdf_attachments doc_storage_enabled);
 use SL::Helper::PrintOptions;
 use SL::Helper::Flash;
 use SL::Locale::String;
@@ -154,10 +154,10 @@ sub action_mass_mdo_print {
     1;
   } or do {
     my $errstr = $@;
-    my $htmlstr = $errstr;
-    $htmlstr =~ s/\n/<br>/g;
-    $self->js->flash('error', t8('Document generating failed. Please check Templates an LateX !'));
-    $self->js->flash_detail('error', $htmlstr);
+    $self->js->flash('error',
+      t8('Document generating failed. Please check Templates an LateX !'),
+      $errstr
+    );
   };
   $self->js->render;
   $::lxdebug->leave_sub();

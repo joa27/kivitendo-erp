@@ -1,7 +1,7 @@
 package SL::Layout::None;
 
 use strict;
-use parent qw(SL::Layout::Base);
+use parent qw(SL::Layout::Design40Switch);
 
 use List::MoreUtils qw(apply);
 
@@ -23,25 +23,22 @@ sub javascripts_inline {
   );
 }
 
-sub use_javascript {
-  my $self = shift;
+sub static_javascripts {
   qw(
     jquery.js
     common.js
     namespace.js
+    jquery-ui.js
     kivi.js
   ),
   'locale/'. $::myconfig{countrycode} .'.js',
-  $self->SUPER::use_javascript(@_);
 }
 
-sub use_stylesheet {
-  my $self = shift;
+sub static_stylesheets {
   qw(
     main.css
     menu.css
   ),
-  $self->SUPER::use_stylesheet(@_);
 }
 
 1;

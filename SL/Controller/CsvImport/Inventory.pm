@@ -53,7 +53,8 @@ sub init_parts_by {
   my ($self) = @_;
 
   my $all_parts = SL::DB::Manager::Part->get_all;
-  return { map { my $col = $_; ( $col => { map { ( $_->$col => $_ ) } @{ $all_parts } } ) } qw(id partnumber ean description) };
+  return { map { my $col = $_; ( $col =>
+         { map { ( $_->$col => $_ ) } grep { defined $_->$col } @{ $all_parts } } ) } qw(id partnumber ean description) };
 }
 
 sub init_warehouses_by {
@@ -70,7 +71,6 @@ sub init_bins_by {
   my $bins_by;
   $bins_by->{_wh_id_and_id_ident()}          = { map { ( _wh_id_and_id_maker($_->warehouse_id, $_->id)                   => $_ ) } @{ $all_bins } };
   $bins_by->{_wh_id_and_description_ident()} = { map { ( _wh_id_and_description_maker($_->warehouse_id, $_->description) => $_ ) } @{ $all_bins } };
-
   return $bins_by;
 }
 
@@ -79,7 +79,7 @@ sub check_objects {
 
   $self->controller->track_progress(phase => 'building data', progress => 0);
 
-  my $i;
+  my $i = 0;
   my $num_data = scalar @{ $self->controller->data };
   foreach my $entry (@{ $self->controller->data }) {
     $self->controller->track_progress(progress => $i/$num_data * 100) if $i % 100 == 0;
@@ -126,6 +126,8 @@ sub check_warehouse {
   my ($self, $entry) = @_;
 
   my $object = $entry->{object};
+
+  $self->settings->{apply_warehouse} ||= '';  # avoid warnings if undefined
 
   # If warehouse from front-end is enforced for all transfers, use this, if valid.
   if ($self->settings->{apply_warehouse} eq 'all') {
@@ -185,6 +187,8 @@ sub check_bin {
 
   my $object = $entry->{object};
 
+  $self->settings->{apply_bin} ||= '';  # avoid warnings if undefined
+
   # If bin from front-end is enforced for all transfers, use this, if valid.
   if ($self->settings->{apply_bin} eq 'all') {
     $object->bin_id(undef);
@@ -217,7 +221,7 @@ sub check_bin {
   }
 
   # Map description to ID if given.
-  if (!$object->bin_id && $entry->{raw_data}->{bin}) {
+  if (!$object->bin_id && $entry->{raw_data}->{bin} && $object->warehouse_id) {
     my $bin = $self->bins_by->{_wh_id_and_description_ident()}->{ _wh_id_and_description_maker($object->warehouse_id, $entry->{raw_data}->{bin}) };
     if (!$bin) {
       push @{ $entry->{errors} }, $::locale->text('Error: Invalid bin');
@@ -272,11 +276,20 @@ sub check_part {
 # This imports inventories when target_qty is given, transfers else.
 # So we get the actual qty in stock and transfer the difference in case of
 # a given target_qty
-sub check_qty{
+sub check_qty {
   my ($self, $entry) = @_;
 
   my $object = $entry->{object};
 
+  # parse qty (may be float values)
+  if (exists $entry->{raw_data}->{target_qty}) {
+    $entry->{raw_data}->{target_qty} = $::form->parse_amount(\%::myconfig, $entry->{raw_data}->{target_qty});
+    # $object->target_qty($entry->{raw_data}->{target_qty});
+  }
+  if (exists $entry->{raw_data}->{qty}) {
+    $entry->{raw_data}->{qty}        = $::form->parse_amount(\%::myconfig, $entry->{raw_data}->{qty});
+    $object->qty($entry->{raw_data}->{qty});
+  }
   if (! exists $entry->{raw_data}->{target_qty} && ! exists $entry->{raw_data}->{qty}) {
     push @{ $entry->{errors} }, $::locale->text('Error: A quantity or a target quantity must be given.');
     return 0;
@@ -370,7 +383,7 @@ sub handle_employee {
 
   # employee from login if not given
   if (!$object->employee_id) {
-    $object->employee_id(SL::DB::Manager::Employee->find_by(login => $::myconfig{login})->id);
+    $object->employee_id(SL::DB::Manager::Employee->current->id) if SL::DB::Manager::Employee->current;
   }
 
   if ($object->employee_id) {

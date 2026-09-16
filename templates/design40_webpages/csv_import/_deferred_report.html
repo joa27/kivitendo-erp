@@ -1,0 +1,15 @@
+[% USE P %]
+
+<div id='csv_import_report'></div>
+
+<script type='text/javascript'>
+  $(document).ready(function(){
+    [%- IF error %]
+      kivi.display_flash('error', '[% P.escape_js(error) %]');
+    [%- END %]
+    [%- IF SELF.background_job.data_as_hash.report_id %]
+      kivi.inline_report_load_into_container('controller.pl', '#csv_import_report', { action: 'CsvImport/report', 'no_layout': 1, 'id': [% SELF.background_job.data_as_hash.report_id %] });
+    [%- END %]
+  });
+
+</script>

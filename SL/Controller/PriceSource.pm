@@ -61,7 +61,13 @@ sub render_price_dialog {
 #
 
 sub check_auth {
-  $::auth->assert('edit_prices');
+  if ($::form->{vc} eq 'customer') {
+    $::auth->assert('sales_edit_prices');
+  } elsif ($::form->{vc} eq 'vendor') {
+    $::auth->assert('purchase_edit_prices');
+  } else {
+    $::auth->assert('no_such_right');
+  }
 }
 
 sub init_record {
@@ -77,6 +83,8 @@ sub _make_record_item {
     sales_quotation         => 'OrderItem',
     request_quotation       => 'OrderItem',
     invoice                 => 'InvoiceItem',
+    invoice_for_advance_payment => 'InvoiceItem',
+    final_invoice           => 'InvoiceItem',
     purchase_invoice        => 'InvoiceItem',
     credit_note             => 'InvoiceItem',
     purchase_delivery_order => 'DeliveryOrderItem',
@@ -118,6 +126,8 @@ sub _make_record_item {
         $obj->${\"$method\_as_date"}($value);
       } elsif ((ref $obj->meta->column($method)) =~ /^Rose::DB::Object::Metadata::Column::(?:Numeric|Float|DoublePrecsion)$/) {
         $obj->${\"$method\_as_number"}($value);
+      } elsif ((ref $obj->meta->column($method)) =~ /^Rose::DB::Object::Metadata::Column::(?:Big)?(?:Int(?:eger)?|Serial)$/) {
+        $obj->$method(($value // '') eq '' ? undef : $value * 1);
       } elsif ((ref $obj->meta->column($method)) =~ /^Rose::DB::Object::Metadata::Column::Boolean$/) {
         $obj->$method(!!$value);
       } else {
@@ -172,6 +182,8 @@ sub _make_record {
       $obj->${\"$method\_as_date"}($::form->{$method});
     } elsif ((ref $obj->meta->column($method)) =~ /^Rose::DB::Object::Metadata::Column::(?:Numeric|Float|DoublePrecsion)$/) {
       $obj->${\"$method\_as\_number"}($::form->{$method});
+    } elsif ((ref $obj->meta->column($method)) =~ /^Rose::DB::Object::Metadata::Column::(?:Big)?(?:Int(?:eger)?|Serial)$/) {
+      $obj->$method(($::form->{$method} // '') eq '' ? undef : $::form->{$method} * 1)
     } elsif ((ref $obj->meta->column($method)) =~ /^Rose::DB::Object::Metadata::Column::Boolean$/) {
       $obj->$method(!!$::form->{$method});
     } else {
@@ -194,4 +206,3 @@ sub _make_record {
 }
 
 1;
-

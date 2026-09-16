@@ -40,7 +40,7 @@ sub parse_value {
 
   if ($type =~ m{^(?:customer|vendor|part|number)}) {
     return $self->number_value(!defined($unparsed) ? undef
-                               : (any { ref($unparsed) eq $_ } qw(SL::DB::Customer SL::DB::Vendor SL::DB::Part)) ? $unparsed->id * 1
+                               : (any { ref($unparsed) eq $_ } qw(SL::DB::Customer SL::DB::Vendor SL::DB::Part)) ? $unparsed->id
                                : $unparsed * 1);
   }
 
@@ -52,7 +52,11 @@ sub parse_value {
     return $self->timestamp_value(!defined($unparsed) ? undef : ref($unparsed) eq 'DateTime' ? $unparsed->clone : DateTime->from_kivitendo($unparsed));
   }
 
-  # text, textfield, select
+  if ($type =~ m{^(?:multiselect)}) {
+    return $self->text_value(!defined($unparsed) || 'ARRAY' ne ref $unparsed ? undef : '##' . join('##', @$unparsed) . '##');
+  }
+
+  # text, textfield, htmlfield and select
   $self->text_value($unparsed);
 }
 
@@ -76,23 +80,25 @@ sub value {
   if ( $type eq 'customer' ) {
     require SL::DB::Customer;
 
-    my $id = int($self->number_value);
+    my $id = defined($self->number_value) ? int($self->number_value) : undef;
     return $id ? SL::DB::Customer->new(id => $id)->load() : undef;
   } elsif ( $type eq 'vendor' ) {
     require SL::DB::Vendor;
 
-    my $id = int($self->number_value);
+    my $id = defined($self->number_value) ? int($self->number_value) : undef;
     return $id ? SL::DB::Vendor->new(id => $id)->load() : undef;
   } elsif ( $type eq 'part' ) {
     require SL::DB::Part;
 
-    my $id = int($self->number_value);
+    my $id = defined($self->number_value) ? int($self->number_value) : undef;
     return $id ? SL::DB::Part->new(id => $id)->load() : undef;
   } elsif ( $type eq 'date' ) {
     return $self->timestamp_value ? $self->timestamp_value->clone->truncate(to => 'day') : undef;
+  } elsif ( $type eq 'multiselect' ) {
+    return $self->text_value ? [ split /##/, ($self->text_value =~ s/^##|##$//gr) ] : [];
   }
 
-  goto &text_value; # text, textfield and select
+  goto &text_value; # text, textfield, htmlfield and select
 }
 
 sub value_as_text {
@@ -116,7 +122,7 @@ sub value_as_text {
     return $object ? $object->displayable_name : '';
   }
 
-  goto &text_value; # text, textfield and select
+  goto &text_value; # text, textfield, htmlfield and select
 }
 
 sub is_valid {

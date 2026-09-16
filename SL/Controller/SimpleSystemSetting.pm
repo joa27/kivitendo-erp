@@ -8,7 +8,10 @@ use parent qw(SL::Controller::Base);
 use SL::Helper::Flash;
 use SL::Locale::String;
 use SL::DB::Default;
+use SL::DB::PartsGroup;
+use SL::DB::Warehouse;
 use SL::System::Process;
+use SL::Presenter;
 
 use Rose::Object::MakeMethods::Generic (
   scalar                  => [ qw(type config) ],
@@ -32,9 +35,15 @@ my %supported_types = (
     list_attributes => [
       { method => 'name',                                      title => t8('Name'), },
       { method => 'iban',                                      title => t8('IBAN'), },
+      { method => 'qr_iban',                                   title => t8('QR-IBAN (Swiss)'), },
       { method => 'bank',                                      title => t8('Bank'), },
       { method => 'bank_code',                                 title => t8('Bank code'), },
+      { method => 'bank_account_id',                           title => t8('Bank Account Id Number (Swiss)'), },
       { method => 'bic',                                       title => t8('BIC'), },
+      {                                                        title => t8('Use with bank import'), formatter => sub { $_[0]->use_with_bank_import ? t8('yes') : t8('no') } },
+      {                                                        title => t8('Use for Factur-X/ZUGFeRD'), formatter => sub { $_[0]->use_for_zugferd ? t8('yes') : t8('no') } },
+      {                                                        title => t8('Use for Swiss QR-Bill'), formatter => sub { $_[0]->use_for_qrbill ? t8('yes') : t8('no') } },
+      {                                                        title => t8('Exempt from DATEV export'), formatter => sub { $_[0]->exempt_from_datev_export ? t8('yes') : t8('no') } },
       { method => 'reconciliation_starting_date_as_date',      title => t8('Date'),    align => 'right' },
       { method => 'reconciliation_starting_balance_as_number', title => t8('Balance'), align => 'right' },
     ],
@@ -55,12 +64,58 @@ my %supported_types = (
     ],
   },
 
+  contact_department => {
+    class  => 'ContactDepartment',
+    auth   => 'config',
+    titles => {
+      list => t8('Contact Departments'),
+      add  => t8('Add department'),
+      edit => t8('Edit department'),
+    },
+  },
+
+  contact_title => {
+    class  => 'ContactTitle',
+    auth   => 'config',
+    titles => {
+      list => t8('Contact Titles'),
+      add  => t8('Add title'),
+      edit => t8('Edit title'),
+    },
+  },
+
+  country => {
+    # Make locales.pl happy: $self->render("simple_system_setting/_country_form")
+    class  => 'Country',
+    auth   => 'config',
+    titles => {
+      list => t8('Country Names'),
+      edit => t8('Country Names'),
+    },
+    list_attributes => [
+      { method => 'iso2',  title => 'ISO 3166-1', },
+      {                    title => t8('Description'), formatter => sub { $_[0]->description_localized($::myconfig{countrycode}) } },
+    ],
+    top_info_text => t8('The ISO 3166-1 alpha-2 codes are required for Factur-X/ZUGFeRD invoices. The corresponding names are printed on records.'),
+    no_create => 1,
+  },
+
   department => {
     class  => 'Department',
     titles => {
       list => t8('Departments'),
       add  => t8('Add department'),
       edit => t8('Edit department'),
+    },
+  },
+
+  greeting => {
+    class  => 'Greeting',
+    auth   => 'config',
+    titles => {
+      list => t8('Greetings'),
+      add  => t8('Add greeting'),
+      edit => t8('Edit greeting'),
     },
   },
 
@@ -79,6 +134,7 @@ my %supported_types = (
       {                            title => t8('Number Format'), formatter => sub { $_[0]->output_numberformat || t8('use program settings') } },
       {                            title => t8('Date Format'),   formatter => sub { $_[0]->output_dateformat   || t8('use program settings') } },
       {                            title => t8('Long Dates'),    formatter => sub { $_[0]->output_longdates ? t8('yes') : t8('no') } },
+      {                            title => t8('Obsolete'),      formatter => sub { $_[0]->obsolete  ? t8('yes') : t8('no') } },
     ],
   },
 
@@ -138,6 +194,21 @@ my %supported_types = (
     list_attributes => [
       { method => 'pricegroup', title => t8('Description') },
       { method => 'obsolete',   title => t8('Obsolete'), formatter => sub { $_[0]->obsolete ? t8('yes') : t8('no') } },
+    ],
+  },
+
+  order_status => {
+    # Make locales.pl happy: $self->render("simple_system_setting/_order_status_form")
+    class  => 'OrderStatus',
+    titles => {
+      list => t8('RFQ/Order Statuses'),
+      add  => t8('Add rfq/order status'),
+      edit => t8('Edit rfq/order status'),
+    },
+    list_attributes => [
+      { method => 'name',        title => t8('Name') },
+      { method => 'description', title => t8('Description') },
+      { method => 'obsolete',    title => t8('Obsolete'), formatter => sub { $_[0]->obsolete ? t8('yes') : t8('no') } },
     ],
   },
 
@@ -237,6 +308,53 @@ my %supported_types = (
     ],
   },
 
+  secret => {
+    # Make locales.pl happy: $self->render("simple_system_setting/_secret_form")
+    class  => 'Secret',
+    titles => {
+      list   => t8('Secrets'),
+      add    => t8('Add secret'),
+      edit    => t8('View secret'),
+      delete => t8('Delete secret'),
+    },
+    list_attributes => [
+      { method => 'tag',                          title => t8('Internal Name') },
+      { method => 'description',                  title => t8('Description') },
+    ],
+    readonly => 1,
+  },
+
+  time_recording_article => {
+    # Make locales.pl happy: $self->render("simple_system_setting/_time_recording_article_form")
+    class  => 'TimeRecordingArticle',
+    auth   => 'config',
+    titles => {
+      list => t8('Time Recording Articles'),
+      add  => t8('Add time recording article'),
+      edit => t8('Edit time recording article'),
+    },
+    list_attributes => [
+      { title => t8('Article'), formatter => sub { $_[0]->part->displayable_name } },
+    ],
+  },
+
+  stock_counting => {
+    # Make locales.pl happy: $self->render("simple_system_setting/_stock_counting_form")
+    class  => 'StockCounting',
+    auth   => 'config',
+    titles => {
+      list => t8('Stock Countings'),
+      add  => t8('Add stock counting'),
+      edit => t8('Edit stock counting'),
+    },
+    list_attributes => [
+      { title => t8('Name'),        method => 'name',       },
+      { title => t8('Description'), method => 'description' },
+      { title => t8('Reconciliated'), formatter => sub { $_[0]->reconciliated ? t8('Yes') : t8('No') } },
+      { title => t8('Employee'),    formatter => sub { $_[0]->employee->safe_name } },
+    ],
+  },
+
 );
 
 my @default_list_attributes = (
@@ -300,7 +418,7 @@ sub action_reorder {
   my ($self) = @_;
 
   $self->class->reorder_list(@{ $::form->{object_id} || [] });
-  $self->render(\'', { type => 'json' });
+  $self->render(\'', { type => 'json' }); # make emacs happy ')
 }
 
 #
@@ -325,7 +443,7 @@ sub check_type_and_auth {
 }
 
 sub setup_javascript {
-  $::request->layout->use_javascript("${_}.js") for qw(ckeditor/ckeditor ckeditor/adapters/jquery);
+  $::request->layout->use_javascript("${_}.js") for qw();
 }
 
 sub init_class               { "SL::DB::"          . $_[0]->config->{class}                  }
@@ -362,7 +480,7 @@ sub create_or_update {
   push @errors, $self->object->validate if $self->object->can('validate');
 
   if (@errors) {
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     return $self->render_form(title => $self->config->{titles}->{$is_new ? 'add' : 'edit'});
   }
 
@@ -376,13 +494,15 @@ sub create_or_update {
 sub render_form {
   my ($self, %params) = @_;
 
-  my $sub_form_template = SL::System::Process->exe_dir . '/templates/webpages/simple_system_setting/_' . $self->type . '_form.html';
+  my $sub_form_template = eval {
+    SL::Presenter::resolve_template('simple_system_setting/_' . $self->type . '_form');
+  };
 
   $self->setup_render_form_action_bar;
   $self->render(
     'simple_system_setting/form',
     %params,
-    sub_form_template => (-f $sub_form_template ? $self->type : 'default'),
+    sub_form_template => ($sub_form_template ? $self->type : 'default'),
   );
 }
 
@@ -411,6 +531,15 @@ sub setup_language {
   $self->{dateformats}   = [ qw(mm/dd/yy dd/mm/yy dd.mm.yy yyyy-mm-dd) ];
 }
 
+sub setup_stock_counting {
+  my ($self) = @_;
+
+  $self->{current_employee_id} = SL::DB::Manager::Employee->current->id;
+
+  my %pg_additional_condition = ($::form->{id} && $self->object->partsgroup_id) ? (id => $self->object->partsgroup_id) : ();
+  $self->{all_partsgroups} = SL::DB::Manager::PartsGroup->get_all_sorted(where => [or => [obsolete => undef, obsolete => 0, %pg_additional_condition]]);
+}
+
 #
 # action bar
 #
@@ -418,11 +547,14 @@ sub setup_language {
 sub setup_list_action_bar {
   my ($self, %params) = @_;
 
+  my $can_be_created = !$self->config->{no_create};
+
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       link => [
         t8('Add'),
-        link => $self->url_for(action => 'new', type => $self->type),
+        link    => $self->url_for(action => 'new', type => $self->type),
+        only_if => $can_be_created,
       ],
     );
   }
@@ -436,6 +568,10 @@ sub setup_render_form_action_bar {
                     && (!$self->object->can("orphaned")       || $self->object->orphaned)
                     && (!$self->object->can("can_be_deleted") || $self->object->can_be_deleted);
 
+  # always allow save new
+  # only allow update if not disabled in config
+  my $hide_save     = !$is_new && $self->config->{readonly};
+
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       action => [
@@ -443,6 +579,7 @@ sub setup_render_form_action_bar {
         submit    => [ '#form', { action => 'SimpleSystemSetting/' . ($is_new ? 'create' : 'update') } ],
         checks    => [ 'kivi.validate_form' ],
         accesskey => 'enter',
+        only_if   => !$hide_save,
       ],
 
       action => [

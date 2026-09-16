@@ -41,6 +41,7 @@ use SL::CVar;
 use SL::IC;
 use SL::Helper::Flash qw(flash);
 use SL::HTML::Util;
+use SL::Presenter::Part;
 use SL::ReportGenerator;
 
 #use SL::PE;
@@ -143,14 +144,14 @@ sub top100 {
 # transdatefrom transdateto
 #
 # radio:
-#  itemstatus = active | onhand | short | obsolete | orphaned
+#  itemstatus = active | onhand | short | order_locked | obsolete | orphaned
 #  action     = continue | top100
 #
 # checkboxes:
 #  bought sold onorder ordered rfq quoted
 #  l_partnumber l_description l_serialnumber l_unit l_listprice l_sellprice l_lastcost
 #  l_linetotal l_priceupdate l_bin l_rop l_weight l_image l_drawing l_microfiche
-#  l_partsgroup l_subtotal l_soldtotal l_deliverydate l_pricegroups
+#  l_partsgroup l_subtotal l_soldtotal l_deliverydate l_pricegroup l_bookinggroup
 #
 # hiddens:
 #  nextsub revers lastsort sort ndxs_counter
@@ -169,13 +170,15 @@ sub generate_report {
   my %column_defs = (
     'deliverydate'       => { 'text' => $locale->text('deliverydate'), },
     'description'        => { 'text' => $locale->text('Part Description'), },
-    'notes'              => { 'text' => $locale->text('Notes'), },
+    'notes'              => { 'text' => $locale->text('Long Description'), },
+    'intnotes'           => { 'text' => $locale->text('Internal Notes'), },
     'drawing'            => { 'text' => $locale->text('Drawing'), },
     'ean'                => { 'text' => $locale->text('EAN'), },
     'image'              => { 'text' => $locale->text('Image'), },
     'insertdate'         => { 'text' => $locale->text('Insert Date'), },
     'invnumber'          => { 'text' => $locale->text('Invoice Number'), },
     'lastcost'           => { 'text' => $locale->text('Last Cost'), },
+    'assembly_lastcost'  => { 'text' => $locale->text('Assembly Last Cost'), },
     'linetotallastcost'  => { 'text' => $locale->text('Extended'), },
     'linetotallistprice' => { 'text' => $locale->text('Extended'), },
     'linetotalsellprice' => { 'text' => $locale->text('Extended'), },
@@ -183,10 +186,11 @@ sub generate_report {
     'microfiche'         => { 'text' => $locale->text('Microfiche'), },
     'name'               => { 'text' => $locale->text('Name'), },
     'onhand'             => { 'text' => $locale->text('Stocked Qty'), },
+    'assembly_qty'       => { 'text' => $locale->text('Assembly Item Qty'), },
     'ordnumber'          => { 'text' => $locale->text('Order Number'), },
     'partnumber'         => { 'text' => $locale->text('Part Number'), },
     'partsgroup'         => { 'text' => $locale->text('Partsgroup'), },
-    'priceupdate'        => { 'text' => $locale->text('Updated'), },
+    'priceupdate'        => { 'text' => $locale->text('Price updated'), },
     'quonumber'          => { 'text' => $locale->text('Quotation'), },
     'rop'                => { 'text' => $locale->text('ROP'), },
     'sellprice'          => { 'text' => $locale->text('Sell Price'), },
@@ -202,6 +206,12 @@ sub generate_report {
     'projectdescription' => { 'text' => $locale->text('Project Description'), },
     'warehouse'          => { 'text' => $locale->text('Default Warehouse'), },
     'bin'                => { 'text' => $locale->text('Default Bin'), },
+    'make'               => { 'text' => $locale->text('Make'), },
+    'model'              => { 'text' => $locale->text('Model'), },
+    'customer'           => { 'text' => $locale->text('Customer'), },
+    'customer_partnumber' => { 'text' => $locale->text('Customer Part Number'), },
+    'price_factor_description' => { 'text' => $locale->text('Price Factor'), },
+    'bookinggroup'       => { 'text' => $locale->text('Booking group'), },
   );
 
   $revers     = $form->{revers};
@@ -262,8 +272,10 @@ sub generate_report {
   my %optiontexts = (
     active        => $locale->text('Active'),
     obsolete      => $locale->text('Obsolete'),
+    order_locked  => $locale->text('Do not order anymore'),
     orphaned      => $locale->text('Orphaned'),
     onhand        => $locale->text('On Hand'),
+    assembly_qty  => $locale->text('Assembly Item Qty'),
     short         => $locale->text('Short'),
     onorder       => $locale->text('On Order'),
     ordered       => $locale->text('Ordered'),
@@ -280,17 +292,24 @@ sub generate_report {
     description   => $locale->text('Part Description') . ": '$form->{description}'",
     make          => $locale->text('Make')             . ": '$form->{make}'",
     model         => $locale->text('Model')            . ": '$form->{model}'",
+    customer      => $locale->text('Customer')         . ": '$form->{customer}'",
+    customer_partnumber=> $locale->text('Customer Part Number').": '$form->{customer_partnumber}'",
     drawing       => $locale->text('Drawing')          . ": '$form->{drawing}'",
     microfiche    => $locale->text('Microfiche')       . ": '$form->{microfiche}'",
     l_soldtotal   => $locale->text('Qty in Selected Records'),
     ean           => $locale->text('EAN')              . ": '$form->{ean}'",
     insertdatefrom => $locale->text('Insert Date') . ": " . $locale->text('From')       . " " . $locale->date(\%myconfig, $form->{insertdatefrom}, 1),
     insertdateto   => $locale->text('Insert Date') . ": " . $locale->text('To (time)')  . " " . $locale->date(\%myconfig, $form->{insertdateto}, 1),
+    l_service     => $locale->text('Services'),
+    l_assembly    => $locale->text('Assemblies'),
+    l_part        => $locale->text('Parts'),
   );
 
-  my @itemstatus_keys = qw(active obsolete orphaned onhand short);
-  my @callback_keys   = qw(onorder ordered rfq quoted bought sold partnumber partsgroup partsgroup_id serialnumber description make model
-                           drawing microfiche l_soldtotal l_deliverydate transdatefrom transdateto insertdatefrom insertdateto ean shop all);
+  my @itemstatus_keys = qw(active order_locked obsolete orphaned onhand short);
+  my @callback_keys   = qw(onorder ordered rfq quoted bought sold partnumber partsgroup partsgroup_id serialnumber description
+                           make model customer customer_partnumber
+                           drawing microfiche l_soldtotal l_deliverydate transdatefrom transdateto insertdatefrom insertdateto ean shop all
+                           l_service l_assembly l_part);
 
   # calculate dependencies
   for (@itemstatus_keys, @callback_keys) {
@@ -312,6 +331,7 @@ sub generate_report {
     $column_defs{sellprice}{text} = $locale->text('Price');
     $form->{l_lastcost} = ""
   }
+  $form->{l_assembly_lastcost} = "Y" if $form->{l_assembly} && $form->{l_lastcost};
 
   if ($form->{description}) {
     $description = $form->{description};
@@ -377,12 +397,13 @@ sub generate_report {
   IC->all_parts(\%myconfig, \%$form);
 
   my @columns = qw(
-    partnumber type_and_classific description notes partsgroup warehouse bin
-    onhand rop soldtotal unit listprice
-    linetotallistprice sellprice linetotalsellprice lastcost linetotallastcost
+    partnumber type_and_classific description notes intnotes partsgroup warehouse bin
+    make model customer customer_partnumber
+    assembly_qty onhand rop soldtotal unit price_factor_description listprice
+    linetotallistprice sellprice linetotalsellprice lastcost assembly_lastcost linetotallastcost
     priceupdate weight image drawing microfiche invnumber ordnumber quonumber
     transdate name serialnumber deliverydate ean projectnumber projectdescription
-    insertdate shop
+    insertdate shop bookinggroup
   );
 
   my $pricegroups = SL::DB::Manager::Pricegroup->get_all_sorted;
@@ -407,7 +428,7 @@ sub generate_report {
 
   %column_defs = (%column_defs, %column_defs_cvars, %column_defs_pricegroups);
   map { $column_defs{$_}->{visible} ||= $form->{"l_$_"} ? 1 : 0 } @columns;
-  map { $column_defs{$_}->{align}   = 'right' } qw(onhand sellprice listprice lastcost linetotalsellprice linetotallastcost linetotallistprice rop weight soldtotal shop), @pricegroup_columns;
+  map { $column_defs{$_}->{align}   = 'right' } qw(assembly_qty onhand sellprice listprice lastcost assembly_lastcost linetotalsellprice linetotallastcost linetotallistprice rop weight soldtotal shop price_factor_description bookinggroup), @pricegroup_columns;
 
   my @hidden_variables = (
     qw(l_subtotal l_linetotal searchitems itemstatus bom l_pricegroups insertdatefrom insertdateto),
@@ -415,14 +436,16 @@ sub generate_report {
     @itemstatus_keys,
     @callback_keys,
     map({ "cvar_$_->{name}" } @searchable_custom_variables),
+    map({'cvar_'. $_->{name} .'_from'} grep({$_->{type} eq 'date'} @searchable_custom_variables)),
+    map({'cvar_'. $_->{name} .'_to'}   grep({$_->{type} eq 'date'} @searchable_custom_variables)),
     map({'cvar_'. $_->{name} .'_qtyop'} grep({$_->{type} eq 'number'} @searchable_custom_variables)),
     map({ "l_$_" } @columns),
   );
 
   my $callback         = build_std_url('action=generate_report', grep { $form->{$_} } @hidden_variables);
 
-  my @sort_full        = qw(partnumber description onhand soldtotal deliverydate insertdate shop);
-  my @sort_no_revers   = qw(partsgroup priceupdate invnumber ordnumber quonumber name image drawing serialnumber);
+  my @sort_full        = qw(partnumber description onhand soldtotal deliverydate insertdate shop price_factor_description);
+  my @sort_no_revers   = qw(partsgroup invnumber ordnumber quonumber name image drawing serialnumber);
 
   foreach my $col (@sort_full) {
     $column_defs{$col}->{link} = join '&', $callback, "sort=$col", map { "$_=" . E($form->{$_}) } qw(revers lastsort);
@@ -490,6 +513,7 @@ sub generate_report {
     $ref->{sellprice}     *= $ref->{exchangerate} / $ref->{price_factor};
     $ref->{listprice}     *= $ref->{exchangerate} / $ref->{price_factor};
     $ref->{lastcost}      *= $ref->{exchangerate} / $ref->{price_factor};
+    $ref->{assembly_lastcost} *= $ref->{exchangerate} / $ref->{price_factor};
 
     # use this for assemblies
     my $soldtotal = $bsooqr_mode ? $ref->{soldtotal} : $ref->{onhand};
@@ -504,7 +528,7 @@ sub generate_report {
     $row->{partnumber}->{link}  = $edit_link;
     $row->{description}->{link} = $edit_link;
 
-    foreach (qw(sellprice listprice lastcost)) {
+    foreach (qw(sellprice listprice lastcost assembly_lastcost)) {
       $row->{$_}{data}            = $form->format_amount(\%myconfig, $ref->{$_}, 2);
       $row->{"linetotal$_"}{data} = $form->format_amount(\%myconfig, $ref->{onhand} * $ref->{$_}, 2);
     }
@@ -538,8 +562,11 @@ sub generate_report {
       # | ist bestellt  | Von Kunden bestellt |  -> edit_oe_ord_link
       # | Anfrage       | Angebot             |  -> edit_oe_quo_link
 
-      my $edit_oe_ord_link = build_std_url("script=oe.pl", 'action=edit', 'type=' . E($ref->{cv} eq 'vendor' ? 'purchase_order' : 'sales_order'), 'id=' . E($ref->{trans_id}), 'callback');
-      my $edit_oe_quo_link = build_std_url("script=oe.pl", 'action=edit', 'type=' . E($ref->{cv} eq 'vendor' ? 'request_quotation' : 'sales_quotation'), 'id=' . E($ref->{trans_id}), 'callback');
+      my $edit_oe_ord_link = build_std_url("script=controller.pl", 'action=Order/edit',
+                                           'type=' . E($ref->{cv} eq 'vendor' ? 'purchase_order' : 'sales_order'),        'id=' . E($ref->{trans_id}), 'callback');
+
+      my $edit_oe_quo_link = build_std_url("script=controller.pl", 'action=Order/edit',
+                                           'type=' . E($ref->{cv} eq 'vendor' ? 'request_quotation' : 'sales_quotation'), 'id=' . E($ref->{trans_id}), 'callback');
 
       $row->{ordnumber}{link} = $edit_oe_ord_link;
       $row->{quonumber}{link} = $edit_oe_quo_link if (!$ref->{ordnumber});
@@ -555,9 +582,12 @@ sub generate_report {
     }
     map { $row->{$_}{link} = $ref->{$_} } qw(drawing microfiche);
 
-    $row->{notes}{data} = SL::HTML::Util->strip($ref->{notes});
-    $row->{type_and_classific}{data} = $::request->presenter->type_abbreviation($ref->{part_type}).
-                                       $::request->presenter->classification_abbreviation($ref->{classification_id});
+    $row->{$_}{data} = SL::HTML::Util->strip($ref->{$_}) for qw(notes intnotes);
+    $row->{type_and_classific}{data} = SL::Presenter::Part::type_abbreviation($ref->{part_type}).
+                                       SL::Presenter::Part::classification_abbreviation($ref->{classification_id});
+
+    # last price update
+    $row->{priceupdate}{data} = SL::DB::Part->new(id => $ref->{id})->load->last_price_update->valid_from->to_kivitendo;
 
     $report->add_data($row);
 

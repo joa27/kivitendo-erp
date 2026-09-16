@@ -22,7 +22,7 @@ sub _sort_spec {
 
 sub current {
   return undef unless $::myconfig{login};
-  return shift->find_by(login => $::myconfig{login});
+  return $::request->cache('current')->{object} //= shift->find_by(login => $::myconfig{login});
 }
 
 sub update_entries_for_authorized_users {
@@ -31,6 +31,8 @@ sub update_entries_for_authorized_users {
   my %employees_by_login = map { ($_->login => $_) } @{ $class->get_all };
 
   require SL::DB::AuthClient;
+  no warnings 'once';
+
   foreach my $user (@{ SL::DB::AuthClient->new(id => $::auth->client->{id})->load->users || [] }) {
     my $user_config = $user->config_values;
     my $employee    = $employees_by_login{$user->login} || SL::DB::Employee->new(login => $user->login);
@@ -75,7 +77,7 @@ that an entry for them exists in the table C<employee>. The matching
 is done via the login name which must be the same in both tables.
 
 The only other properties that will be copied from the authentication
-table into the C<employee> row are C<name> and C<workphone>. In
+table into the C<employee> row are C<name>. In
 addition C<deleted> is always set to 0.
 
 The intention is that this function is called automatically during the

@@ -12,6 +12,7 @@ use SL::Controller::Helper::ReportGenerator;
 use SL::CVar;
 use SL::DB::Customer;
 use SL::DB::DeliveryOrder;
+use SL::DB::Employee;
 use SL::DB::Invoice;
 use SL::DB::Order;
 use SL::DB::Project;
@@ -29,37 +30,22 @@ use Rose::DB::Object::Helpers qw(as_tree);
 use Rose::Object::MakeMethods::Generic
 (
  scalar => [ qw(project) ],
- 'scalar --get_set_init' => [ qw(models customers project_types project_statuses projects linked_records) ],
+ 'scalar --get_set_init' => [ qw(models customers project_types project_statuses projects linked_records employees may_edit_invoice_permissions
+                                 cvar_configs includeable_cvar_configs include_cvars) ],
 );
 
 __PACKAGE__->run_before('check_auth',   except => [ qw(ajax_autocomplete) ]);
 __PACKAGE__->run_before('load_project', only   => [ qw(edit update destroy) ]);
+__PACKAGE__->run_before('use_multiselect_js', only => [ qw(new create edit update) ]);
 
 #
 # actions
 #
 
-sub action_search {
-  my ($self) = @_;
-
-  my %params;
-
-  $params{CUSTOM_VARIABLES}  = CVar->get_configs(module => 'Projects');
-
-  ($params{CUSTOM_VARIABLES_FILTER_CODE}, $params{CUSTOM_VARIABLES_INCLUSION_CODE})
-    = CVar->render_search_options(variables      => $params{CUSTOM_VARIABLES},
-                                  include_prefix => 'l_',
-                                  include_value  => 'Y');
-
-  $self->setup_search_action_bar;
-
-  $self->render('project/search', %params);
-}
-
 sub action_list {
   my ($self) = @_;
 
-  $self->setup_search_action_bar;
+  $self->setup_list_action_bar;
 
   $self->make_filter_summary;
 
@@ -104,7 +90,7 @@ sub action_destroy {
     flash_later('error', $::locale->text('The project is in use and cannot be deleted.'));
   }
 
-  $self->redirect_to(action => 'search');
+  $self->redirect_to(action => 'list');
 }
 
 sub action_ajax_autocomplete {
@@ -113,31 +99,35 @@ sub action_ajax_autocomplete {
   $::form->{filter}{'all:substr:multi::ilike'} =~ s{[\(\)]+}{}g;
 
   # if someone types something, and hits enter, assume he entered the full name.
-  # if something matches, treat that as sole match
-  # unfortunately get_models can't do more than one per package atm, so we d it
-  # the oldfashioned way.
+  # if something matches, treat that as the sole match
+  # since we need a second get models instance with different filters for that,
+  # we only modify the original filter temporarily in place
   if ($::form->{prefer_exact}) {
+    local $::form->{filter}{'all::ilike'} = delete local $::form->{filter}{'all:substr:multi::ilike'};
+    # active and valid filters are use as they are
+
+    my $exact_models = SL::Controller::Helper::GetModels->new(
+      controller   => $self,
+      sorted       => 0,
+      paginated    => { per_page => 2 },
+      with_objects => [ 'customer', 'project_status', 'project_type' ],
+    );
     my $exact_matches;
-    if (1 == scalar @{ $exact_matches = SL::DB::Manager::Project->get_all(
-      query => [
-        valid => 1,
-        or => [
-          description   => { ilike => $::form->{filter}{'all:substr:multi::ilike'} },
-          projectnumber => { ilike => $::form->{filter}{'all:substr:multi::ilike'} },
-        ]
-      ],
-      limit => 2,
-    ) }) {
-      $self->projects($exact_matches);
+    if (1 == scalar @{ $exact_matches = $exact_models->get }) {
+      $self->project($exact_matches);
     }
   }
 
   $::form->{sort_by} = 'customer_and_description';
 
+  my $description_style = ($::form->{description_style} =~ m{both|number|description|full})
+                        ? $::form->{description_style}
+                        : 'full';
+
   my @hashes = map {
    +{
-     value         => $_->full_description(style => 'full'),
-     label         => $_->full_description(style => 'full'),
+     value         => $_->full_description(style => $description_style),
+     label         => $_->full_description(style => $description_style),
      id            => $_->id,
      projectnumber => $_->projectnumber,
      description   => $_->description,
@@ -149,7 +139,15 @@ sub action_ajax_autocomplete {
 }
 
 sub action_test_page {
-  $_[0]->render('project/test_page');
+  $_[0]->render('project/test_page', title => 'Projekt-Picker-Testpage');
+}
+
+sub action_project_picker_search {
+  $_[0]->render('project/project_picker_search', { layout => 0 });
+}
+
+sub action_project_picker_result {
+  $_[0]->render('project/_project_picker_result', { layout => 0 });
 }
 
 #
@@ -166,6 +164,16 @@ sub check_auth {
 
 sub init_project_statuses { SL::DB::Manager::ProjectStatus->get_all_sorted }
 sub init_project_types    { SL::DB::Manager::ProjectType->get_all_sorted   }
+sub init_employees        { SL::DB::Manager::Employee->get_all_sorted   }
+sub init_may_edit_invoice_permissions { $::auth->assert('project_edit_view_invoices_permission', 1) }
+sub init_cvar_configs                 { SL::DB::Manager::CustomVariableConfig->get_all_sorted(where => [ module => 'Projects' ]) }
+sub init_includeable_cvar_configs     { [ grep { $_->includeable } @{ $_[0]->cvar_configs } ] };
+
+sub init_include_cvars {
+  my ($self) = @_;
+  return { map { ($_->name => $::form->{"include_cvars_" . $_->name}) }       @{ $self->cvar_configs } } if $::form->{_include_cvars_from_form};
+  return { map { ($_->name => ($_->includeable && $_->included_by_default)) } @{ $self->cvar_configs } };
+}
 
 sub init_linked_records {
   my ($self) = @_;
@@ -223,6 +231,10 @@ sub init_customers {
   return SL::DB::Manager::Customer->get_all_sorted(where => [ or => [ obsolete => 0, obsolete => undef, @customer_id ]]);
 }
 
+sub use_multiselect_js {
+  $::request->layout->use_javascript("${_}.js") for qw(jquery.selectboxes jquery.multiselect2side);
+}
+
 sub display_form {
   my ($self, %params) = @_;
 
@@ -236,6 +248,7 @@ sub display_form {
 
   CVar->render_inputs(variables => $params{CUSTOM_VARIABLES}) if @{ $params{CUSTOM_VARIABLES} };
 
+  $::request->layout->use_javascript("$_.js") for qw(kivi.File ckeditor5/ckeditor ckeditor5/translations/de);
   $self->setup_edit_action_bar(callback => $params{callback});
 
   $self->render('project/form', %params);
@@ -246,13 +259,19 @@ sub create_or_update {
   my $is_new = !$self->project->id;
   my $params = delete($::form->{project}) || { };
 
+  if (!$self->may_edit_invoice_permissions) {
+    delete $params->{employee_invoice_permissions};
+  } elsif (!$params->{employee_invoice_permissions}) {
+    $params->{employee_invoice_permissions} = [];
+  }
+
   delete $params->{id};
   $self->project->assign_attributes(%{ $params });
 
   my @errors = $self->project->validate;
 
   if (@errors) {
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     $self->display_form(title    => $is_new ? $::locale->text('Create a new project') : $::locale->text('Edit project'),
                         callback => $::form->{callback},
                         keep_cvars => 1);
@@ -285,8 +304,9 @@ sub prepare_report {
 
   my $callback    = $self->models->get_callback;
 
-  my $report      = SL::ReportGenerator->new(\%::myconfig, $::form);
-  $self->{report} = $report;
+  my $report       = SL::ReportGenerator->new(\%::myconfig, $::form);
+  $report->{title} = t8('Projects');
+  $self->{report}  = $report;
 
   my @columns     = qw(project_status customer projectnumber description active valid project_type);
   my @sortable    = qw(projectnumber description customer              project_type project_status);
@@ -297,7 +317,7 @@ sub prepare_report {
     project_type  => { sub  => sub { $_[0]->project_type->description } },
     project_status => { sub  => sub { $_[0]->project_status->description }, text => t8('Status') },
     customer      => { sub       => sub { !$_[0]->customer_id ? '' : $_[0]->customer->name },
-                       raw_data  => sub { !$_[0]->customer_id ? '' : $self->presenter->customer($_[0]->customer, display => 'table-cell', callback => $callback) } },
+                       raw_data  => sub { !$_[0]->customer_id ? '' : $_[0]->customer->presenter->customer(display => 'table-cell', callback => $callback) } },
     active        => { sub  => sub { $_[0]->active   ? $::locale->text('Active') : $::locale->text('Inactive') },
                        text => $::locale->text('Active') },
     valid         => { sub  => sub { $_[0]->valid    ? $::locale->text('Valid')  : $::locale->text('Invalid')  },
@@ -305,6 +325,26 @@ sub prepare_report {
   );
 
   map { $column_defs{$_}->{text} ||= $::locale->text( $self->models->get_sort_spec->{$_}->{title} ) } keys %column_defs;
+
+  # Custom variables
+  my %cvar_column_defs = map {
+    my $cfg = $_;
+    (('cvar_' . $cfg->name) => {
+      sub     => sub { my $var = $_[0]->cvar_by_name($cfg->name); $var ? $var->value_as_text : '' },
+      text    => $cfg->description,
+      visible => $self->include_cvars->{ $cfg->name } ? 1 : 0,
+    })
+  } @{ $self->includeable_cvar_configs };
+
+  push @columns, map { 'cvar_' . $_->name } @{ $self->includeable_cvar_configs };
+  %column_defs = (%column_defs, %cvar_column_defs);
+
+  my @cvar_column_form_names = ('_include_cvars_from_form', map { "include_cvars_" . $_->name } @{ $self->includeable_cvar_configs });
+
+  my %cvar_column_url_params = (_include_cvars_from_form => 1,
+                                map { (
+                                  'include_cvars_' . $_->name => $self->include_cvars->{$_->name} ? 1 : 0
+                                ) } @{ $self->includeable_cvar_configs });
 
   $report->set_options(
     std_column_visibility => 1,
@@ -316,8 +356,9 @@ sub prepare_report {
   );
   $report->set_columns(%column_defs);
   $report->set_column_order(@columns);
-  $report->set_export_options(qw(list filter));
+  $report->set_export_options(qw(list filter), @cvar_column_form_names);
   $report->set_options_from_form;
+  $self->models->add_additional_url_params(%cvar_column_url_params);
   $self->models->disable_plugin('paginated') if $report->{options}{output_format} =~ /^(pdf|csv)$/i;
   $self->models->set_report_generator_sort_options(report => $report, sortable_columns => \@sortable);
   $report->set_options(
@@ -416,7 +457,7 @@ sub setup_edit_action_bar {
   }
 }
 
-sub setup_search_action_bar {
+sub setup_list_action_bar {
   my ($self, %params) = @_;
 
   for my $bar ($::request->layout->get('actionbar')) {

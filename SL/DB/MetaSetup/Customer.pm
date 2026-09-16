@@ -16,19 +16,26 @@ __PACKAGE__->meta->columns(
   bic                       => { type => 'text' },
   business_id               => { type => 'integer' },
   c_vendor_id               => { type => 'text' },
+  c_vendor_routing_id       => { type => 'text' },
   cc                        => { type => 'text' },
   city                      => { type => 'text' },
+  commercial_court          => { type => 'text' },
   contact                   => { type => 'text' },
-  country                   => { type => 'text' },
+  contact_origin            => { type => 'text' },
+  country_id                => { type => 'integer', not_null => 1 },
+  create_zugferd_invoices   => { type => 'integer', default => '-1', not_null => 1 },
   creditlimit               => { type => 'numeric', default => '0', precision => 15, scale => 5 },
   currency_id               => { type => 'integer', not_null => 1 },
   customernumber            => { type => 'text' },
+  delivery_order_mail       => { type => 'text' },
   delivery_term_id          => { type => 'integer' },
   department_1              => { type => 'text' },
   department_2              => { type => 'text' },
   depositor                 => { type => 'text' },
   direct_debit              => { type => 'boolean', default => 'false' },
-  discount                  => { type => 'float', scale => 4 },
+  discount                  => { type => 'float', precision => 4, scale => 4 },
+  dunning_lock              => { type => 'boolean', default => 'false', not_null => 1 },
+  dunning_mail              => { type => 'text' },
   email                     => { type => 'text' },
   fax                       => { type => 'text' },
   gln                       => { type => 'text' },
@@ -37,6 +44,7 @@ __PACKAGE__->meta->columns(
   hourly_rate               => { type => 'numeric', precision => 8, scale => 2 },
   iban                      => { type => 'text' },
   id                        => { type => 'integer', not_null => 1, sequence => 'id' },
+  invoice_mail              => { type => 'text' },
   itime                     => { type => 'timestamp', default => 'now()' },
   language                  => { type => 'text' },
   language_id               => { type => 'integer' },
@@ -44,12 +52,15 @@ __PACKAGE__->meta->columns(
   mandator_id               => { type => 'text' },
   mtime                     => { type => 'timestamp' },
   name                      => { type => 'text', not_null => 1 },
+  natural_person            => { type => 'boolean', default => 'false' },
   notes                     => { type => 'text' },
   obsolete                  => { type => 'boolean', default => 'false' },
   order_lock                => { type => 'boolean', default => 'false' },
   payment_id                => { type => 'integer' },
   phone                     => { type => 'text' },
+  postal_invoice            => { type => 'boolean', default => 'false' },
   pricegroup_id             => { type => 'integer' },
+  reduction_terms           => { type => 'text' },
   salesman_id               => { type => 'integer' },
   street                    => { type => 'text' },
   taxincluded               => { type => 'boolean' },
@@ -70,6 +81,11 @@ __PACKAGE__->meta->foreign_keys(
   business => {
     class       => 'SL::DB::Business',
     key_columns => { business_id => 'id' },
+  },
+
+  country => {
+    class       => 'SL::DB::Country',
+    key_columns => { country_id => 'id' },
   },
 
   currency => {
@@ -104,4 +120,4 @@ __PACKAGE__->meta->foreign_keys(
 );
 
 1;
-;
+

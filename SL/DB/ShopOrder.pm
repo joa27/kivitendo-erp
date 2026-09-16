@@ -6,10 +6,10 @@ package SL::DB::ShopOrder;
 use strict;
 
 use SL::DBUtils;
-use SL::DB::Shop;
 use SL::DB::MetaSetup::ShopOrder;
 use SL::DB::Manager::ShopOrder;
 use SL::DB::Helper::LinkedRecords;
+use SL::DB::Country;
 use SL::Locale::String qw(t8);
 use Carp;
 
@@ -26,15 +26,31 @@ __PACKAGE__->meta->initialize;
 sub convert_to_sales_order {
   my ($self, %params) = @_;
 
-  my $customer = delete $params{customer};
-  my $employee = delete $params{employee};
+  my $customer  = delete $params{customer};
+  my $employee  = delete $params{employee};
+  my $transdate = delete $params{transdate} // DateTime->today_local;
+
   croak "param customer is missing" unless ref($customer) eq 'SL::DB::Customer';
   croak "param employee is missing" unless ref($employee) eq 'SL::DB::Employee';
 
+  # check if caller wants optional partial transfer and create partial soi array
+  my $partial_transfer;
+  my %pos_ids;
+  if ($params{pos_ids}) {
+    $partial_transfer = 1;
+    %pos_ids          =  %{ delete $params{pos_ids} };
+    # TODO check if pos_ids is a valid hash
+  }
+  my @soi = $partial_transfer
+          ? grep { $pos_ids{$_->id} } @{ $self->shop_order_items }
+          : @{ $self->shop_order_items };
+
   require SL::DB::Order;
+  use SL::DB::Order::TypeData qw(:types);
   require SL::DB::OrderItem;
   require SL::DB::Part;
   require SL::DB::Shipto;
+  require SL::DB::Shop;
   my @error_report;
 
   my @items = map{
@@ -46,16 +62,17 @@ sub convert_to_sales_order {
     }else{
       my $current_order_item = SL::DB::OrderItem->new(
         parts_id            => $part->id,
-        description         => $part->description,
+        description         => $_->description, # description from the shop
+        longdescription     => $part->notes,    # longdescription from parts. TODO locales
         qty                 => $_->quantity,
         sellprice           => $_->price,
         unit                => $part->unit,
         position            => $_->position,
         active_price_source => $_->active_price_source,
+        discount            => $_->discount,
       );
     }
-  }@{ $self->shop_order_items };
-
+  } @soi;
   if(!scalar(@error_report)){
 
     my $shipto_id;
@@ -74,7 +91,7 @@ sub convert_to_sales_order {
           shiptostreet       => $self->delivery_street,
           shiptozipcode      => $self->delivery_zipcode,
           shiptocity         => $self->delivery_city,
-          shiptocountry      => $self->delivery_country,
+          shiptocountry_id   => $self->delivery_country_id,
           trans_id           => $customer->id,
           module             => "CT",
         );
@@ -94,11 +111,12 @@ sub convert_to_sales_order {
       intnotes                => $customer->notes,
       salesman_id             => $employee->id,
       taxincluded             => $self->tax_included,
-      payment_id              => $customer->payment_id,
+      payment_id              => $self->payment_id,
       taxzone_id              => $customer->taxzone_id,
       currency_id             => $customer->currency_id,
       transaction_description => $shop->transaction_description,
-      transdate               => DateTime->today_local
+      transdate               => $transdate,
+      record_type             => SALES_ORDER_TYPE(),
     );
      return $order;
    }else{
@@ -121,7 +139,7 @@ sub check_for_existing_customers {
   my $zipcode          = $self->billing_street   ne '' ?  $self->billing_zipcode                                  : '';
   my $email            = $self->billing_street   ne '' ?  $self->billing_email                                    : '';
 
-  if($self->check_trgm) {
+  if(check_trgm($::form->get_standard_dbh())) {
     # Fuzzysearch for street to find e.g. "Dorfstrasse - Dorfstr. - Dorfstraße"
     my $fs_query = <<SQL;
 SELECT *
@@ -135,11 +153,11 @@ WHERE (
  OR
    ( street % ?  AND zipcode ILIKE ?)
  OR
-   email ILIKE ?
+   ( email ILIKE ? OR invoice_mail ILIKE ? )
 ) AND obsolete = 'F'
 SQL
 
-    my @values = ($lastname, $company, $self->billing_zipcode, $street, $self->billing_zipcode, $self->billing_email);
+    my @values = ($lastname, $company, $self->billing_zipcode, $street, $self->billing_zipcode, $self->billing_email, $self->billing_email);
 
     $customers = SL::DB::Manager::Customer->get_objects_from_sql(
       sql  => $fs_query,
@@ -149,25 +167,39 @@ SQL
     # If trgm extension is not installed
     $customers = SL::DB::Manager::Customer->get_all(
       where => [
-          or => [
-            and => [
-                     or => [ 'name' => { ilike => $lastname },
-                             'name' => { ilike => $company  },
-                           ],
-                     'zipcode' => { ilike => $zipcode },
+                 or => [
+                   and => [
+                            or => [ 'name' => { ilike => $lastname },
+                                    'name' => { ilike => $company  },
+                            ],
+                            'zipcode' => { ilike => $zipcode },
                    ],
-            and => [
-                     and => [ 'street'  => { ilike => $street_not_fuzzy },
-                              'zipcode' => { ilike => $zipcode },
+                   and => [
+                            and => [ 'street'  => { ilike => $street_not_fuzzy },
+                                     'zipcode' => { ilike => $zipcode },
                             ],
                    ],
-            or  => [ 'email' => { ilike => $email } ],
-          ],
+                   or  => [
+                            'email'        => { ilike => $email },
+                            'invoice_mail' => { ilike => $email },
+                   ],
+                 ],
+                 and => [ obsolete => 'F' ]
       ],
     );
   }
 
   return $customers;
+}
+
+sub check_for_open_invoices {
+  my ($self) = @_;
+    my $open_invoices = SL::DB::Manager::Invoice->get_all_count(
+      query => [customer_id => $self->{kivi_customer_id},
+              paid => {lt_sql => 'amount'},
+      ],
+    );
+  return $open_invoices;
 }
 
 sub get_customer{
@@ -176,7 +208,10 @@ sub get_customer{
   my $customer_proposals = $self->check_for_existing_customers;
   my $name = $self->billing_firstname . " " . $self->billing_lastname;
   my $customer = 0;
+  my $default_payment    = SL::DB::Manager::PaymentTerm->get_first();
+  my $payment_id = $default_payment ? $default_payment->id : undef;
   if(!scalar(@{$customer_proposals})){
+
     my %address = ( 'name'                  => $name,
                     'department_1'          => $self->billing_company,
                     'department_2'          => $self->billing_department,
@@ -184,7 +219,8 @@ sub get_customer{
                     'zipcode'               => $self->billing_zipcode,
                     'city'                  => $self->billing_city,
                     'email'                 => $self->billing_email,
-                    'country'               => $self->billing_country,
+                    'invoice_mail'          => $self->billing_email,
+                    'country_id'            => $self->billing_country_id,
                     'greeting'              => $self->billing_greeting,
                     'fax'                   => $self->billing_fax,
                     'phone'                 => $self->billing_phone,
@@ -194,7 +230,7 @@ sub get_customer{
                     'pricegroup_id'         => (split '\/',$shop->price_source)[0] eq "pricegroup" ?  (split '\/',$shop->price_source)[1] : undef,
                     'taxzone_id'            => $shop->taxzone_id,
                     'currency'              => $::instance_conf->get_currency_id,
-                    #'payment_id'            => 7345,# TODO hardcoded
+                    'payment_id'            => $payment_id,
                   );
     $customer = SL::DB::Customer->new(%address);
 
@@ -219,6 +255,9 @@ sub get_customer{
                                                     obsolete => 'F',
                                                   );
   }
+  if( ref $customer eq 'SL::DB::Customer') {
+    $customer->update_attributes(invoice_mail => $self->billing_email) if $customer->invoice_mail ne $self->billing_email;
+  }
 
   return $customer;
 }
@@ -232,17 +271,6 @@ sub compare_to {
   my $result = 0;
   $result    = $self->transfer_date <=> $other->transfer_date if $self->transfer_date;
   return $result || ($self->id <=> $other->id);
-}
-
-sub check_trgm {
-  my ( $self ) = @_;
-
-  my $dbh     = $::form->get_standard_dbh();
-  my $sql     = "SELECT installed_version FROM pg_available_extensions WHERE name = 'pg_trgm'";
-  my @version = selectall_hashref_query($::form, $dbh, $sql);
-
-  return 1 if($version[0]->{installed_version});
-  return 0;
 }
 
 sub has_differing_delivery_address {
@@ -292,10 +320,6 @@ returns only one customer from the check_for_existing_customers if the return fr
 When it is 0 get customer creates a new customer object of the shop order billing data and returns it
 
 =item C<compare_to>
-
-=item C<check_trgm>
-
-Checks if the postgresextension pg_trgm is installed and return 0 or 1.
 
 =back
 

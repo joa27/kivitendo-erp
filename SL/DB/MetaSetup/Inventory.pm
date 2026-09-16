@@ -26,6 +26,7 @@ __PACKAGE__->meta->columns(
   shippingdate                  => { type => 'date', not_null => 1 },
   trans_id                      => { type => 'integer', not_null => 1 },
   trans_type_id                 => { type => 'integer', not_null => 1 },
+  used_for_assembly_id          => { type => 'integer' },
   warehouse_id                  => { type => 'integer', not_null => 1 },
 );
 
@@ -74,6 +75,11 @@ __PACKAGE__->meta->foreign_keys(
     key_columns => { trans_type_id => 'id' },
   },
 
+  used_for_assembly => {
+    class       => 'SL::DB::Part',
+    key_columns => { used_for_assembly_id => 'id' },
+  },
+
   warehouse => {
     class       => 'SL::DB::Warehouse',
     key_columns => { warehouse_id => 'id' },
@@ -81,4 +87,4 @@ __PACKAGE__->meta->foreign_keys(
 );
 
 1;
-;
+

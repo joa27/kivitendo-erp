@@ -5,6 +5,7 @@ use lib 't';
 use Support::TestSetup;
 use Carp;
 use Test::Exception;
+use SL::DBUtils qw(check_trgm);
 use SL::Dev::ALL;
 use SL::Dev::Part qw(new_part);
 use SL::Dev::Shop qw(new_shop new_shop_part new_shop_order);
@@ -16,11 +17,19 @@ use SL::Controller::ShopOrder;
 use Data::Dumper;
 
 my ($shop, $shop_order, $shop_part, $part, $customer, $employee);
+my ($transdate);
 
+Support::TestSetup::login();
+
+my $country = SL::DB::Manager::Country->find_by( iso2 => 'DE' );
+die "Error: Country not found: DE" unless $country;
 sub reset_state {
   my %params = @_;
 
   clear_up();
+
+  $transdate = DateTime->today_local;
+  $transdate->set_year(2019) if $transdate->year == 2020; # use year 2019 in 2020, because of tax rate change in Germany
 
   $shop = new_shop->save;
   $part = new_part->save;
@@ -28,32 +37,34 @@ sub reset_state {
 
   $employee = SL::DB::Manager::Employee->current || croak "No employee";
 
-  $customer = new_customer( name    => 'Evil Inc',
-                            street  => 'Evil Street',
-                            zipcode => '66666',
-                            email   => 'evil@evilinc.com'
+  $customer = new_customer( name       => 'Evil Inc',
+                            street     => 'Evil Street',
+                            zipcode    => '66666',
+                            country    => $country,
+                            email      => 'evil@evilinc.com'
                           )->save;
 }
 
-sub save_shorcontroller_to_string {
+sub save_shopcontroller_to_string {
 
   my $output;
   open(my $outputFH, '>', \$output) or die "OUTPUT";
   my $oldFH = select $outputFH;
-  my $shor_controller = SL::Controller::ShopOrder->new;
-  $shor_controller->action_transfer;
+  my $shop_controller = SL::Controller::ShopOrder->new;
+  $shop_controller->action_transfer;
 
   select $oldFH;
   close $outputFH;
   return $output;
 }
+
 sub test_transfer {
   my ( %params ) = @_;
   $::form = Support::TestSetup->create_new_form;
   $::form->{import_id} = $params{import_id};
   $::form->{customer} =  $params{customer};
   my $test_name = 'Test Controller Action Transfer';
-  save_shorcontroller_to_string();
+  save_shopcontroller_to_string();
   my @links_record = RecordLinks->get_links( 'from_table' => 'shop_orders',
                                             'from_id'    => $params{import_id},
                                             'to_table'   => 'oe',
@@ -63,24 +74,40 @@ sub test_transfer {
   is($links_record[0]->{to_table}   , 'oe'              , "record to table <oe> check");
 }
 
-Support::TestSetup::login();
-
 reset_state();
 
-my $trgm = SL::DB::ShopOrder->check_trgm;
+my $trgm = check_trgm($::form->get_standard_dbh());
+
 
 my $shop_trans_id = 1;
 
 $shop_order = new_shop_order(
-  shop              => $shop,
-  shop_trans_id     => $shop_trans_id,
-  amount            => 59.5,
-  billing_lastname  => 'Schmidt',
-  billing_firstname => 'Sven',
-  billing_company   => 'Evil Inc',
-  billing_street    => 'Evil Street 666',
-  billing_zipcode   => $customer->zipcode,
-  billing_email     => 'email',
+  shop                => $shop,
+  transfer_date       => $transdate,
+  shop_trans_id       => $shop_trans_id,
+  order_date          => $transdate->datetime,
+  amount              => 59.5,
+  billing_lastname    => 'Schmidt',
+  billing_firstname   => 'Sven',
+  billing_company     => 'Evil Inc',
+  billing_street      => 'Evil Street 666',
+  billing_zipcode     => $customer->zipcode,
+  billing_email       => 'email',
+  billing_country     => $country,
+  customer_lastname   => 'Schmidt',
+  customer_firstname  => 'Sven',
+  customer_company    => 'Evil Inc',
+  customer_street     => 'Evil Street 666',
+  customer_zipcode    => $customer->zipcode,
+  customer_email      => 'email',
+  customer_country    => $country,
+  delivery_lastname   => 'Schmidt',
+  delivery_firstname  => 'Sven',
+  delivery_company    => 'Evil Inc',
+  delivery_street     => 'Evil Street 666',
+  delivery_zipcode    => $customer->zipcode,
+  delivery_email      => 'email',
+  delivery_country    => $country,
 );
 
 my $shop_order_item = SL::DB::ShopOrderItem->new(
@@ -101,32 +128,36 @@ is($fuzzy_customers->[0]->name, 'Evil Inc', 'matched customer Evil Inc');
 
 note('adding a not-so-similar customer');
 my $customer_different = new_customer(
-  name    => "Different Name",
-  street  => 'Good Straet', # difference large enough from "Evil Street"
-  zipcode => $customer->zipcode,
-  email   => "foo",
+  name       => "Different Name",
+  street     => 'Good Straet', # difference large enough from "Evil Street"
+  zipcode    => $customer->zipcode,
+  country    => $country,
+  email      => "foo",
 )->save;
 $fuzzy_customers = $shop_order->check_for_existing_customers;
 is(scalar @{ $fuzzy_customers }, 1, 'still only found 1 matching customer (zipcode equal + street dissimilar');
 
 note('adding 2 similar customers and 1 dissimilar but same email');
 my $customer_similar = new_customer(
-  name    => "Different Name",
-  street  => 'Evil Street 666', # difference not large enough from "Evil Street", street matches
-  zipcode => $customer->zipcode,
-  email   => "foo",
+  name       => "Different Name",
+  street     => 'Evil Street 666', # difference not large enough from "Evil Street", street matches
+  zipcode    => $customer->zipcode,
+  country    => $country,
+  email      => "foo",
 )->save;
 my $customer_similar_2 = new_customer(
-  name    => "Different Name",
-  street  => 'Evil Straet', # difference not large enough from "Evil Street", street matches
-  zipcode => $customer->zipcode,
-  email   => "foofoo",
+  name       => "Different Name",
+  street     => 'Evil Straet', # difference not large enough from "Evil Street", street matches
+  zipcode    => $customer->zipcode,
+  country    => $country,
+  email      => "foofoo",
 )->save;
 my $customer_same_email = new_customer(
-  name    => "Different Name",
-  street  => 'Angel Way', # difference large enough from "Evil Street", street not matches , same email
-  zipcode => $customer->zipcode,
-  email   => 'email',
+  name       => "Different Name",
+  street     => 'Angel Way', # difference large enough from "Evil Street", street not matches , same email
+  zipcode    => $customer->zipcode,
+  country    => $country,
+  email      => 'email',
 )->save;
 my $customers = SL::DB::Manager::Customer->get_all();
 
@@ -141,7 +172,7 @@ is($shop->description   , 'testshop' , 'shop description ok');
 is($shop_order->shop_id , $shop->id  , "shop_id ok");
 
 note('testing convert_to_sales_order');
-my $order = $shop_order->convert_to_sales_order(employee => $employee, customer => $customer);
+my $order = $shop_order->convert_to_sales_order(employee => $employee, customer => $customer, transdate => $shop_order->order_date);
 $order->calculate_prices_and_taxes;
 $order->save;
 

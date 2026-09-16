@@ -20,11 +20,13 @@ sub init {
 
   Rose::Object::init(
     @_,
-    status          => 'failed',
+    status          => 'send_failed',
     extended_status => 'no send attempt made',
   );
 
-  my $cfg           = $::lx_office_conf{mail_delivery} || {};
+  my $email         = $self->myconfig->{email};
+  my $cfg           = $::lx_office_conf{"mail_delivery/email/$email"} || $::lx_office_conf{mail_delivery} || {};
+
   $self->{security} = exists $security_config{lc $cfg->{security}} ? lc $cfg->{security} : 'none';
   my $sec_cfg       = $security_config{ $self->{security} };
 
@@ -33,7 +35,11 @@ sub init {
     die $self->extended_status;
   };
 
-  $self->{smtp} = $sec_cfg->{package}->new($cfg->{host} || 'localhost', Port => $cfg->{port} || $sec_cfg->{port});
+  $self->{smtp} = $sec_cfg->{package}->new($cfg->{host} || 'localhost',
+    Port  => $cfg->{port} || $sec_cfg->{port},
+    Hello => $cfg->{ehlo} || 'localhost',
+    Debug => !!$cfg->{debug},
+  );
   if (!$self->{smtp}) {
     $self->extended_status('SMTP connection could not be initialized');
     die $self->extended_status;
@@ -53,7 +59,7 @@ sub init {
   return 1 unless $login;
 
   if (!$self->{smtp}->auth($login, $cfg->{password})) {
-    $self->extended_status('SMTP authentication failed');
+    $self->extended_status('SMTP authentication failed: ' . $self->{smtp}->message());
     die $self->extended_status;
   }
 }
@@ -96,11 +102,13 @@ sub send {
 
   my $ok = $self->{smtp}->dataend;
   $self->extended_status($self->{smtp}->message);
-  $self->status('ok') if $ok;
+  $self->status('sent') if $ok;
 
   $self->{smtp}->quit;
 
   delete $self->{smtp};
+
+  die $self->extended_status if !$ok;
 }
 
 sub keep_from_header {

@@ -7,7 +7,6 @@ BEGIN {
 
   unshift(@INC, $FindBin::Bin . '/../modules/override'); # Use our own versions of various modules (e.g. YAML).
   push   (@INC, $FindBin::Bin . '/..');                  # '.' will be removed from @INC soon.
-  push   (@INC, $FindBin::Bin . '/../modules/fallback'); # Only use our own versions of modules if there's no system version.
 }
 
 use CGI qw( -no_xhtml);
@@ -73,9 +72,10 @@ our %foreign_key_name_map     = (
     ap                        => { payment_id => 'payment_terms', },
 
     orderitems                => { parts_id => 'part', trans_id => 'order', },
+    reclamation_items         => { parts_id => 'part' },
     delivery_order_items      => { parts_id => 'part' },
     invoice                   => { parts_id => 'part' },
-    follow_ups                => { created_for_user => 'created_for_employee', created_by => 'created_by_employee', },
+    follow_ups                => { created_by => 'created_by_employee', },
     follow_up_access          => { who => 'with_access', what => 'to_follow_ups_by', },
 
     periodic_invoices_configs => { oe_id => 'order', email_recipient_contact_id => 'email_recipient_contact' },
@@ -83,6 +83,8 @@ our %foreign_key_name_map     = (
 
     assembly                  => { parts_id => 'part', id => 'assembly_part' },
     assortment_items          => { parts_id => 'part' },
+
+    dunning                   => { trans_id => 'invoice', fee_interest_ar_id => 'fee_interest_invoice' },
   },
 );
 
@@ -220,7 +222,7 @@ CODE
   my $full_definition = <<CODE;
 # This file has been auto-generated. Do not modify it; it will be overwritten
 # by $::script automatically.
-$definition;
+$definition
 CODE
 
   my $meta_definition = <<CODE;
@@ -493,7 +495,7 @@ sub drop_and_create_test_database {
     copies                   => '',
     menustyle                => 'v3',
     fax                      => '',
-    stylesheet               => 'lx-office-erp.css',
+    stylesheet               => 'design40.css',
     mandatory_departments    => 0,
     countrycode              => 'de',
   );

@@ -1,0 +1,131 @@
+\documentclass[paper=a4,fontsize=10pt]{scrartcl}
+\usepackage{kiviletter}
+
+
+% Variablen, die in settings verwendet werden
+\newcommand{\lxlangcode} {<%template_meta.language.template_code%>}
+\newcommand{\lxmedia} {<%media%>}
+\newcommand{\lxcurrency} {<%currency%>}
+\newcommand{\kivicompany} {<%employee_company%>}
+
+% settings: Einstellungen, Logo, Briefpapier, Kopfzeile, Fusszeile
+\input{insettings.tex}
+
+
+% laufende Kopfzeile:
+\ourhead{\kundennummer}{<%customernumber%>}{\gutschrift}{<%invnumber%>}{<%invdate%>}
+
+\setkomavar{info0}[\vorgangsbez]    {<%transaction_description%>}
+\setkomavar{info1}[\datum]          {<%invdate%>}
+\setkomavar{info2}[\fuerRechnung]   {<%invnumber_for_credit_note%>}
+\setkomavar{info3}[\auftrag{}~\nr]  {<%ordnumber%>}
+\setkomavar{info4}[\kundennummer]   {<%customernumber%>}
+\setkomavar{info5}[\ansprechpartner]{<%employee_name%>}
+\setkomavar{info6}[\textTelefon]    {<%employee_tel%>}
+\setkomavar{info7}[\textEmail]      {<%employee_email%>}
+\setkomavar{fromname}               {<%employee_name%>}
+
+\setkomavar{title}{\gutschrift~\nr~<%invnumber%>}
+
+<%if shiptoname%>%
+\makeatletter
+\begin{lrbox}\shippingAddressBox
+  \parbox{\useplength{toaddrwidth}}{
+    \backaddr@format{\scriptsize\usekomafont{backaddress}%
+      \strut\abweichendeLieferadresse
+    }
+    \par\smallskip
+    \setlength{\parskip}{\z@}
+    \par
+    \normalsize
+    <%shiptoname%>\par
+    <%shiptodepartment_1%>\par
+    <%shiptodepartment_2%>\par
+    <%if shiptocontact%> <%shiptocontact%><%else%><%cp_title%> <%cp_givenname%> <%cp_name%><%end if%>\par
+    <%shiptostreet%>\par
+    <%shiptozipcode%> <%shiptocity%>\par
+    <%shiptocountry%>
+  }
+\end{lrbox}
+\makeatother
+<%end shiptoname%>%
+
+\begin{document}
+
+\begin{letter}{
+  <%if billing_address_id%> %
+    <%billing_address_name%>         \strut\\
+    <%billing_address_department_1%> \ifhmode\\\fi
+    <%billing_address_department_2%> \ifhmode\\\fi
+    <%cp_title%> <%cp_givenname%> <%cp_name%> \ifhmode\\\fi
+    <%billing_address_street%>       \ifhmode\\\fi
+    <%billing_address_zipcode%> <%billing_address_city%> \ifhmode\\\fi
+    <%billing_address_country%>      %
+  <%else%> %
+    <%name%>                         \strut\\
+    <%department_1%>                 \ifhmode\\\fi
+    <%department_2%>                 \ifhmode\\\fi
+    <%cp_title%> <%cp_givenname%> <%cp_name%> \ifhmode\\\fi
+    <%street%>                       \ifhmode\\\fi
+    <%zipcode%> <%city%>             \ifhmode\\\fi
+    <%country%>                      %
+  <%end billing_address_id%> %
+  }
+
+  % Bei Kontaktperson Anrede nach Geschlecht unterscheiden.
+  % Bei natürlichen Personen persönliche Anrede, sonst allgemeine Anrede.
+  \opening{
+    \Ifstr{<%cp_name%>}{}
+    {<%if natural_person%><%greeting%> <%name%>,<%else%>\anrede<%end if%>}
+    {
+      \Ifstr{<%cp_gender%>}{f}
+      {\anredefrau}
+      {\anredeherr}
+      <%cp_title%> <%cp_name%>,
+    }
+  }
+  \thispagestyle{kivitendo.letter.first}
+
+
+  \gutschriftformel
+
+  <%if notes%>%
+    <%notes%>%
+    \vspace{0.5cm}
+  <%end notes%>%
+
+
+  \begin{PricingTabular*}[pricetotal/colspec = K]
+    % eigentliche Tabelle%
+    \FakeTable{%
+      <%foreach number%>%
+      <%runningnumber%> &%
+      <%number%> &%
+      \textbf{<%description%>}%
+      <%if longdescription%>\ExtraDescription{<%longdescription%>}<%end longdescription%>%
+      <%if serialnumber%>\ExtraDescription{\seriennummer: <%serialnumber%>}<%end serialnumber%>%
+      <%if ean%>\ExtraDescription{\ean: <%ean%>}<%end ean%>%
+      <%if projectnumber%>\ExtraDescription{\projektnummer: <%projectnumber%>}<%end projectnumber%>%
+      &%
+      <%qty%> <%unit%> &%
+      <%sellprice%>&%
+      <%if optional%>\optional<%else%><%linetotal%>\,\currency<%if p_discount%>\par{\sffamily\scriptsize{(-<%p_discount%>\,\%)}}<%end p_discount%><%end optional%>
+      \tabularnewline
+      <%end number%>%
+    }%
+    \begin{PricingTotal}%
+      % Tabellenende letzte Seite
+      \nettobetrag & <%subtotal%>\\%
+      <%foreach tax%>%
+        <%taxdescription%> & <%tax%>\\%
+      <%end tax%>%
+      \bfseries\schlussbetrag &  \bfseries <%invtotal%>\\%
+    \end{PricingTotal}%
+  \end{PricingTabular*}
+
+
+  \closing{\gruesse}
+
+\end{letter}
+
+\end{document}

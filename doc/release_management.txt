@@ -128,10 +128,13 @@ als freundliche Checkliste zum Ausdrucken und Erweitern.
     Version bis zum erfolgreichen Login der neuen Version zu kriegen.
   - Bekannte Probleme die im testing auftraten dokumentieren.
 
-* doc/kivitendo-Dokumentation.pdf erstellen
+* public/doc/kivitendo-Dokumentation.pdf und public/doc/html/* neu erstellen
   - ggf. muss hier noch dobudish installiert werden, s.a. Entwicklerdokumentation ->
     Dokumentation erstellen. Ansonsten reicht dieser Aufruf:
-  $ scripts/build_doc.sh
+    $ scripts/build_doc.sh
+  - prüfen, ob neu entstandene Dateien in public/doc/html
+    (neue Kapitel / neue Bilder) noch zum git-Repo hinzugefügt/eingecheckt
+    werden müssen
 
 * scripts/rose_auto_create_model.pl update machen.
 
@@ -151,6 +154,8 @@ als freundliche Checkliste zum Ausdrucken und Erweitern.
     bleibt.
 
   Zum Prüfen was sich geändert hat eignen sich folgende Befehle:
+  (Hinweis: Dafür muss das Modul "Rose::DB" in der Version >= 0.788 verwendet
+   werden, da sonst einige Fremdschlüssel-Beziehungen nicht generiert werden.)
 
   # listet alle Dateien in denen sich etwas ändern würde
   $ scripts/rose_auto_create_model.pl --client=<name-or-id> -n --all
@@ -160,13 +165,8 @@ als freundliche Checkliste zum Ausdrucken und Erweitern.
 
 * Locales auf Vollständigkeit prüfen
 
+  $ scripts/locales.pl en
   $ scripts/locales.pl de
-
-* SL::DB::Helper::ALL auf Vollständigkeit prüfen
-
-  (TODO: Mag da einer ein Script für schreiben?
-     find SL/DB -type f | grep -v MetaSetup | grep -v Helper | grep -v Manager | sort
-   hilft, kriegt aber die Sortierung durcheinander)
 
 * VERSION updaten
 
@@ -213,15 +213,24 @@ als freundliche Checkliste zum Ausdrucken und Erweitern.
 2. RELEASE
 ==========
 
+* VERSION auf aktuelle Version setzen
+ - Changelog auf Tagesdatum plus Versionssnummer
+ - dokumentation.xml Versionsnummer anpassen
+ - Doku neu bauen (s. o.)
+ - im Dokument UPGRADE Versionsnummer anpassen
+ - bei der Datei VERSION Versionsnummer anpassen
+
+
 * Annotated tag erstellen und pushen
 
+  # falls möglich den Tag mit dem Commit von VERSION setzen (Konvention)
   $ git tag -a release-3.0.0
   $ git push origin tags/release-3.0.0
 
 * Tarball erstellen
 
   Commits mit Tags können von github als Archiv heruntergeladen werden:
-  https://github.com/kivitendo/kivitendo-erp/releases
+  https://github.com/kivitendo/kivitendo-erp/tags
 
 * Releasemessages schreiben für folgende Ziele:
 
@@ -241,3 +250,7 @@ als freundliche Checkliste zum Ausdrucken und Erweitern.
 
 * Nach einem Major Release alle Bugs, die den Milestone hatten und nicht gefixt
   wurden, zurücksetzen
+
+* Im Ansible Script die Verionsnummer aktualisieren und
+  neu hinzugekommene Pakete hinzufügen.
+  https://github.com/kivitendo/kivitendo-ansible

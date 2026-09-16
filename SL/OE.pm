@@ -36,8 +36,8 @@
 package OE;
 
 use List::Util qw(max first);
-use YAML;
 
+use DateTime;
 use SL::AM;
 use SL::Common;
 use SL::CVar;
@@ -45,6 +45,7 @@ use SL::DB::Order;
 use SL::DB::PeriodicInvoicesConfig;
 use SL::DB::Project;
 use SL::DB::ProjectType;
+use SL::DB::RequirementSpecOrder;
 use SL::DB::Status;
 use SL::DB::Tax;
 use SL::DBUtils;
@@ -53,6 +54,7 @@ use SL::IC;
 use SL::TransNumber;
 use SL::Util qw(trim);
 use SL::DB;
+use SL::YAML;
 use Text::ParseWords;
 
 use strict;
@@ -67,7 +69,7 @@ sub transactions {
 
   my $query;
   my $ordnumber = 'ordnumber';
-  my $quotation = '0';
+  my $record_type = $form->{type};
 
   my @values;
   my $where;
@@ -77,9 +79,10 @@ sub transactions {
   my $rate = ($form->{vc} eq 'customer') ? 'buy' : 'sell';
 
   if ($form->{type} =~ /_quotation$/) {
-    $quotation = '1';
     $ordnumber = 'quonumber';
 
+  } elsif ($form->{type} eq 'purchase_quotation_intake') {
+    $ordnumber = 'quonumber';
   } elsif ($form->{type} eq 'sales_order') {
     $periodic_invoices_columns = qq| , COALESCE(pcfg.active, 'f') AS periodic_invoices |;
     $periodic_invoices_joins   = qq| LEFT JOIN periodic_invoices_configs pcfg ON (o.id = pcfg.oe_id) |;
@@ -87,21 +90,40 @@ sub transactions {
 
   my $vc = $form->{vc} eq "customer" ? "customer" : "vendor";
 
+  if ($form->{type} !~ /_quotation/) {
+    $form->{hide_amounts} = !(   ($vc eq 'customer' && $::auth->assert('sales_order_reports_amounts',    1))
+                              || ($vc eq 'vendor'   && $::auth->assert('purchase_order_reports_amounts', 1)) );
+    $form->{hide_links}   = $form->{hide_amounts};
+  }
+
+  if ($form->{hide_amounts}) {
+    $form->{"l_$_"} = '' for qw(remaining_amount remaining_netamount amount netamount marge_total marge_percent expected_netamount tax);
+  }
+
   my %billed_amount;
   my %billed_netamount;
-  if ($form->{l_remaining_amount} || $form->{l_remaining_netamount}) {
-    $query = <<'';
-      SELECT from_id, ar.amount, ar.netamount FROM (
+  if (!$form->{hide_amounts} && ($form->{l_remaining_amount} || $form->{l_remaining_netamount})) {
+    my $arap = $form->{vc} eq "customer" ? "ar" : "ap";
+
+    $query = <<"SQL";
+      SELECT from_id, ${arap}.amount, $arap.netamount FROM (
         SELECT from_id, to_id
         FROM record_links
-        WHERE from_table = 'oe' AND to_table = 'ar'
+        WHERE from_table = 'oe' AND to_table = '$arap'
         UNION
         SELECT rl1.from_id, rl2.to_id
         FROM record_links rl1
         LEFT JOIN record_links rl2 ON (rl1.to_table = rl2.from_table AND rl1.to_id = rl2.from_id)
-        WHERE rl1.from_table = 'oe' AND rl2.to_table = 'ar'
+        WHERE rl1.from_table = 'oe' AND rl2.to_table = '$arap'
+        UNION
+        SELECT rl1.from_id, rl3.to_id
+        FROM record_links rl1
+        JOIN record_links rl2 ON (rl1.to_table = rl2.from_table AND rl1.to_id = rl2.from_id)
+        JOIN record_links rl3 ON (rl2.to_table = rl3.from_table AND rl2.to_id = rl3.from_id)
+        WHERE rl1.from_table = 'oe' AND rl2.to_table = '$arap' AND rl3.to_table = '$arap'
       ) rl
-      LEFT JOIN ar ON ar.id = rl.to_id
+      LEFT JOIN $arap ON $arap.id = rl.to_id
+SQL
 
     for my $ref (@{ selectall_hashref_query($form, $dbh, $query) }) {
       $billed_amount{   $ref->{from_id}} += $ref->{amount};
@@ -109,21 +131,43 @@ sub transactions {
     }
   }
 
+  my ($phone_notes_columns, $phone_notes_join);
+  $form->{phone_notes} = trim($form->{phone_notes});
+  if ($form->{phone_notes}) {
+    $phone_notes_columns = qq| , phone_notes.subject AS phone_notes_subject, phone_notes.body AS phone_notes_body |;
+    $phone_notes_join    = qq| JOIN notes phone_notes ON (o.id = phone_notes.trans_id AND phone_notes.trans_module LIKE 'oe') |;
+  }
+
+  my $amount_columns = $form->{hide_amounts}
+                     ? ''
+                     : qq| , o.amount, o.netamount, o.marge_total, o.marge_percent, (o.netamount * o.order_probability / 100) AS expected_netamount |;
+
+  my $country_description_key = SL::DB::Country->description_column_localized($::myconfig{countrycode});
   $query =
-    qq|SELECT o.id, o.ordnumber, o.transdate, o.reqdate, | .
-    qq|  o.amount, ct.${vc}number, ct.name, o.netamount, o.${vc}_id, o.globalproject_id, | .
+    qq|SELECT o.id, o.ordnumber, o.transdate, o.reqdate | .
+    $amount_columns .
+    qq|  , ct.${vc}number, ct.name, o.${vc}_id, o.globalproject_id, | .
     qq|  o.closed, o.delivered, o.quonumber, o.cusordnumber, o.shippingpoint, o.shipvia, | .
     qq|  o.transaction_description, | .
-    qq|  o.marge_total, o.marge_percent, | .
+    qq|  o.exchangerate, | .
     qq|  o.itime::DATE AS insertdate, | .
-    qq|  ex.$rate AS exchangerate, | .
+    qq|  o.intnotes,| .
+    qq|  o.vendor_confirmation_number,| .
+    qq|  department.description as department, | .
+    qq|  ex.$rate AS daily_exchangerate, | .
     qq|  pt.description AS payment_terms, | .
+    qq|  dt.description AS delivery_terms, | .
     qq|  pr.projectnumber AS globalprojectnumber, | .
     qq|  e.name AS employee, s.name AS salesman, | .
-    qq|  ct.${vc}number AS vcnumber, ct.country, ct.ustid, ct.business_id,  | .
-    qq|  tz.description AS taxzone | .
+    qq|  ct.${vc}number AS vcnumber, countries.$country_description_key AS country, ct.ustid, ct.business_id,  | .
+    qq|  tz.description AS taxzone, | .
+    qq|  shipto.shiptoname, shipto.shiptodepartment_1, shipto.shiptodepartment_2, | .
+    qq|  shipto.shiptostreet, shipto.shiptozipcode, shipto.shiptocity, sc.$country_description_key AS shiptocountry, | .
+    qq|  order_statuses.name AS order_status | .
     $periodic_invoices_columns .
-    qq|  , o.order_probability, o.expected_billing_date, (o.netamount * o.order_probability / 100) AS expected_netamount | .
+    $phone_notes_columns .
+    qq|  , o.order_probability, o.expected_billing_date, | .
+    qq|  (employee_id = (SELECT id FROM employee WHERE login = ?)) AS is_own  | .
     qq|FROM oe o | .
     qq|JOIN $vc ct ON (o.${vc}_id = ct.id) | .
     qq|LEFT JOIN contacts cp ON (o.cp_id = cp.cp_id) | .
@@ -133,10 +177,23 @@ sub transactions {
     qq|  AND ex.transdate = o.transdate) | .
     qq|LEFT JOIN project pr ON (o.globalproject_id = pr.id) | .
     qq|LEFT JOIN payment_terms pt ON (pt.id = o.payment_id)| .
+    qq|LEFT JOIN delivery_terms dt ON (dt.id = o.delivery_term_id)| .
     qq|LEFT JOIN tax_zones tz ON (o.taxzone_id = tz.id) | .
+    qq|LEFT JOIN countries ON (ct.country_id = countries.id) | .
+    qq|LEFT JOIN department   ON (o.department_id = department.id) | .
+    qq|LEFT JOIN order_statuses ON (o.order_status_id = order_statuses.id) | .
+    qq|LEFT JOIN shipto ON (
+        (o.shipto_id = shipto.shipto_id) or
+        (o.id = shipto.trans_id and shipto.module = 'OE')
+       )| .
+    qq|LEFT JOIN countries sc ON (shipto.shiptocountry_id = sc.id)| .
     qq|$periodic_invoices_joins | .
-    qq|WHERE (o.quotation = ?) |;
-  push(@values, $quotation);
+    $phone_notes_join .
+    qq|WHERE (o.record_type = ?) |;
+
+
+  push @values, $::myconfig{login};
+  push(@values, $record_type);
 
   if ($form->{department_id}) {
     $query .= qq| AND o.department_id = ?|;
@@ -145,7 +202,7 @@ sub transactions {
 
   if ($form->{"project_id"}) {
     $query .=
-      qq|AND ((globalproject_id = ?) OR EXISTS | .
+      qq| AND ((globalproject_id = ?) OR EXISTS | .
       qq|  (SELECT * FROM orderitems oi | .
       qq|   WHERE oi.project_id = ? AND oi.trans_id = o.id))|;
     push(@values, conv_i($form->{"project_id"}), conv_i($form->{"project_id"}));
@@ -181,7 +238,8 @@ SQL
     push(@values, (like($form->{"cp_name"}))x2);
   }
 
-  if (!$main::auth->assert('sales_all_edit', 1)) {
+  if ( !(    ($vc eq 'customer' && ($main::auth->assert('sales_all_edit',    1) || $main::auth->assert('sales_order_view',    1)))
+          || ($vc eq 'vendor'   && ($main::auth->assert('purchase_all_edit', 1) || $main::auth->assert('purchase_order_view', 1))) ) ) {
     $query .= " AND o.employee_id = (select id from employee where login= ?)";
     push @values, $::myconfig{login};
   }
@@ -215,6 +273,11 @@ SQL
   if ($form->{cusordnumber}) {
     $query .= qq| AND o.cusordnumber ILIKE ?|;
     push(@values, like($form->{cusordnumber}));
+  }
+
+  if ($form->{vendor_confirmation_number}) {
+    $query .= qq| AND o.vendor_confirmation_number ILIKE ?|;
+    push(@values, like($form->{vendor_confirmation_number}));
   }
 
   if($form->{transdatefrom}) {
@@ -257,6 +320,16 @@ SQL
     push(@values, $form->{taxzone_id});
   }
 
+  if ($form->{payment_term_id}) {
+    $query .= qq| AND o.payment_id = ?|;
+    push(@values, $form->{payment_term_id});
+  }
+
+  if ($form->{delivery_term_id}) {
+    $query .= qq| AND o.delivery_term_id = ?|;
+    push(@values, $form->{delivery_term_id});
+  }
+
   if ($form->{transaction_description}) {
     $query .= qq| AND o.transaction_description ILIKE ?|;
     push(@values, like($form->{transaction_description}));
@@ -287,6 +360,64 @@ SQL
     push @values, conv_date($form->{expected_billing_date_to});
   }
 
+  if ($form->{intnotes}) {
+    $query .= qq| AND o.intnotes ILIKE ?|;
+    push(@values, like($form->{intnotes}));
+  }
+
+  if ($form->{order_status_id}) {
+    $query .= qq| AND o.order_status_id = ?|;
+    push(@values, $form->{order_status_id});
+  }
+
+  if ($form->{phone_notes}) {
+    $query .= qq| AND (phone_notes.subject ILIKE ? OR regexp_replace(phone_notes.body, '<[^>]*>', '', 'g') ILIKE ?)|;
+    push(@values, like($form->{phone_notes}), like($form->{phone_notes}));
+  }
+
+  $form->{fulltext} = trim($form->{fulltext});
+  if ($form->{fulltext}) {
+    my @fulltext_fields = qw(o.notes
+                             o.intnotes
+                             o.shippingpoint
+                             o.shipvia
+                             o.transaction_description
+                             o.quonumber
+                             o.ordnumber
+                             o.cusordnumber
+                             o.vendor_confirmation_number);
+    $query .= ' AND (';
+    $query .= join ' OR ', map {"$_ ILIKE ?"} @fulltext_fields;
+
+    $query .= <<SQL;
+      OR EXISTS (
+        SELECT files.id FROM files LEFT JOIN file_full_texts ON (file_full_texts.file_id = files.id)
+          WHERE files.object_id = o.id AND files.object_type = 'sales_order'
+            AND file_full_texts.full_text ILIKE ?)
+SQL
+
+    $query .= <<SQL;
+      OR EXISTS (
+        SELECT notes.id FROM notes
+          WHERE notes.trans_id = o.id AND notes.trans_module LIKE 'oe'
+            AND (notes.subject ILIKE ? OR regexp_replace(notes.body, '<[^>]*>', '', 'g') ILIKE ?))
+SQL
+
+    $query .= <<SQL;
+      OR EXISTS (
+        SELECT follow_up_links.id FROM follow_up_links
+          WHERE follow_up_links.trans_id = o.id AND trans_type = 'sales_order'
+            AND EXISTS (
+              SELECT notes.id FROM notes
+                WHERE trans_module LIKE 'fu' AND trans_id = follow_up_links.follow_up_id
+                  AND (notes.subject ILIKE ? OR notes.body ILIKE ?)))
+SQL
+
+    $query .= ')';
+
+    push(@values, like($form->{fulltext})) for 1 .. (scalar @fulltext_fields) + 5;
+  }
+
   if ($form->{parts_partnumber}) {
     $query .= <<SQL;
       AND EXISTS (
@@ -312,6 +443,35 @@ SQL
       )
 SQL
     push @values, like($form->{parts_description});
+  }
+
+  if ($form->{shiptoname}) {
+    $query .= " AND shipto.shiptoname ILIKE ?";
+    push(@values, like($form->{shiptoname}));
+  }
+  if ($form->{shiptodepartment_1}) {
+    $query .= " AND shipto.shiptodepartment_1 ILIKE ?";
+    push(@values, like($form->{shiptodepartment_1}));
+  }
+  if ($form->{shiptodepartment_2}) {
+    $query .= " AND shipto.shiptodepartment_2 ILIKE ?";
+    push(@values, like($form->{shiptodepartment_2}));
+  }
+  if ($form->{shiptostreet}) {
+    $query .= " AND shipto.shiptostreet ILIKE ?";
+    push(@values, like($form->{shiptostreet}));
+  }
+  if ($form->{shiptozipcode}) {
+    $query .= " AND shipto.shiptozipcode ILIKE ?";
+    push(@values, like($form->{shiptozipcode}));
+  }
+  if ($form->{shiptocity}) {
+    $query .= " AND shipto.shiptocity ILIKE ?";
+    push(@values, like($form->{shiptocity}));
+  }
+  if ($form->{shiptocountry_id}) {
+    $query .= " AND shipto.shiptocountry_id = ?";
+    push(@values, conv_i($form->{shiptocountry_id}));
   }
 
   if ($form->{all}) {
@@ -353,6 +513,11 @@ SQL
     "insertdate"              => "o.itime",
     "taxzone"                 => "tz.description",
     "payment_terms"           => "pt.description",
+    "delivery_terms"          => "dt.description",
+    "department"              => "department.description",
+    "intnotes"                => "o.intnotes",
+    "order_status"            => "order_statuses.name",
+    "vendor_confirmation_number" => "o.vendor_confirmation_number",
   );
   if ($form->{sort} && grep($form->{sort}, keys(%allowed_sort_columns))) {
     $sortorder = $allowed_sort_columns{$form->{sort}} . " ${sortdir}"  . ", o.itime ${sortdir}";
@@ -366,16 +531,46 @@ SQL
   my %id = ();
   $form->{OE} = [];
   while (my $ref = $sth->fetchrow_hashref("NAME_lc")) {
-    $ref->{billed_amount}    = $billed_amount{$ref->{id}};
-    $ref->{billed_netamount} = $billed_netamount{$ref->{id}};
-    $ref->{remaining_amount} = $ref->{amount} - $ref->{billed_amount};
-    $ref->{remaining_netamount} = $ref->{netamount} - $ref->{billed_netamount};
-    $ref->{exchangerate} = 1 unless $ref->{exchangerate};
+    if (!$form->{hide_amounts}) {
+      $ref->{billed_amount}    = $billed_amount{$ref->{id}};
+      $ref->{billed_netamount} = $billed_netamount{$ref->{id}};
+      if ($ref->{billed_amount} < 0) { # case: credit note(s) higher than invoices
+        $ref->{remaining_amount} = $ref->{amount} + $ref->{billed_amount};
+        $ref->{remaining_netamount} = $ref->{netamount} + $ref->{billed_netamount};
+      } else {
+        $ref->{remaining_amount} = $ref->{amount} - $ref->{billed_amount};
+        $ref->{remaining_netamount} = $ref->{netamount} - $ref->{billed_netamount};
+      }
+    }
+
+    $ref->{exchangerate} ||= $ref->{daily_exchangerate};
+    $ref->{exchangerate} ||= 1;
+
     push @{ $form->{OE} }, $ref if $ref->{id} != $id{ $ref->{id} };
     $id{ $ref->{id} } = $ref->{id};
   }
 
   $sth->finish;
+
+  if ($form->{l_items} && scalar @{ $form->{OE} }) {
+    my ($items_query, $items_sth);
+    if ($form->{l_items}) {
+      $items_query =
+        qq|SELECT id
+          FROM orderitems
+          WHERE trans_id  = ?
+          ORDER BY position|;
+
+      $items_sth = prepare_query($form, $dbh, $items_query);
+    }
+
+    foreach my $oe (@{ $form->{OE} }) {
+      do_statement($form, $items_sth, $items_query, $oe->{id});
+      $oe->{item_ids} = $dbh->selectcol_arrayref($items_sth);
+      $oe->{item_ids} = undef if !@{$oe->{item_ids}};
+    }
+    $items_sth->finish();
+  }
 
   $main::lxdebug->leave_sub();
 }
@@ -383,19 +578,33 @@ SQL
 sub transactions_for_todo_list {
   $main::lxdebug->enter_sub();
 
-  my $self     = shift;
-  my %params   = @_;
+  my $self                   = shift;
+  my %params                 = @_;
 
-  my $myconfig = \%main::myconfig;
-  my $form     = $main::form;
+  my $myconfig               = \%main::myconfig;
+  my $form                   = $main::form;
 
-  my $dbh      = $params{dbh} || $form->get_standard_dbh($myconfig);
+  my $dbh                    = $params{dbh} || $form->get_standard_dbh($myconfig);
 
-  my $query    = qq|SELECT id FROM employee WHERE login = ?|;
-  my ($e_id)   = selectrow_query($form, $dbh, $query, $::myconfig{login});
+  my $query                  = qq|SELECT id FROM employee WHERE login = ?|;
+  my ($e_id)                 = selectrow_query($form, $dbh, $query, $::myconfig{login});
 
-  $query       =
-    qq|SELECT oe.id, oe.transdate, oe.reqdate, oe.quonumber, oe.transaction_description, oe.amount,
+  my @record_types;
+  if ($params{orders_mode}) {
+    push @record_types, 'sales_order'       if $params{sales};
+    push @record_types, 'purchase_order'    if $params{purchase};
+  } else {
+    push @record_types, 'sales_quotation'   if $params{sales};
+    push @record_types, 'request_quotation' if $params{purchase};
+  }
+
+  my $record_types_filter    = '(' . join(' OR ', map { "oe.record_type = '$_'" } @record_types) . ') ';
+
+  my $config_days            = $::instance_conf->get_todo_oe_overdue_days;
+  my $reference_date         = DateTime->today_local->subtract(days => $config_days)->to_kivitendo;
+
+  $query                     =
+    qq|SELECT oe.id, oe.transdate, oe.reqdate, oe.ordnumber, oe.quonumber, oe.transaction_description, oe.amount,
          CASE WHEN (COALESCE(oe.customer_id, 0) = 0) THEN 'vendor' ELSE 'customer' END AS vc,
          c.name AS customer,
          v.name AS vendor,
@@ -404,411 +613,18 @@ sub transactions_for_todo_list {
        LEFT JOIN customer c ON (oe.customer_id = c.id)
        LEFT JOIN vendor v   ON (oe.vendor_id   = v.id)
        LEFT JOIN employee e ON (oe.employee_id = e.id)
-       WHERE (COALESCE(quotation, FALSE) = TRUE)
+       WHERE $record_types_filter
          AND (COALESCE(closed,    FALSE) = FALSE)
          AND ((oe.employee_id = ?) OR (oe.salesman_id = ?))
          AND NOT (oe.reqdate ISNULL)
-         AND (oe.reqdate < current_date)
+         AND (oe.reqdate < ?)
        ORDER BY transdate|;
 
-  my $quotations = selectall_hashref_query($form, $dbh, $query, $e_id, $e_id);
+  my $quotations = selectall_hashref_query($form, $dbh, $query, $e_id, $e_id, conv_date($reference_date));
 
   $main::lxdebug->leave_sub();
 
   return $quotations;
-}
-
-sub save {
-  my ($self, $myconfig, $form) = @_;
-  $main::lxdebug->enter_sub();
-
-  my $rc = SL::DB->client->with_transaction(\&_save, $self, $myconfig, $form);
-
-  $::lxdebug->leave_sub;
-
-  return $rc;
-}
-
-sub _save {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $myconfig, $form) = @_;
-
-  my $dbh = SL::DB->client->dbh;
-  my $restricter = SL::HTML::Restrict->create;
-
-  my ($query, @values, $sth, $null);
-  my $exchangerate = 0;
-
-  my $all_units = AM->retrieve_units($myconfig, $form);
-  $form->{all_units} = $all_units;
-
-  my $ic_cvar_configs = CVar->get_configs(module => 'IC',
-                                          dbh    => $dbh);
-
-  $form->{employee_id} = (split /--/, $form->{employee})[1] if !$form->{employee_id};
-  unless ($form->{employee_id}) {
-    $form->get_employee($dbh);
-  }
-
-  my $ml = ($form->{type} eq 'sales_order') ? 1 : -1;
-
-  my $number_field         = $form->{type} =~ m{order} ? 'ordnumber' : 'quonumber';
-  my $trans_number         = SL::TransNumber->new(type => $form->{type}, dbh => $dbh, number => $form->{$number_field}, id => $form->{id});
-  $form->{$number_field} ||= $trans_number->create_unique; # set $form->{ordnumber} or $form->{quonumber}
-
-  if ($form->{id}) {
-    $query = qq|DELETE FROM custom_variables
-                WHERE (config_id IN (SELECT id        FROM custom_variable_configs WHERE (module = 'ShipTo')))
-                  AND (trans_id  IN (SELECT shipto_id FROM shipto                  WHERE (module = 'OE') AND (trans_id = ?)))|;
-    do_query($form, $dbh, $query, $form->{id});
-
-    $query = qq|DELETE FROM shipto | .
-             qq|WHERE trans_id = ? AND module = 'OE'|;
-    do_query($form, $dbh, $query, $form->{id});
-
-  } else {
-
-    $query = qq|SELECT nextval('id')|;
-    ($form->{id}) = selectrow_query($form, $dbh, $query);
-
-    $query = qq|INSERT INTO oe (id, ordnumber, employee_id, currency_id, taxzone_id) VALUES (?, '', ?, (SELECT currency_id FROM defaults), ?)|;
-    do_query($form, $dbh, $query, $form->{id}, $form->{employee_id}, $form->{taxzone_id});
-  }
-
-  my $amount    = 0;
-  my $linetotal = 0;
-  my $discount  = 0;
-  my $project_id;
-  my $reqdate;
-  my $taxrate;
-  my $taxbase;
-  my $taxdiff;
-  my $taxamount = 0;
-  my $fxsellprice;
-  my %taxbase;
-  my @taxaccounts;
-  my %taxaccounts;
-  my $netamount = 0;
-  my @processed_orderitems;
-
-  $form->get_lists('price_factors' => 'ALL_PRICE_FACTORS');
-  my %price_factors = map { $_->{id} => $_->{factor} } @{ $form->{ALL_PRICE_FACTORS} };
-  my $price_factor;
-
-  for my $i (1 .. $form->{rowcount}) {
-
-    map({ $form->{"${_}_$i"} = $form->parse_amount($myconfig, $form->{"${_}_$i"}) } qw(qty ship));
-
-    if ($form->{"id_$i"}) {
-
-      # get item baseunit
-      $query = qq|SELECT unit FROM parts WHERE id = ?|;
-      my ($item_unit) = selectrow_query($form, $dbh, $query, $form->{"id_$i"});
-
-      my $basefactor = 1;
-      if (defined($all_units->{$item_unit}->{factor}) &&
-          (($all_units->{$item_unit}->{factor} * 1) != 0)) {
-        $basefactor = $all_units->{$form->{"unit_$i"}}->{factor} / $all_units->{$item_unit}->{factor};
-      }
-      my $baseqty = $form->{"qty_$i"} * $basefactor;
-
-      $form->{"marge_percent_$i"} = $form->parse_amount($myconfig, $form->{"marge_percent_$i"}) * 1;
-      $form->{"marge_absolut_$i"} = $form->parse_amount($myconfig, $form->{"marge_absolut_$i"}) * 1;
-
-      $form->{"lastcost_$i"} = $form->parse_amount($myconfig, $form->{"lastcost_$i"});
-
-      # keep entered selling price
-      my $fxsellprice =
-        $form->parse_amount($myconfig, $form->{"sellprice_$i"});
-
-      my ($dec) = ($fxsellprice =~ /\.(\d+)/);
-      $dec = length $dec;
-      my $decimalplaces = ($dec > 2) ? $dec : 2;
-
-      # undo discount formatting
-      $form->{"discount_$i"} = $form->parse_amount($myconfig, $form->{"discount_$i"}) / 100;
-
-      # deduct discount
-      $form->{"sellprice_$i"} = $fxsellprice * (1 - $form->{"discount_$i"});
-
-      # round linetotal at least to 2 decimal places
-      $price_factor = $price_factors{ $form->{"price_factor_id_$i"} } || 1;
-      $linetotal    = $form->round_amount($form->{"sellprice_$i"} * $form->{"qty_$i"} / $price_factor, 2);
-
-      $form->{"inventory_accno_$i"} *= 1;
-      $form->{"expense_accno_$i"}   *= 1;
-
-      @taxaccounts = split(/ /, $form->{"taxaccounts_$i"});
-      $taxrate     = 0;
-      $taxdiff     = 0;
-
-      map { $taxrate += $form->{"${_}_rate"} } @taxaccounts;
-
-      if ($form->{taxincluded}) {
-        $taxamount = $linetotal * $taxrate / (1 + $taxrate);
-        $taxbase   = $linetotal - $taxamount;
-
-        # we are not keeping a natural price, do not round
-        $form->{"sellprice_$i"} =
-          $form->{"sellprice_$i"} * (1 / (1 + $taxrate));
-      } else {
-        $taxamount = $linetotal * $taxrate;
-        $taxbase   = $linetotal;
-      }
-
-      if ($form->round_amount($taxrate, 7) == 0) {
-        if ($form->{taxincluded}) {
-          foreach my $item (@taxaccounts) {
-            $taxamount = $form->round_amount($linetotal * $form->{"${item}_rate"} / (1 + abs($form->{"${item}_rate"})), 2);
-            $taxaccounts{$item} += $taxamount;
-            $taxdiff            += $taxamount;
-            $taxbase{$item}     += $taxbase;
-          }
-          $taxaccounts{ $taxaccounts[0] } += $taxdiff;
-        } else {
-          foreach my $item (@taxaccounts) {
-            $taxaccounts{$item} += $linetotal * $form->{"${item}_rate"};
-            $taxbase{$item}     += $taxbase;
-          }
-        }
-      } else {
-        foreach my $item (@taxaccounts) {
-          $taxaccounts{$item} += $taxamount * $form->{"${item}_rate"} / $taxrate;
-          $taxbase{$item} += $taxbase;
-        }
-      }
-
-      $netamount += $form->{"sellprice_$i"} * $form->{"qty_$i"} / $price_factor;
-
-      $reqdate = ($form->{"reqdate_$i"}) ? $form->{"reqdate_$i"} : undef;
-
-      # Get pricegroup_id and save it. Unfortunately the interface
-      # also uses ID "0" for signalling that none is selected, but "0"
-      # must not be stored in the database. Therefore we cannot simply
-      # use conv_i().
-      ($null, my $pricegroup_id) = split(/--/, $form->{"sellprice_pg_$i"});
-      $pricegroup_id *= 1;
-      $pricegroup_id  = undef if !$pricegroup_id;
-
-      # force new project, if not set yet
-      if ($::instance_conf->get_order_always_project && !$form->{"globalproject_id"} && ($form->{type} eq 'sales_order')) {
-        require SL::DB::Customer;
-        my $customer = SL::DB::Manager::Customer->find_by(id => $form->{customer_id});
-        die "Can't find customer" unless $customer;
-        my $new_project = SL::DB::Project->new(
-          projectnumber     => $form->{ordnumber},
-          description       => $customer->name,
-          customer_id       => $customer->id,
-          active            => 1,
-          project_type_id   => $::instance_conf->get_project_type_id,
-          project_status_id => $::instance_conf->get_project_status_id,
-        );
-        $new_project->save;
-        $form->{"globalproject_id"} = $new_project->id;
-      };
-
-      CVar->get_non_editable_ic_cvars(form               => $form,
-                                      dbh                => $dbh,
-                                      row                => $i,
-                                      sub_module         => 'orderitems',
-                                      may_converted_from => ['orderitems', 'invoice']);
-
-      my $position = $i;
-
-      # save detail record in orderitems table
-      if (! $form->{"orderitems_id_$i"}) {
-        $query = qq|SELECT nextval('orderitemsid')|;
-        ($form->{"orderitems_id_$i"}) = selectrow_query($form, $dbh, $query);
-
-        $query = qq|INSERT INTO orderitems (id, position) VALUES (?, ?)|;
-        do_query($form, $dbh, $query, $form->{"orderitems_id_$i"}, conv_i($position));
-      }
-
-      my $orderitems_id = $form->{"orderitems_id_$i"};
-      push @processed_orderitems, $orderitems_id;
-
-       $query = <<SQL;
-         UPDATE orderitems SET
-          trans_id = ?, position = ?, parts_id = ?, description = ?, longdescription = ?, qty = ?, base_qty = ?,
-          sellprice = ?, discount = ?, unit = ?, reqdate = ?, project_id = ?, serialnumber = ?, ship = ?,
-          pricegroup_id = ?, subtotal = ?,
-          marge_percent = ?, marge_total = ?, lastcost = ?, price_factor_id = ?,
-          active_price_source = ?, active_discount_source = ?,
-          price_factor = (SELECT factor FROM price_factors WHERE id = ?), marge_price_factor = ?
-        WHERE id = ?
-SQL
-      @values = (
-           conv_i($form->{id}), conv_i($position), conv_i($form->{"id_$i"}),
-           $form->{"description_$i"}, $restricter->process($form->{"longdescription_$i"}),
-           $form->{"qty_$i"}, $baseqty,
-           $fxsellprice, $form->{"discount_$i"},
-           $form->{"unit_$i"}, conv_date($reqdate), conv_i($form->{"project_id_$i"}),
-           $form->{"serialnumber_$i"}, $form->{"ship_$i"},
-           $pricegroup_id, $form->{"subtotal_$i"} ? 't' : 'f',
-           $form->{"marge_percent_$i"}, $form->{"marge_absolut_$i"},
-           $form->{"lastcost_$i"}, conv_i($form->{"price_factor_id_$i"}),
-           $form->{"active_price_source_$i"}, $form->{"active_discount_source_$i"},
-           conv_i($form->{"price_factor_id_$i"}), conv_i($form->{"marge_price_factor_$i"}),
-           conv_i($orderitems_id),
-      );
-
-      do_query($form, $dbh, $query, @values);
-
-      $form->{"sellprice_$i"} = $fxsellprice;
-      $form->{"discount_$i"} *= 100;
-
-      CVar->save_custom_variables(module       => 'IC',
-                                  sub_module   => 'orderitems',
-                                  trans_id     => $orderitems_id,
-                                  configs      => $ic_cvar_configs,
-                                  variables    => $form,
-                                  name_prefix  => 'ic_',
-                                  name_postfix => "_$i",
-                                  dbh          => $dbh);
-
-      # link previous items with orderitems
-      # assume we have a new workflow if we link from invoice or order to quotation
-      # unluckily orderitems are used for quotation and orders - therefore one more
-      # check to be sure NOT to link from order to quotation
-      foreach (qw(orderitems)) {
-        if (!$form->{saveasnew} && !$form->{useasnew} && $form->{"converted_from_${_}_id_$i"}
-              && $form->{type} !~ 'quotation') {
-          RecordLinks->create_links('dbh'        => $dbh,
-                                    'mode'       => 'ids',
-                                    'from_table' => $_,
-                                    'from_ids'   => $form->{"converted_from_${_}_id_$i"},
-                                    'to_table'   => 'orderitems',
-                                    'to_id'      => $orderitems_id,
-          );
-        }
-        delete $form->{"converted_from_${_}_id_$i"};
-      }
-    }
-  }
-
-  # search for orphaned ids
-  $query  = sprintf 'SELECT id FROM orderitems WHERE trans_id = ? AND NOT id IN (%s)', join ', ', ("?") x scalar @processed_orderitems;
-  @values = (conv_i($form->{id}), map { conv_i($_) } @processed_orderitems);
-  my @orphaned_ids = map { $_->{id} } selectall_hashref_query($form, $dbh, $query, @values);
-
-  if (scalar @orphaned_ids) {
-    # clean up orderitems
-    $query  = sprintf 'DELETE FROM orderitems WHERE id IN (%s)', join ', ', ("?") x scalar @orphaned_ids;
-    do_query($form, $dbh, $query, @orphaned_ids);
-  }
-
-  $reqdate = ($form->{reqdate}) ? $form->{reqdate} : undef;
-
-  # add up the tax
-  my $tax = 0;
-  map { $tax += $form->round_amount($taxaccounts{$_}, 2) } keys %taxaccounts;
-
-  $amount = $form->round_amount($netamount + $tax, 2, 1);
-  $netamount = $form->round_amount($netamount, 2);
-
-  if ($form->{currency} eq $form->{defaultcurrency}) {
-    $form->{exchangerate} = 1;
-  } else {
-    $exchangerate = $form->check_exchangerate($myconfig, $form->{currency}, $form->{transdate}, ($form->{vc} eq 'customer') ? 'buy' : 'sell');
-  }
-
-  # from inputfield (exchangerate) or hidden (forex)
-  my $exchangerate_from_form = $form->{forex} || $form->parse_amount($myconfig, $form->{exchangerate});
-
-  $form->{exchangerate} = $exchangerate || $exchangerate_from_form;
-
-  my $quotation = $form->{type} =~ /_order$/ ? 'f' : 't';
-
-  # save OE record
-  $query =
-    qq|UPDATE oe SET
-         ordnumber = ?, quonumber = ?, cusordnumber = ?, transdate = ?, vendor_id = ?,
-         customer_id = ?, amount = ?, netamount = ?, reqdate = ?, taxincluded = ?,
-         shippingpoint = ?, shipvia = ?, notes = ?, intnotes = ?, currency_id = (SELECT id FROM currencies WHERE name=?), closed = ?,
-         delivered = ?, proforma = ?, quotation = ?, department_id = ?, language_id = ?,
-         taxzone_id = ?, shipto_id = ?, payment_id = ?, delivery_vendor_id = ?, delivery_customer_id = ?,delivery_term_id = ?,
-         globalproject_id = ?, employee_id = ?, salesman_id = ?, cp_id = ?, transaction_description = ?, marge_total = ?, marge_percent = ?
-         , order_probability = ?, expected_billing_date = ?
-       WHERE id = ?|;
-
-  @values = ($form->{ordnumber} || '', $form->{quonumber},
-             $form->{cusordnumber}, conv_date($form->{transdate}),
-             conv_i($form->{vendor_id}), conv_i($form->{customer_id}),
-             $amount, $netamount, conv_date($reqdate),
-             $form->{taxincluded} ? 't' : 'f', $form->{shippingpoint},
-             $form->{shipvia}, $restricter->process($form->{notes}), $form->{intnotes},
-             $form->{currency}, $form->{closed} ? 't' : 'f',
-             $form->{delivered} ? "t" : "f", $form->{proforma} ? 't' : 'f',
-             $quotation, conv_i($form->{department_id}),
-             conv_i($form->{language_id}), conv_i($form->{taxzone_id}),
-             conv_i($form->{shipto_id}), conv_i($form->{payment_id}),
-             conv_i($form->{delivery_vendor_id}),
-             conv_i($form->{delivery_customer_id}),
-             conv_i($form->{delivery_term_id}),
-             conv_i($form->{globalproject_id}), conv_i($form->{employee_id}),
-             conv_i($form->{salesman_id}), conv_i($form->{cp_id}),
-             $form->{transaction_description},
-             $form->{marge_total} * 1, $form->{marge_percent} * 1,
-             $form->{order_probability} * 1, conv_date($form->{expected_billing_date}),
-             conv_i($form->{id}));
-  do_query($form, $dbh, $query, @values);
-
-  $form->new_lastmtime('oe');
-
-  $form->{ordtotal} = $amount;
-
-  $form->{name} = $form->{ $form->{vc} };
-  $form->{name} =~ s/--\Q$form->{"$form->{vc}_id"}\E//;
-
-  # add shipto
-  if (!$form->{shipto_id}) {
-    $form->add_shipto($dbh, $form->{id}, "OE");
-  }
-
-  # save printed, emailed, queued
-  $form->save_status($dbh);
-
-  # Link this record to the records it was created from.
-  $form->{convert_from_oe_ids} =~ s/^\s+//;
-  $form->{convert_from_oe_ids} =~ s/\s+$//;
-  my @convert_from_oe_ids      =  split m/\s+/, $form->{convert_from_oe_ids};
-  delete $form->{convert_from_oe_ids};
-  if (!$form->{useasnew} && scalar @convert_from_oe_ids) {
-    RecordLinks->create_links('dbh'        => $dbh,
-                              'mode'       => 'ids',
-                              'from_table' => 'oe',
-                              'from_ids'   => \@convert_from_oe_ids,
-                              'to_table'   => 'oe',
-                              'to_id'      => $form->{id},
-      );
-    $self->_close_quotations_rfqs('dbh'     => $dbh,
-                                  'from_id' => \@convert_from_oe_ids,
-                                  'to_id'   => $form->{id});
-  }
-
-  if (($form->{currency} ne $form->{defaultcurrency}) && !$exchangerate) {
-    if ($form->{vc} eq 'customer') {
-      $form->update_exchangerate($dbh, $form->{currency}, $form->{transdate}, $form->{exchangerate}, 0);
-    }
-    if ($form->{vc} eq 'vendor') {
-      $form->update_exchangerate($dbh, $form->{currency}, $form->{transdate}, 0, $form->{exchangerate});
-    }
-  }
-
-  $form->{saved_xyznumber} = $form->{$form->{type} =~ /_quotation$/ ?
-                                       "quonumber" : "ordnumber"};
-
-  Common::webdav_folder($form);
-
-  $self->save_periodic_invoices_config(dbh         => $dbh,
-                                       oe_id       => $form->{id},
-                                       config_yaml => $form->{periodic_invoices_config})
-    if ($form->{type} eq 'sales_order');
-
-  $main::lxdebug->leave_sub();
-
-  return 1;
 }
 
 sub save_periodic_invoices_config {
@@ -816,7 +632,7 @@ sub save_periodic_invoices_config {
 
   return if !$params{oe_id};
 
-  my $config = $params{config_yaml} ? YAML::Load($params{config_yaml}) : undef;
+  my $config = $params{config_yaml} ? SL::YAML::Load($params{config_yaml}) : undef;
   return if 'HASH' ne ref $config;
 
   my $obj  = SL::DB::Manager::PeriodicInvoicesConfig->find_by(oe_id => $params{oe_id})
@@ -836,77 +652,9 @@ sub load_periodic_invoice_config {
     if ($config_obj) {
       my $config = { map { $_ => $config_obj->$_ } qw(active terminated periodicity order_value_periodicity start_date_as_date end_date_as_date first_billing_date_as_date extend_automatically_by ar_chart_id
                                                       print printer_id copies direct_debit send_email email_recipient_contact_id email_recipient_address email_sender email_subject email_body) };
-      $form->{periodic_invoices_config} = YAML::Dump($config);
+      $form->{periodic_invoices_config} = SL::YAML::Dump($config);
     }
   }
-}
-
-sub _close_quotations_rfqs {
-  $main::lxdebug->enter_sub();
-
-  my $self     = shift;
-  my %params   = @_;
-
-  Common::check_params(\%params, qw(from_id to_id));
-
-  my $myconfig = \%main::myconfig;
-  my $form     = $main::form;
-
-  my $dbh      = $params{dbh} || SL::DB->client->dbh;
-
-  SL::DB->client->with_transaction(sub {
-
-    my $query    = qq|SELECT quotation FROM oe WHERE id = ?|;
-    my $sth      = prepare_query($form, $dbh, $query);
-
-    do_statement($form, $sth, $query, conv_i($params{to_id}));
-
-    my ($quotation) = $sth->fetchrow_array();
-
-    if ($quotation) {
-      return 1;
-    }
-
-    my @close_ids;
-
-    foreach my $from_id (@{ $params{from_id} }) {
-      $from_id = conv_i($from_id);
-      do_statement($form, $sth, $query, $from_id);
-      ($quotation) = $sth->fetchrow_array();
-      push @close_ids, $from_id if ($quotation);
-    }
-
-    $sth->finish();
-
-    if (scalar @close_ids) {
-      $query = qq|UPDATE oe SET closed = TRUE WHERE id IN (| . join(', ', ('?') x scalar @close_ids) . qq|)|;
-      do_query($form, $dbh, $query, @close_ids);
-    }
-    1;
-  }) or do { die SL::DB->client->error };
-
-  $main::lxdebug->leave_sub();
-}
-
-sub delete {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $myconfig, $form) = @_;
-
-  my $rc = SL::DB::Order->new->db->with_transaction(sub {
-    my @spoolfiles = grep { $_ } map { $_->spoolfile } @{ SL::DB::Manager::Status->get_all(where => [ trans_id => $form->{id} ]) };
-
-    SL::DB::Order->new(id => $form->{id})->delete;
-
-    my $spool = $::lx_office_conf{paths}->{spool};
-    unlink map { "$spool/$_" } @spoolfiles if $spool;
-
-    1;
-  }) or do { die SL::DB->client->error };
-
-  $main::lxdebug->leave_sub();
-
-  return $rc;
 }
 
 sub retrieve {
@@ -958,8 +706,14 @@ sub _retrieve {
   $form->{useasnew} = 1 if $is_collective_order == 1;
 
   if (!$form->{id}) {
-    my $extra_days     = $form->{type} eq 'sales_quotation' ? $::instance_conf->get_reqdate_interval : 1;
-    $form->{reqdate}   = DateTime->today_local->next_workday(extra_days => $extra_days)->to_kivitendo;
+    my $extra_days = $form->{type} eq 'sales_quotation' ? $::instance_conf->get_reqdate_interval       :
+                     $form->{type} eq 'sales_order'     ? $::instance_conf->get_delivery_date_interval : 1;
+    if (   ($form->{type} eq 'sales_order'     &&  !$::instance_conf->get_deliverydate_on)
+        || ($form->{type} eq 'sales_quotation' &&  !$::instance_conf->get_reqdate_on)) {
+      $form->{reqdate}   = '';
+    } else {
+      $form->{reqdate}   = DateTime->today_local->next_workday(extra_days => $extra_days)->to_kivitendo;
+    }
     $form->{transdate} = DateTime->today_local->to_kivitendo;
   }
 
@@ -997,10 +751,10 @@ sub _retrieve {
            o.taxincluded, o.shippingpoint, o.shipvia, o.notes, o.intnotes,
            (SELECT cu.name FROM currencies cu WHERE cu.id=o.currency_id) AS currency, e.name AS employee, o.employee_id, o.salesman_id,
            o.${vc}_id, cv.name AS ${vc}, o.amount AS invtotal,
-           o.closed, o.reqdate, o.quonumber, o.department_id, o.cusordnumber,
+           o.closed, o.reqdate, o.tax_point, o.quonumber, o.department_id, o.cusordnumber,
            o.mtime, o.itime,
            d.description AS department, o.payment_id, o.language_id, o.taxzone_id,
-           o.delivery_customer_id, o.delivery_vendor_id, o.proforma, o.shipto_id,
+           o.delivery_customer_id, o.delivery_vendor_id, o.proforma, o.shipto_id, o.billing_address_id,
            o.globalproject_id, o.delivered, o.transaction_description, o.delivery_term_id,
            o.itime::DATE AS insertdate, o.order_probability, o.expected_billing_date
          FROM oe o
@@ -1076,9 +830,10 @@ sub _retrieve {
       map { $form->{$_} =~ s/ +$//g } qw(printed emailed queued);
     }    # if !@ids
 
-    my $transdate = $form->{transdate} ? $dbh->quote($form->{transdate}) : "current_date";
+    my $transdate = $form->{tax_point} ? $dbh->quote($form->{tax_point}) : $form->{transdate} ? $dbh->quote($form->{transdate}) : "current_date";
 
     $form->{taxzone_id} = 0 unless ($form->{taxzone_id});
+    unshift @values, ($form->{taxzone_id}) x 2;
 
     # retrieve individual items
     # this query looks up all information about the items
@@ -1093,22 +848,24 @@ sub _retrieve {
            p.classification_id,
            o.sellprice, o.parts_id AS id, o.unit, o.discount, p.notes AS partnotes, p.part_type,
            o.reqdate, o.project_id, o.serialnumber, o.ship, o.lastcost,
-           o.ordnumber, o.transdate, o.cusordnumber, o.subtotal, o.longdescription,
+           o.ordnumber, o.transdate, o.cusordnumber, o.subtotal, o.recurring_billing_mode, o.longdescription,
            o.price_factor_id, o.price_factor, o.marge_price_factor, o.active_price_source, o.active_discount_source,
            pr.projectnumber, p.formel,
-           pg.partsgroup, o.pricegroup_id, (SELECT pricegroup FROM pricegroup WHERE id=o.pricegroup_id) as pricegroup
+           pg.partsgroup, o.pricegroup_id, (SELECT pricegroup FROM pricegroup WHERE id=o.pricegroup_id) as pricegroup,
+           e.name as orderer, e.id as orderer_id
          FROM orderitems o
          JOIN parts p ON (o.parts_id = p.id)
          JOIN oe ON (o.trans_id = oe.id)
          LEFT JOIN chart c1 ON ((SELECT inventory_accno_id                   FROM buchungsgruppen WHERE id=p.buchungsgruppen_id) = c1.id)
-         LEFT JOIN chart c2 ON ((SELECT tc.income_accno_id FROM taxzone_charts tc WHERE tc.taxzone_id = '$form->{taxzone_id}' and tc.buchungsgruppen_id = p.buchungsgruppen_id) = c2.id)
-         LEFT JOIN chart c3 ON ((SELECT tc.expense_accno_id FROM taxzone_charts tc WHERE tc.taxzone_id = '$form->{taxzone_id}' and tc.buchungsgruppen_id = p.buchungsgruppen_id) = c3.id)
+         LEFT JOIN chart c2 ON ((SELECT tc.income_accno_id  FROM taxzone_charts tc WHERE tc.taxzone_id = ? and tc.buchungsgruppen_id = p.buchungsgruppen_id) = c2.id)
+         LEFT JOIN chart c3 ON ((SELECT tc.expense_accno_id FROM taxzone_charts tc WHERE tc.taxzone_id = ? and tc.buchungsgruppen_id = p.buchungsgruppen_id) = c3.id)
          LEFT JOIN project pr ON (o.project_id = pr.id)
-         LEFT JOIN partsgroup pg ON (p.partsgroup_id = pg.id) | .
+         LEFT JOIN partsgroup pg ON (p.partsgroup_id = pg.id)
+         LEFT JOIN employee e ON (o.orderer_id = e.id) | .
       ($form->{id}
        ? qq|WHERE o.trans_id = ?|
        : qq|WHERE o.trans_id IN (| . join(", ", map("?", @ids)) . qq|)|) .
-      qq|ORDER BY o.trans_id, o.position|;
+      qq| ORDER BY o.trans_id, o.position|;
 
     @ids = $form->{id} ? ($form->{id}) : @ids;
     $sth = prepare_execute_query($form, $dbh, $query, @values);
@@ -1176,8 +933,9 @@ sub _retrieve {
       # get tax rates and description
       my $accno_id = ($form->{vc} eq "customer") ? $ref->{income_accno} : $ref->{expense_accno};
       $query =
-        qq|SELECT c.accno, t.taxdescription, t.rate, t.taxnumber | .
-        qq|FROM tax t LEFT JOIN chart c on (c.id = t.chart_id) | .
+        qq|SELECT c.accno, t.taxdescription, t.rate, t.id as tax_id, c.accno as taxnumber | .
+        qq|FROM tax t | .
+        qq|LEFT JOIN chart c on (c.id = t.chart_id) | .
         qq|WHERE t.id IN (SELECT tk.tax_id FROM taxkeys tk | .
         qq|               WHERE tk.chart_id = (SELECT id FROM chart WHERE accno = ?) | .
         qq|                 AND startdate <= $transdate ORDER BY startdate DESC LIMIT 1) | .
@@ -1195,6 +953,7 @@ sub _retrieve {
           $form->{"$ptr->{accno}_rate"}        = $ptr->{rate};
           $form->{"$ptr->{accno}_description"} = $ptr->{taxdescription};
           $form->{"$ptr->{accno}_taxnumber"}   = $ptr->{taxnumber};
+          $form->{"$ptr->{accno}_tax_id"}      = $ptr->{tax_id};
           $form->{taxaccounts} .= "$ptr->{accno} ";
         }
 
@@ -1215,37 +974,13 @@ sub _retrieve {
 
   }
 
-  $form->{exchangerate} = $form->get_exchangerate($dbh, $form->{currency}, $form->{transdate}, ($form->{vc} eq 'customer') ? "buy" : "sell");
+  $form->{exchangerate} = $form->check_exchangerate($myconfig, $form->{currency}, $form->{transdate}, ($form->{vc} eq 'customer') ? "buy" : "sell");
 
   Common::webdav_folder($form);
 
   $self->load_periodic_invoice_config($form);
 
   return 1;
-}
-
-sub retrieve_simple {
-  $main::lxdebug->enter_sub();
-
-  my $self     = shift;
-  my %params   = @_;
-
-  Common::check_params(\%params, qw(id));
-
-  my $myconfig    = \%main::myconfig;
-  my $form        = $main::form;
-
-  my $dbh         = $params{dbh} || $form->get_standard_dbh($myconfig);
-
-  my $oe_query    = qq|SELECT * FROM oe         WHERE id = ?|;
-  my $oi_query    = qq|SELECT * FROM orderitems WHERE trans_id = ? ORDER BY position|;
-
-  my $order            = selectfirst_hashref_query($form, $dbh, $oe_query, conv_i($params{id}));
-  $order->{orderitems} = selectall_hashref_query(  $form, $dbh, $oi_query, conv_i($params{id}));
-
-  $main::lxdebug->leave_sub();
-
-  return $order;
 }
 
 sub order_details {
@@ -1266,9 +1001,9 @@ sub order_details {
   my $i;
   my @partsgroup = ();
   my $partsgroup;
-  my $position = 0;
-  my $subtotal_header = 0;
-  my $subposition = 0;
+  my $pos_level0 = 0;
+  my $pos_level1 = 0;
+  my $subtotal_active = 0;
   my %taxaccounts;
   my %taxbase;
   my $tax_rate;
@@ -1329,9 +1064,11 @@ sub order_details {
   my @arrays =
     qw(runningnumber number description longdescription qty qty_nofmt ship ship_nofmt unit bin
        partnotes serialnumber reqdate sellprice sellprice_nofmt listprice listprice_nofmt netprice netprice_nofmt
+       orderer
        discount discount_nofmt p_discount discount_sub discount_sub_nofmt nodiscount_sub nodiscount_sub_nofmt
        linetotal linetotal_nofmt nodiscount_linetotal nodiscount_linetotal_nofmt tax_rate projectnumber projectdescription
-       price_factor price_factor_name partsgroup weight weight_nofmt lineweight lineweight_nofmt);
+       price_factor price_factor_name partsgroup weight weight_nofmt lineweight lineweight_nofmt optional
+       );
 
   push @arrays, map { "ic_cvar_$_->{name}" } @{ $ic_cvar_configs };
   push @arrays, map { "project_cvar_$_->{name}" } @{ $project_cvar_configs };
@@ -1358,20 +1095,17 @@ sub order_details {
     if ($form->{"id_$i"} != 0) {
 
       # add number, description and qty to $form->{number}, ....
-
-      if ($form->{"subtotal_$i"} && !$subtotal_header) {
-        $subtotal_header = $i;
-        $position = int($position);
-        $subposition = 0;
-        $position++;
-      } elsif ($subtotal_header) {
-        $subposition += 1;
-        $position = int($position);
-        $position = $position.".".$subposition;
+      my $position;
+      if (!$subtotal_active) {
+        $pos_level0 += 1;
+        $pos_level1  = 0;
+        $position = "$pos_level0";
       } else {
-        $position = int($position);
-        $position++;
+        $pos_level1 += 1;
+        $position = "$pos_level0.$pos_level1";
       }
+      my $subtotal_turn_off = $subtotal_active && $form->{"subtotal_$i"};
+      $subtotal_active ^= $form->{"subtotal_$i"};
 
       my $price_factor = $price_factors{$form->{"price_factor_id_$i"}} || { 'factor' => 1 };
 
@@ -1398,6 +1132,7 @@ sub order_details {
       push @{ $form->{TEMPLATE_ARRAYS}->{price_factor} },      $price_factor->{formatted_factor};
       push @{ $form->{TEMPLATE_ARRAYS}->{price_factor_name} }, $price_factor->{description};
       push @{ $form->{TEMPLATE_ARRAYS}->{partsgroup} },        $form->{"partsgroup_$i"};
+      push @{ $form->{TEMPLATE_ARRAYS}->{optional} },          $form->{"optional_$i"};
 
       my $sellprice     = $form->parse_amount($myconfig, $form->{"sellprice_$i"});
       my ($dec)         = ($sellprice =~ /\.(\d+)/);
@@ -1437,16 +1172,16 @@ sub order_details {
         $form->{non_separate_subtotal} += $linetotal;
       }
 
-      $form->{ordtotal}         += $linetotal;
+      $form->{ordtotal}         += $linetotal unless $form->{"optional_$i"};
       $form->{nodiscount_total} += $nodiscount_linetotal;
       $form->{discount_total}   += $discount;
 
-      if ($subtotal_header) {
+      if ($subtotal_active || $subtotal_turn_off) {
         $discount_subtotal   += $linetotal;
         $nodiscount_subtotal += $nodiscount_linetotal;
       }
 
-      if ($form->{"subtotal_$i"} && $subtotal_header && ($subtotal_header != $i)) {
+      if ($subtotal_turn_off) {
         push @{ $form->{TEMPLATE_ARRAYS}->{discount_sub} },         $form->format_amount($myconfig, $discount_subtotal,   2);
         push @{ $form->{TEMPLATE_ARRAYS}->{discount_sub_nofmt} },   $discount_subtotal;
         push @{ $form->{TEMPLATE_ARRAYS}->{nodiscount_sub} },       $form->format_amount($myconfig, $nodiscount_subtotal, 2);
@@ -1454,7 +1189,6 @@ sub order_details {
 
         $discount_subtotal   = 0;
         $nodiscount_subtotal = 0;
-        $subtotal_header     = 0;
 
       } else {
         push @{ $form->{TEMPLATE_ARRAYS}->{$_} }, "" for qw(discount_sub nodiscount_sub discount_sub_nofmt nodiscount_sub_nofmt);
@@ -1485,14 +1219,16 @@ sub order_details {
 
       map { $taxrate += $form->{"${_}_rate"} } split(/ /, $form->{"taxaccounts_$i"});
 
-      if ($form->{taxincluded}) {
+      unless ($form->{"optional_$i"}) {
+        if ($form->{taxincluded}) {
 
-        # calculate tax
-        $taxamount = $linetotal * $taxrate / (1 + $taxrate);
-        $taxbase = $linetotal / (1 + $taxrate);
-      } else {
-        $taxamount = $linetotal * $taxrate;
-        $taxbase   = $linetotal;
+          # calculate tax
+          $taxamount = $linetotal * $taxrate / (1 + $taxrate);
+          $taxbase = $linetotal / (1 + $taxrate);
+        } else {
+          $taxamount = $linetotal * $taxrate;
+          $taxbase   = $linetotal;
+        }
       }
 
       if ($taxamount != 0) {
@@ -1511,9 +1247,9 @@ sub order_details {
         # get parts and push them onto the stack
         my $sortorder = "";
         if ($form->{groupitems}) {
-          $sortorder = qq|ORDER BY pg.partsgroup, a.oid|;
+          $sortorder = qq|ORDER BY pg.partsgroup, a.position|;
         } else {
-          $sortorder = qq|ORDER BY a.oid|;
+          $sortorder = qq|ORDER BY a.position|;
         }
 
         $query = qq|SELECT p.partnumber, p.description, p.unit, a.qty, | .
@@ -1572,10 +1308,13 @@ sub order_details {
     push(@{ $form->{TEMPLATE_ARRAYS}->{taxrate} },        $form->format_amount($myconfig, $form->{"${item}_rate"} * 100));
     push(@{ $form->{TEMPLATE_ARRAYS}->{taxrate_nofmt} },  $form->{"${item}_rate"} * 100);
     push(@{ $form->{TEMPLATE_ARRAYS}->{taxnumber} },      $form->{"${item}_taxnumber"});
+    push(@{ $form->{TEMPLATE_ARRAYS}->{tax_id} },         $form->{"${item}_tax_id"});
 
-    my $tax_obj     = SL::DB::Manager::Tax->find_by(taxnumber => $form->{"${item}_taxnumber"});
-    my $description = $tax_obj ? $tax_obj->translated_attribute('taxdescription',  $form->{language_id}, 0) : '';
-    push(@{ $form->{TEMPLATE_ARRAYS}->{taxdescription} }, $description . q{ } . 100 * $form->{"${item}_rate"} . q{%});
+    if ( $form->{"${item}_tax_id"} ) {
+      my $tax_obj = SL::DB::Manager::Tax->find_by(id => $form->{"${item}_tax_id"}) or die "Can't find tax with id " . $form->{"${item}_tax_id"};
+      my $description = $tax_obj ? $tax_obj->translated_attribute('taxdescription',  $form->{language_id}, 0) : '';
+      push(@{ $form->{TEMPLATE_ARRAYS}->{taxdescription} }, $description . q{ } . 100 * $form->{"${item}_rate"} . q{%});
+    }
   }
 
   $form->{nodiscount_subtotal} = $form->format_amount($myconfig, $form->{nodiscount_total}, 2);
@@ -1600,7 +1339,9 @@ sub order_details {
 
   # format amounts
   $form->{rounding} = $form->format_amount($myconfig, $form->{rounding}, 2);
-  $form->{quototal} = $form->{ordtotal} = $form->format_amount($myconfig, $form->{ordtotal}, 2);
+  $form->{ordtotal} = $form->format_amount($myconfig, $form->{ordtotal}, 2);
+  $form->{invtotal} = $form->{ordtotal};
+  $form->{quototal} = $form->{ordtotal};
 
   $form->set_payment_options($myconfig, $form->{$form->{type} =~ /_quotation/ ? 'quodate' : 'orddate'}, $form->{type});
 
@@ -1610,23 +1351,13 @@ sub order_details {
   $form->{delivery_term} = SL::DB::Manager::DeliveryTerm->find_by(id => $form->{delivery_term_id} || undef);
   $form->{delivery_term}->description_long($form->{delivery_term}->translated_attribute('description_long', $form->{language_id})) if $form->{delivery_term} && $form->{language_id};
 
-  $form->{order} = SL::DB::Manager::Order->find_by(id => $form->{id}) if $form->{id};
+  $form->{order}     = SL::DB::Manager::Order->find_by(id => $form->{id}) if $form->{id};
+  $form->{rfqnumber} = join( ', ',  map { $_->quonumber } @{$form->{order}->preceding_request_quotations()})  if $form->{order};
+  $form->{soinumber} = join( ', ',  map { $_->ordnumber } @{$form->{order}->preceding_sales_order_intakes()}) if $form->{order};
+
   $form->{$_} = $form->format_amount($myconfig, $form->{$_}, 2) for @separate_totals;
 
   $main::lxdebug->leave_sub();
-}
-
-sub project_description {
-  $main::lxdebug->enter_sub();
-
-  my ($self, $dbh, $id) = @_;
-
-  my $query = qq|SELECT description FROM project WHERE id = ?|;
-  my ($value) = selectrow_query($main::form, $dbh, $query, $id);
-
-  $main::lxdebug->leave_sub();
-
-  return $value;
 }
 
 1;
@@ -1640,26 +1371,5 @@ OE.pm - Order entry module
 =head1 DESCRIPTION
 
 OE.pm is part of the OE module. OE is responsible for sales and purchase orders, as well as sales quotations and purchase requests. This file abstracts the database tables C<oe> and C<orderitems>.
-
-=head1 FUNCTIONS
-
-=over 4
-
-=item retrieve_simple PARAMS
-
-simple OE retrieval by id. does not look up customer, vendor, units or any other stuff. only oe and orderitems.
-
-  my $order = retrieve_simple(id => 2);
-
-  $order => {
-    %_OE_CONTENT,
-    orderitems => [
-      %_ORDERITEM_ROW_1,
-      %_ORDERITEM_ROW_2,
-      ...
-    ]
-  }
-
-=back
 
 =cut

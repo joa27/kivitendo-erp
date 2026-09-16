@@ -1,0 +1,75 @@
+[%- USE HTML -%]
+[%- USE LxERP -%]
+[%- USE L -%]
+[%- USE T8 -%]
+[%- USE P -%]
+
+<div class="wrapper" id="wrapper-1">
+<div class="col">
+  <table class="tbl-horizontal">
+    <caption>[% 'Vendor' | $T8 %]</caption>
+    <tbody>
+      <tr>
+        <td>[% P.customer_vendor.picker('vendor_id', '', type='vendor', fat_set_item=1) %]</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+</div><!-- /.wrapper -->
+
+<form id="purchasebasket">
+
+[% L.hidden_tag('vendor_id_selected') %]
+<div class="wrapper">
+  <table id="baskettable" class="tbl-list">
+  <caption>[% 'Purchase basket' | $T8 %]</caption>
+    <thead>
+     <tr>
+       <th>
+         [% L.checkbox_tag("", id="check_all", checkall="[data-checkall=1]", checked="1") %]
+         [% 'Purchase basket' | $T8 %]
+       </th>
+       <th>[% 'Partnumber'                                      | $T8 %] </th>
+       <th>[% 'Description'                                     | $T8 %] </th>
+       <th>[% 'Vendor'                                          | $T8 %] </th>
+       <th>[% 'Onhand'                                          | $T8 %] </th>
+       <th>[% 'ROP'                                             | $T8 %] </th>
+       <th>[% 'Order quantity'                                  | $T8 %] </th>
+       <th>[% 'Unit'                                            | $T8 %] </th>
+     </tr>
+    </thead>
+    <tbody id="basket_items">
+    [% FOREACH basket_item = BASKET_ITEMS %]
+
+      <tr>
+        <td>
+          [% L.checkbox_tag('ids[+]', "data-checkall"=1, checked = '1',  value=basket_item.id) %]
+          [% L.hidden_tag('basket_ids[+]', basket_item.id) %]
+        </td>
+        <td class="right">[% basket_item.part.presenter.part(target = '_blank') %]
+          [% P.button_tag(
+               "kivi.DispositionManager.show_detail_dialog("
+                 _  basket_item.part.id _ ",'" _ basket_item.part.partnumber _
+               "')",
+               LxERP.t8('Details (one letter abbreviation)'),
+               title=LxERP.t8('Article details'), class="button") %]
+        </td>
+        <td>[% HTML.escape(basket_item.part.description) %]</td>
+        <td>[% P.part.vendor_price_dropdown(
+                 'vendor_ids[]', basket_item.part,
+                 default=basket_item.part.makemodels.item(0).make,
+                 class='wi-verywide',
+                 ) %]
+        </td>
+        <td class="numeric">[% basket_item.part.onhand_as_number %]</td>
+        <td class="numeric">[% basket_item.part.rop_as_number %]</td>
+        <td class="numeric">[% basket_item.qty_as_number %]</td>
+        <td>[% basket_item.part.unit | html %]</td>
+      </tr>
+    [% END %]
+    </tbody>
+  </table>
+</div>
+
+<div id="vendor_parts" class="wrapper"></div>
+</form>

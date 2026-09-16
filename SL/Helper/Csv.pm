@@ -114,6 +114,7 @@ sub _check_multiplexed {
       # Each profile needs a class and a row_ident
       my $info_ok = all { defined $_->{class} && defined $_->{row_ident} } @profile;
       $self->_push_error([
+        undef,
         0,
         "missing class or row_ident in one of the profiles for multiplexed data",
         0,
@@ -125,6 +126,7 @@ sub _check_multiplexed {
         my @header = @{ $self->header };
         my $t_ok = scalar @profile == scalar @header;
         $self->_push_error([
+          undef,
           0,
           "number of headers and number of profiles must be the same for multiplexed data",
           0,
@@ -133,6 +135,7 @@ sub _check_multiplexed {
 
         $t_ok = all { scalar @$_ > 0} @header;
         $self->_push_error([
+          undef,
           0,
           "no empty headers are allowed for multiplexed data",
           0,
@@ -231,12 +234,17 @@ sub _check_multiplex_datatype_position {
     $self->_multiplex_datatype_position($first_pos);
     return 1;
   } else {
-    $self->_push_error([0,
+    $self->_push_error([undef,
+                        0,
                         "datatype field must be at the same position for all datatypes for multiplexed data",
                         0,
                         0]);
     return 0;
   }
+}
+
+sub _is_empty_row {
+  return !!all { !$_ } @{$_[0]};
 }
 
 sub _parse_data {
@@ -246,9 +254,11 @@ sub _parse_data {
   while (1) {
     my $row = $self->_csv->getline($self->_io);
     if ($row) {
+      next if _is_empty_row($row);
       my $header = $self->_header_by_row($row);
       if (!$header) {
         push @errors, [
+          undef,
           0,
           "Cannot get header for row. Maybe row name and datatype field not matching.",
           0,
@@ -305,9 +315,21 @@ sub _make_objects {
   local $::myconfig{numberformat} = $self->numberformat if $self->numberformat;
   local $::myconfig{dateformat}   = $self->dateformat   if $self->dateformat;
 
+  my $line_nr = 0;
   for my $line (@{ $self->_data }) {
-    my $tmp_obj = $self->dispatcher->dispatch($line);
-    push @objs, $tmp_obj;
+    $line_nr++;
+    eval {
+      my $tmp_obj = $self->dispatcher->dispatch($line);
+      push @objs, $tmp_obj;
+      1;
+    } or do {
+      $self->_push_error([
+        $line,
+        0,
+        "making objects failed: $@",
+        0,
+        $line_nr]);
+    };
   }
 
   $self->_objects(\@objs);
@@ -432,14 +454,16 @@ Parse the data into objects and return those.
 
 This method will return an arrayref of all objects.
 
+If an error occurs while making the objects, it is put errors, too.
+
 =item C<get_data>
 
 Returns an arrayref of the raw lines as hashrefs.
 
 =item C<errors>
 
-Return all errors that came up during parsing. See error handling for detailed
-information.
+Return all errors that came up during parsing or making objects.
+See error handling for detailed information.
 
 =back
 
@@ -497,7 +521,7 @@ See section L</PROFILE> for information on this topic.
 
 =item C<ignore_unknown_columns>
 
-If set, the import will ignore unkown header columns. Useful for lazy imports,
+If set, the import will ignore unknown header columns. Useful for lazy imports,
 but deactivated by default.
 
 =item C<case_insensitive_header>
@@ -631,6 +655,9 @@ Note that the last entry can be off, but will give an estimate.
 
 Error handling is also known to break on new Perl versions and need to be
 adjusted from time to time due to changes in Text::CSV_XS.
+
+If an error occurs while making the objects, it is put into errors, too.
+Here the line is also an estimation.
 
 =head1 CAVEATS
 

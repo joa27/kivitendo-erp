@@ -15,6 +15,7 @@ __PACKAGE__->meta->columns(
   datevautomatik => { type => 'boolean', default => 'false' },
   description    => { type => 'text' },
   id             => { type => 'integer', not_null => 1, sequence => 'id' },
+  invalid        => { type => 'boolean', default => 'false' },
   itime          => { type => 'timestamp', default => 'now()' },
   link           => { type => 'text', not_null => 1 },
   mtime          => { type => 'timestamp' },
@@ -34,4 +35,4 @@ __PACKAGE__->meta->unique_keys([ 'accno' ]);
 __PACKAGE__->meta->allow_inline_column_values(1);
 
 1;
-;
+

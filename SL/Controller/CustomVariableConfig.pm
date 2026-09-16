@@ -11,6 +11,7 @@ use SL::DB::CustomVariableValidity;
 use SL::DB::PartsGroup;
 use SL::Helper::Flash;
 use SL::Locale::String;
+use SL::Presenter::CustomVariableConfig;
 use Data::Dumper;
 
 use Rose::Object::MakeMethods::Generic (
@@ -25,17 +26,21 @@ __PACKAGE__->run_before('load_config', only => [ qw(edit update destroy) ]);
 our %translations = (
   text      => t8('Free-form text'),
   textfield => t8('Text field'),
+  htmlfield => t8('HTML field'),
   number    => t8('Number'),
   date      => t8('Date'),
   timestamp => t8('Timestamp'),
   bool      => t8('Yes/No (Checkbox)'),
   select    => t8('Selection'),
+  multiselect => t8('Selection (multiple)'),
   customer  => t8('Customer'),
   vendor    => t8('Vendor'),
   part      => t8('Part'),
 );
 
-our @types = qw(text textfield number date bool select customer vendor part); # timestamp
+our @types = qw(text textfield htmlfield number date bool select multiselect customer vendor part); # timestamp
+
+our @modules = qw(CT Contacts IC Projects RequirementSpecs ShipTo);
 
 #
 # actions
@@ -47,6 +52,7 @@ sub action_list {
   my $configs = SL::DB::Manager::CustomVariableConfig->get_all_sorted(where => [ module => $self->module ]);
 
   $self->setup_list_action_bar;
+  $::form->{title} = t8('List of custom variables');
   $::form->header;
   $self->render('custom_variable_config/list',
                 title   => t8('List of custom variables'),
@@ -160,13 +166,10 @@ sub init_translated_types {
 sub init_modules {
   my ($self, %params) = @_;
 
-  return [ sort { $a->{description}->translated cmp $b->{description}->translated } (
-    { module => 'CT',               description => t8('Customers and vendors')          },
-    { module => 'Contacts',         description => t8('Contact persons')                },
-    { module => 'IC',               description => t8('Parts, services and assemblies') },
-    { module => 'Projects',         description => t8('Projects')                       },
-    { module => 'RequirementSpecs', description => t8('Requirement Specs')              },
-    { module => 'ShipTo',           description => t8('Shipping Address')               },
+  return [
+    sort { $a->{description}->translated cmp $b->{description}->translated } (
+    map +{ module => $_, description => $SL::Presenter::CustomVariableConfig::t8{$_} },
+    @modules
   )];
 }
 
@@ -194,7 +197,7 @@ sub create_or_update {
   my @errors = $self->config->validate;
 
   if (@errors) {
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     $self->show_form(title => $is_new ? t8('Add new custom variable') : t8('Edit custom variable'));
     return;
   }

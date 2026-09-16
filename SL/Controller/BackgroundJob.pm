@@ -8,6 +8,7 @@ use SL::BackgroundJob::Base;
 use SL::Controller::Helper::GetModels;
 use SL::DB::BackgroundJob;
 use SL::Helper::Flash;
+use SL::JSON;
 use SL::Locale::String;
 use SL::System::TaskServer;
 
@@ -98,7 +99,7 @@ sub action_save_and_execute {
   my ($self) = @_;
 
   $self->background_job(SL::DB::BackgroundJob->new) if !$self->background_job;
-  return unless $self->create_or_update;
+  return unless $self->create_or_update(1);
   $self->action_execute;
 }
 
@@ -116,6 +117,33 @@ sub action_execute {
                      action     => 'show',
                      id         => $history->id,
                      back_to    => $self->url_for(action => 'edit', id => $self->background_job->id));
+}
+
+sub action_execute_class {
+  my ($self) = @_;
+
+  my $result;
+
+  my $ok = eval {
+    die "no class name given in parameter 'class'" if !$::form->{class} || ($::form->{class} =~ m{[^a-z0-9]}i);
+    die "invalid class"                            if ! -f "SL/BackgroundJob/" . $::form->{class} . ".pm";
+
+    my $package = "SL::BackgroundJob::" . $::form->{class};
+
+    eval "require $package" or die $@;
+    my $job = SL::DB::BackgroundJob->new(data => $::form->{data});
+    $job->data(decode_json($::form->{json_data})) if $::form->{json_data};
+    $result = $package->new->run($job);
+
+    1;
+  };
+
+  my $reply = {
+    status => $ok ? 'succeeded' : 'failed',
+    result => $ok ? $result     : $@,
+  };
+
+  $self->render(\to_json($reply), { type => 'json' });
 }
 
 #
@@ -141,7 +169,8 @@ sub create_or_update {
   my @errors = $self->background_job->validate;
 
   if (@errors) {
-    flash('error', @errors);
+    flash('error', $_) for @errors;
+    $self->setup_form_action_bar;
     $self->render('background_job/form', title => $is_new ? $::locale->text('Create a new background job') : $::locale->text('Edit background job'));
     return;
   }
@@ -150,7 +179,7 @@ sub create_or_update {
   $self->background_job->save;
 
   flash_later('info', $is_new ? $::locale->text('The background job has been created.') : $::locale->text('The background job has been saved.'));
-  return if $return;
+  return 1 if $return;
 
   $self->redirect_to($self->back_to);
 }
@@ -179,6 +208,7 @@ sub init_models {
     filtered => 0,
     sorted => {
       package_name => t8('Package name'),
+      description  => t8('Description'),
       type         => t8('Execution type'),
       active       => t8('Active'),
       cron_spec    => t8('Execution schedule'),

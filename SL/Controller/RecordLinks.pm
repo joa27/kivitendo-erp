@@ -12,12 +12,14 @@ use SL::DB::DeliveryOrder;
 use SL::DB::Invoice;
 use SL::DB::Letter;
 use SL::DB::PurchaseInvoice;
+use SL::DB::Reclamation;
 use SL::DB::RecordLink;
 use SL::DB::RequirementSpec;
 use SL::DBUtils qw(like);
 use SL::DB::ShopOrder;
 use SL::JSON;
 use SL::Locale::String;
+use SL::Presenter::Record qw(grouped_record_list);
 
 use Rose::Object::MakeMethods::Generic
 (
@@ -37,17 +39,29 @@ my %link_type_defaults = (
 );
 
 my @link_type_specifics = (
-  { title => t8('Requirement spec'),        type => 'requirement_spec',        model => 'RequirementSpec', number => 'id', project => 'project', description => 'title', date => undef, filter => 'working_copy_filter', },
-  { title => t8('Shop Order'),              type => 'shop_order',              model => 'ShopOrder',       number => 'shop_ordernumber', date => 'order_date', project => undef, },
-  { title => t8('Sales quotation'),         type => 'sales_quotation',         model => 'Order',           number => 'quonumber', },
-  { title => t8('Sales Order'),             type => 'sales_order',             model => 'Order',           number => 'ordnumber', },
-  { title => t8('Sales delivery order'),    type => 'sales_delivery_order',    model => 'DeliveryOrder',   number => 'donumber',  },
-  { title => t8('Sales Invoice'),           type => 'invoice',                 model => 'Invoice',         number => 'invnumber', },
-  { title => t8('Request for Quotation'),   type => 'request_quotation',       model => 'Order',           number => 'quonumber', },
-  { title => t8('Purchase Order'),          type => 'purchase_order',          model => 'Order',           number => 'ordnumber', },
-  { title => t8('Purchase delivery order'), type => 'purchase_delivery_order', model => 'DeliveryOrder',   number => 'donumber',  },
-  { title => t8('Purchase Invoice'),        type => 'purchase_invoice',        model => 'PurchaseInvoice', number => 'invnumber', },
-  { title => t8('Letter'),                  type => 'letter',                  model => 'Letter',          number => 'letternumber', description => 'subject', description_title => t8('Subject'), date => 'date', project => undef },
+  { title => t8('Requirement spec'),            type => 'requirement_spec',            model => 'RequirementSpec', number => 'id', project => 'project', description => 'title', date => undef, filter => 'working_copy_filter', },
+  { title => t8('Shop Order'),                  type => 'shop_order',                  model => 'ShopOrder',       number => 'shop_ordernumber', date => 'order_date', project => undef, description => undef, },
+  { title => t8('Sales quotation'),             type => 'sales_quotation',             model => 'Order',           number => 'quonumber',     },
+  { title => t8('Sales Order Intake'),          type => 'sales_order_intake',          model => 'Order',           number => 'ordnumber',     },
+  { title => t8('Sales Order'),                 type => 'sales_order',                 model => 'Order',           number => 'ordnumber',     },
+  { title => t8('Sales delivery order'),        type => 'sales_delivery_order',        model => 'DeliveryOrder',   number => 'donumber',      },
+  { title => t8('RMA delivery order'),          type => 'rma_delivery_order',          model => 'DeliveryOrder',   number => 'rdonumber',     },
+  { title => t8('Sales Reclamation'),           type => 'sales_reclamation',           model => 'Reclamation',     number => 'record_number', },
+  { title => t8('Sales Invoice'),               type => 'invoice',                     model => 'Invoice',         number => 'invnumber',     },
+  { title => t8('Request for Quotation'),       type => 'request_quotation',           model => 'Order',           number => 'quonumber',     },
+  { title => t8('Purchase Quotation Intake'),   type => 'purchase_quotation_intake',   model => 'Order',           number => 'quonumber',     },
+  { title => t8('Purchase Order'),              type => 'purchase_order',              model => 'Order',           number => 'ordnumber',     },
+  { title => t8('Purchase Order Confirmation'), type => 'purchase_order_confirmation', model => 'Order',           number => 'ordnumber',     },
+  { title => t8('Purchase delivery order'),     type => 'purchase_delivery_order',     model => 'DeliveryOrder',   number => 'donumber',      },
+  { title => t8('Supplier delivery order'),     type => 'supplier_delivery_order',     model => 'DeliveryOrder',   number => 'sdonumber',     },
+  { title => t8('Purchase Reclamation'),        type => 'purchase_reclamation',        model => 'Reclamation',     number => 'record_number', },
+  { title => t8('Purchase Invoice'),            type => 'purchase_invoice',            model => 'PurchaseInvoice', number => 'invnumber',     },
+  { title => t8('Letter'),                      type => 'letter',                      model => 'Letter',          number => 'letternumber', description => 'subject', description_title => t8('Subject'), date => 'date', project => undef },
+  { title => t8('Email'),                       type => 'email_journal',               model => 'EmailJournal',    number => 'id',           description => 'subject', description_title => t8('Subject'), project => undef, date => 'sent_on', },
+  { title => t8('AR Transaction'),              type => 'ar_transaction',              model => 'Invoice',         number => 'invnumber',     },
+  { title => t8('AP Transaction'),              type => 'ap_transaction',              model => 'PurchaseInvoice', number => 'invnumber',     },
+  { title => t8('Dunning'),                     type => 'dunning',                     model => 'Dunning',         number => 'dunning_id',   project => undef, description => undef, },
+  { title => t8('GL Transaction'),              type => 'gl_transaction',              model => 'GLTransaction',   number => 'reference',    project => undef },
 );
 
 my @link_types = map { +{ %link_type_defaults, %{ $_ } } } @link_type_specifics;
@@ -59,11 +73,19 @@ my @link_types = map { +{ %link_type_defaults, %{ $_ } } } @link_type_specifics;
 sub action_ajax_list {
   my ($self) = @_;
 
+  my %order_centric_params = (
+    with_myself           => $::instance_conf->get_record_links_from_order_with_myself,
+    with_sales_quotations => $::instance_conf->get_record_links_from_order_with_quotations
+  );
+
   eval {
-    my $linked_records = $self->object->linked_records(direction => 'both', recursive => 1, save_path => 1);
+    my $linked_records = $::instance_conf->get_always_record_links_from_order
+                       ?  $self->object->sales_order_centric_linked_records(%order_centric_params)
+                       :  $self->object->linked_records(direction => 'both', recursive => 1, save_path => 1);
+
     push @{ $linked_records }, $self->object->sepa_export_items if $self->object->can('sepa_export_items');
 
-    my $output         = SL::Presenter->get->grouped_record_list(
+    my $output         = grouped_record_list(
       $linked_records,
       with_columns      => [ qw(record_link_direction) ],
       edit_record_links => 1,
@@ -105,14 +127,16 @@ sub action_ajax_add_filter {
   my $presenter = $self->presenter;
 
   my @link_type_select = map { [ $_->{type}, $_->{title} ] } @link_types;
-  my @projects         = map { [ $_->id, $presenter->project($_, display => 'inline', style => 'both', no_link => 1) ] } @{ SL::DB::Manager::Project->get_all_sorted };
+  my @projects         = map { [ $_->id, $_->presenter->project(display => 'inline', style => 'both', no_link => 1) ] } @{ SL::DB::Manager::Project->get_all_sorted };
   my $is_sales         = $self->object->can('customer_id') && $self->object->customer_id;
+  my $is_purchase      = $self->object->can('vendor_id')   && $self->object->vendor_id;
 
   $self->render(
     'record_links/add_filter',
     { layout          => 0 },
     is_sales          => $is_sales,
-    DEFAULT_LINK_TYPE => $is_sales ? 'sales_quotation' : 'request_quotation',
+    is_purchase       => $is_purchase,
+    DEFAULT_LINK_TYPE => $is_sales ? 'sales_quotation' : $is_purchase ? 'request_quotation' : 'email_journal',
     LINK_TYPES        => \@link_type_select,
     PROJECTS          => \@projects,
   );
@@ -121,24 +145,38 @@ sub action_ajax_add_filter {
 sub action_ajax_add_list {
   my ($self) = @_;
 
+  my $class       = 'SL::DB::'          . $self->link_type_desc->{model};
   my $manager     = 'SL::DB::Manager::' . $self->link_type_desc->{model};
-  my $vc          = $self->link_type =~ m/shop|sales_|^invoice|requirement_spec|letter/ ? 'customer' : 'vendor';
+  my $vc          = !($class->can('customer_id') || $class->can('vendor_id')) ? undef
+                  : $self->link_type =~ m/shop|sales_|^invoice|requirement_spec|letter|^ar_/ ? 'customer'
+                  : 'vendor';
   my $project     = $self->link_type_desc->{project};
   my $project_id  = "${project}_id";
   my $description = $self->link_type_desc->{description};
   my $filter      = $self->link_type_desc->{filter};
+  my $number      = $self->link_type_desc->{number};
 
   my @where = $filter && $manager->can($filter) ? $manager->$filter($self->link_type) : ();
-  push @where, ("${vc}.${vc}number"     => { ilike => like($::form->{vc_number}) })               if $::form->{vc_number};
-  push @where, ("${vc}.name"            => { ilike => like($::form->{vc_name}) })                 if $::form->{vc_name};
+  push @where, ("${vc}.${vc}number"     => { ilike => like($::form->{vc_number}) })               if $vc && $::form->{vc_number};
+  push @where, ("${vc}.name"            => { ilike => like($::form->{vc_name}) })                 if $vc && $::form->{vc_name};
   push @where, ($description            => { ilike => like($::form->{transaction_description}) }) if $::form->{transaction_description};
-  push @where, ($project_id             => $::form->{globalproject_id})                           if $::form->{globalproject_id} && $manager->can($project_id);
+  push @where, ($project_id             => $::form->{globalproject_id})                           if $::form->{globalproject_id} && $class->can($project_id);
 
-  my @with_objects = ($vc);
-  push @with_objects, $project if $manager->can($project_id);
+  if ($::form->{number}) {
+    my $col_type = ref $class->meta->column($number);
+    if ($col_type =~ /^Rose::DB::Object::Metadata::Column::(?:Integer|Serial)$/) {
+      push @where, ($number => $::form->{number});
+    } elsif ($col_type =~ /^Rose::DB::Object::Metadata::Column::Text$/) {
+      push @where, ($number => { ilike => like($::form->{number}) });
+    }
+  }
+
+  my @with_objects = ();
+  push @with_objects, $vc      if $vc;
+  push @with_objects, $project if $class->can($project_id);
 
   # show the newest records first (should be better for 80% of the cases TODO sortable click
-  my $objects = $manager->get_all_sorted(where => \@where, with_objects => \@with_objects, sort_by => 'itime',  sort_dir => 'ASC');
+  my $objects = $manager->get_all(where => \@where, with_objects => \@with_objects, sort_by => 'itime',  sort_dir => 'ASC');
   my $output  = $self->render(
     'record_links/add_list',
     { output => 0 },

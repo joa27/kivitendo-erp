@@ -2,9 +2,15 @@ package SL::DB::DeliveryOrderItem;
 
 use strict;
 
+use Carp;
+
+use Rose::DB::Object::Helpers qw(as_tree strip);
+
 use SL::DB::MetaSetup::DeliveryOrderItem;
+use SL::DB::Manager::DeliveryOrderItem;
 use SL::DB::Helper::ActsAsList;
 use SL::DB::Helper::LinkedRecords;
+use SL::DB::Helper::RecordLink qw(RECORD_ITEM_ID RECORD_ITEM_TYPE_REF);
 use SL::DB::Helper::RecordItem;
 use SL::DB::Helper::CustomVariables (
   sub_module  => 'delivery_order_items',
@@ -16,8 +22,6 @@ use SL::DB::Helper::CustomVariables (
     }
   },
 );
-
-__PACKAGE__->meta->make_manager_class;
 
 __PACKAGE__->meta->add_relationship(
   delivery_order_stock_entries => {
@@ -34,19 +38,165 @@ __PACKAGE__->meta->initialize;
 
 __PACKAGE__->configure_acts_as_list(group_by => [qw(delivery_order_id)]);
 
+__PACKAGE__->before_save('_before_save_set_base_qty');
+
+
+# hooks
+
+sub _before_save_set_base_qty {
+  my ($self) = @_;
+
+  my $part          = $self->part;
+  my $part_unit_obj = $part ? $part->unit_obj : undef;
+  my $unit_obj      = $self->unit_obj;
+
+  croak("Cannot save delivery order item without a valid part")
+    unless $part;
+
+  croak("Cannot save delivery order item without a valid unit")
+    unless $unit_obj;
+
+  croak("Cannot save delivery order item without a valid part base unit")
+    unless $part_unit_obj;
+
+  $self->base_qty($unit_obj->convert_to($self->qty, $part_unit_obj));
+
+  return 1;
+}
+
 # methods
 
+sub new_from {
+  my ($class, $source, %params) = @_;
+
+  my %allowed_sources = map { $_ => 1 } qw(
+      SL::DB::ReclamationItem
+      SL::DB::OrderItem
+      SL::DB::DeliveryOrderItem
+  );
+  unless( $allowed_sources{ref $source} ) {
+    croak("Unsupported source object type '" . ref($source) . "'");
+  }
+
+  my @custom_variables = map { _clone_cvar_for_delivery_order_item($_) } @{ $source->custom_variables };
+
+  my %item_args;
+  if (ref($source) eq 'SL::DB::ReclamationItem') {
+    map { $item_args{$_} = $source->$_ } # {{{ for vim folds
+    qw(
+      active_discount_source
+      active_price_source
+      base_qty
+      description
+      discount
+      lastcost
+      longdescription
+      parts_id
+      position
+      price_factor
+      price_factor_id
+      pricegroup_id
+      project_id
+      qty
+      reqdate
+      sellprice
+      serialnumber
+      unit
+    );
+    $item_args{custom_variables} = \@custom_variables;
+    # }}} for vim folds
+  } elsif (ref($source) eq 'SL::DB::OrderItem') {
+    map { $item_args{$_} = $source->$_ } # {{{ for vim folds
+    qw(
+      active_discount_source
+      active_price_source
+      base_qty
+      cusordnumber
+      description
+      discount
+      lastcost
+      longdescription
+      marge_price_factor
+      parts_id
+      position
+      price_factor
+      price_factor_id
+      project_id
+      qty
+      reqdate
+      sellprice
+      serialnumber
+      transdate
+      unit
+    );
+    $item_args{custom_variables} = \@custom_variables;
+    $item_args{ordnumber}        = ref($source->record) eq 'SL::DB::Order' ? $source->record->ordnumber : $source->ordnumber;
+    # }}} for vim folds
+  } elsif (ref($source) eq 'SL::DB::DeliveryOrderItem') {
+    map { $item_args{$_} = $source->$_ } # {{{ for vim folds
+    qw(
+      active_discount_source
+      active_price_source
+      base_qty
+      cusordnumber
+      description
+      discount
+      lastcost
+      longdescription
+      marge_price_factor
+      parts_id
+      position
+      price_factor
+      price_factor_id
+      project_id
+      qty
+      reqdate
+      sellprice
+      serialnumber
+      transdate
+      unit
+    );
+    $item_args{custom_variables} = \@custom_variables;
+    # }}} for vim folds
+  }
+
+  my $item = $class->new(%item_args);
+
+  unless ($params{no_linked_records}) {
+    $item->{ RECORD_ITEM_ID() } = $source->id;
+    $item->{ RECORD_ITEM_TYPE_REF() } = ref $source;
+  }
+
+  return $item;
+}
+
+sub _clone_cvar_for_delivery_order_item {
+  my ($cvar) = @_;
+
+  my $cloned = $_->clone_and_reset;
+  $cloned->sub_module('delivery_order_items');
+
+  return $cloned;
+}
+
 sub record { goto &delivery_order }
+sub record_id { goto &delivery_order_id }
 
 sub displayable_delivery_order_info {
   my ($self, $dec) = @_;
 
   $dec //= 2;
 
-  return SL::Presenter->get->sales_delivery_order($self->delivery_order, display => 'inline')
+  $self->delivery_order->presenter->sales_delivery_order(display => 'inline')
          . " " . $::form->format_amount(\%::myconfig, $self->qty, $dec) . " " . $self->unit
          . " (" . $self->delivery_order->transdate->to_kivitendo . ")";
 };
+
+sub effective_project {
+  my ($self) = @_;
+
+  $self->project // $self->delivery_order->globalproject;
+}
 
 __END__
 

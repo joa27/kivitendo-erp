@@ -11,7 +11,9 @@
 #          ( ) & | are supported.  if binary operator is missing the last
 #          operator in same scope is repeated, or "|" if none used in scope
 #          yet. client config entries can be used as rights by prefixing them
-#          with "client/". If missing, access will be granted.
+#          with "client/".
+#          ! is supported to negate the subsequent expression.
+#          If missing, access will be granted.
 #
 #          Example:
 #            client/feature_default_enabled | ( feature & system )
@@ -32,7 +34,7 @@
   name: Add Customer
   icon: customer_add
   order: 100
-  access: customer_vendor_edit
+  access: customer_vendor_edit|customer_vendor_all_edit
   params:
     action: CustomerVendor/add
     db: customer
@@ -41,10 +43,18 @@
   name: Add Vendor
   icon: vendor_add
   order: 200
-  access: customer_vendor_edit
+  access: customer_vendor_edit|customer_vendor_all_edit
   params:
     action: CustomerVendor/add
     db: vendor
+- parent: master_data
+  id: master_data_add_contact
+  name: Add Contact
+  icon: contact_add
+  order: 250
+  access: customer_vendor_all_edit
+  params:
+    action: Contact/edit
 - parent: master_data
   id: master_data_add_part
   name: Add Part
@@ -74,7 +84,7 @@
   name: Add Assortment
   icon: assortment_add
   order: 550
-  access: part_service_assembly_edit & client/feature_experimental
+  access: part_service_assembly_edit
   params:
     action: Part/add_assortment
 - parent: master_data
@@ -98,7 +108,7 @@
   name: Update Prices
   icon: prices_update
   order: 800
-  access: part_service_assembly_edit
+  access: part_service_assembly_edit & part_service_assembly_edit_prices
   params:
     action: PartsPriceUpdate/search_update_prices
 - parent: master_data
@@ -119,7 +129,7 @@
   name: Customers
   icon: customer_report
   order: 100
-  access: customer_vendor_edit
+  access: customer_report_view
   params:
     action: CustomerVendor/search
     db: customer
@@ -128,7 +138,7 @@
   name: Vendors
   icon: vendor_report
   order: 200
-  access: customer_vendor_edit
+  access: vendor_report_view
   params:
     action: CustomerVendor/search
     db: vendor
@@ -136,7 +146,7 @@
   id: master_data_reports_contacts
   name: Contacts
   order: 300
-  access: customer_vendor_edit
+  access: contact_person_report_view
   params:
     action: CustomerVendor/search_contact
     db: customer
@@ -180,41 +190,38 @@
   params:
     action: RequirementSpec/new
 - parent: ar
-  id: ar_add_quotation
-  name: Add Quotation
-  icon: quotation_add
-  order: 200
-  access: sales_quotation_edit
-  module: oe.pl
-  params:
-    action: add
-    type: sales_quotation
-- parent: ar
-  id: ar_add_sales_order
-  name: Add Sales Order
-  icon: sales_order_add
-  order: 300
-  access: sales_order_edit
-  module: oe.pl
-  params:
-    action: add
-    type: sales_order
-- parent: ar
   id: ar_add_delivery_order
   name: Add Delivery Order
   icon: delivery_order_add
   order: 400
   access: sales_delivery_order_edit
-  module: do.pl
   params:
-    action: add
+    action: DeliveryOrder/add
     type: sales_delivery_order
+- parent: ar
+  id: ar_add_sales_reclamation
+  name: Add Sales Reclamation
+    #icon: reclamation_add TODO(Tamino): add icons
+  order: 450
+  access: sales_reclamation_edit & client/show_sales_reclamation
+  params:
+    action: Reclamation/add
+    type: sales_reclamation
+- parent: ar
+  id: ar_add_sales_invoice_experimental
+  name: Add Sales Invoice
+  icon: sales_invoice_add
+  order: 500
+  access: invoice_edit & client/feature_experimental_invoice
+  params:
+    action: Invoice/add
+    type: invoice
 - parent: ar
   id: ar_add_sales_invoice
   name: Add Sales Invoice
   icon: sales_invoice_add
   order: 500
-  access: invoice_edit
+  access: invoice_edit & (!client/feature_experimental_invoice)
   module: is.pl
   params:
     action: add
@@ -276,7 +283,7 @@
   name: Quotations
   icon: report_quotations
   order: 200
-  access: sales_quotation_edit
+  access: sales_quotation_edit | sales_quotation_view
   module: oe.pl
   params:
     action: search
@@ -286,7 +293,7 @@
   name: Sales Orders
   icon: report_sales_orders
   order: 300
-  access: sales_order_edit
+  access: sales_order_edit | sales_order_view
   module: oe.pl
   params:
     action: search
@@ -296,17 +303,26 @@
   name: Delivery Orders
   icon: delivery_order_report
   order: 400
-  access: sales_delivery_order_edit
+  access: sales_delivery_order_edit | sales_delivery_order_view
   module: do.pl
   params:
     action: search
     type: sales_delivery_order
 - parent: ar_reports
+  id: ar_report_sales_reclamation
+  name: Sales Reclamation
+    #icon: reclamation_add TODO(Tamino): add icons
+  order: 450
+  access: sales_reclamation_edit & client/show_sales_reclamation
+  params:
+    action: Reclamation/list
+    type: sales_reclamation
+- parent: ar_reports
   id: ar_reports_invoices_credit_notes_ar_transactions
   name: Invoices, Credit Notes & AR Transactions
   icon: invoices_report
   order: 500
-  access: invoice_edit
+  access: invoice_edit | sales_invoice_view | sales_all_edit | state/has_employee_project_invoices
   module: ar.pl
   params:
     action: search
@@ -315,7 +331,7 @@
   id: ar_reports_sales_report
   name: Sales Report
   order: 600
-  access: invoice_edit
+  access: sales_report
   module: vk.pl
   params:
     action: search_invoice
@@ -333,7 +349,7 @@
   id: ar_order_item_search
   name: Order item search
   order: 750
-  access: sales_order_edit
+  access: sales_order_item_search
   params:
     action: OrderItem/search
 - parent: ar_reports
@@ -356,7 +372,7 @@
   id: ar_reports_financial_controlling
   name: Financial Controlling
   order: 1000
-  access: sales_order_edit
+  access: sales_financial_controlling
   params:
     action: FinancialControllingReport/list
 - parent: ar_reports
@@ -393,39 +409,35 @@
   icon: ap
   order: 300
 - parent: ap
-  id: ap_add_rfq
-  name: Add RFQ
-  icon: rfq_add
-  order: 100
-  access: request_quotation_edit
-  module: oe.pl
-  params:
-    action: add
-    type: request_quotation
-- parent: ap
-  id: ap_add_purchase_order
-  name: Add Purchase Order
-  icon: purchase_order_add
-  order: 200
-  access: purchase_order_edit
-  module: oe.pl
-  params:
-    action: add
-    type: purchase_order
-- parent: ap
   id: ap_add_delivery_note
   name: Add Delivery Note
   order: 300
   access: client/allow_new_purchase_delivery_order & purchase_delivery_order_edit
-  module: do.pl
   params:
-    action: add
+    action: DeliveryOrder/add
     type: purchase_delivery_order
+- parent: ap
+  id: ap_add_purchase_reclamation
+  name: Add Purchase Reclamation
+    #icon: reclamation_add TODO(Tamino): add icons
+  order: 350
+  access: purchase_reclamation_edit & client/show_purchase_reclamation
+  params:
+    action: Reclamation/add
+    type: purchase_reclamation
+- parent: ap
+  id: ap_add_vendor_invoice_experimental
+  name: Add Vendor Invoice
+  order: 400
+  access: client/allow_new_purchase_invoice & vendor_invoice_edit & client/feature_experimental_invoice
+  params:
+    action: Invoice/add
+    type: purchase_invoice
 - parent: ap
   id: ap_add_vendor_invoice
   name: Add Vendor Invoice
   order: 400
-  access: client/allow_new_purchase_invoice & vendor_invoice_edit
+  access: client/allow_new_purchase_invoice & vendor_invoice_edit & (!client/feature_experimental_invoice)
   module: ir.pl
   params:
     action: add
@@ -448,7 +460,7 @@
   name: RFQs
   icon: rfq_report
   order: 100
-  access: request_quotation_edit
+  access: request_quotation_edit | request_quotation_view
   module: oe.pl
   params:
     action: search
@@ -458,7 +470,7 @@
   name: Purchase Orders
   icon: purchase_order_report
   order: 200
-  access: purchase_order_edit
+  access: purchase_order_edit | purchase_order_view
   module: oe.pl
   params:
     action: search
@@ -467,16 +479,34 @@
   id: ap_reports_delivery_orders
   name: Delivery Orders
   order: 300
-  access: purchase_delivery_order_edit
+  access: purchase_delivery_order_edit | purchase_delivery_order_view
   module: do.pl
   params:
     action: search
     type: purchase_delivery_order
 - parent: ap_reports
+  id: ap_reports_supplier_delivery_orders
+  name: Supplier Delivery Orders
+  order: 350
+  access: purchase_delivery_order_edit | purchase_delivery_order_view
+  module: do.pl
+  params:
+    action: search
+    type: supplier_delivery_order
+- parent: ap_reports
+  id: ap_report_purchase_reclamation
+  name: Purchase Reclamation
+    #icon: reclamation_add TODO(Tamino): add icons
+  order: 370
+  access: purchase_reclamation_edit & client/show_purchase_reclamation
+  params:
+    action: Reclamation/list
+    type: purchase_reclamation
+- parent: ap_reports
   id: ap_reports_vendor_invoices_ap_transactions
   name: Vendor Invoices & AP Transactions
   order: 400
-  access: vendor_invoice_edit
+  access: vendor_invoice_edit | purchase_invoice_view | purchase_all_edit | state/has_employee_project_invoices
   module: ap.pl
   params:
     action: search
@@ -544,6 +574,27 @@
     action: transfer_warehouse_selection
     trans_type: removal
 - parent: warehouse
+  id: warehouse_stocktaking
+  name: Stocktaking
+  order: 450
+  access: warehouse_management
+  params:
+    action: Inventory/stocktaking
+- parent: warehouse
+  id: warehouse_stock_counting
+  name: Stock Counting
+  order: 470
+  access: warehouse_management
+  params:
+    action: StockCounting/select_counting
+- parent: warehouse
+  id: warehouse_stock_counting_reconciliation
+  name: Stock Counting Reconciliations
+  order: 480
+  access: warehouse_management
+  params:
+    action: StockCountingReconciliation/list
+- parent: warehouse
   id: warehouse_reports
   name: Reports
   order: 500
@@ -571,6 +622,21 @@
   access: warehouse_contents | warehouse_management
   params:
     action: Inventory/stock_usage
+- parent: warehouse_reports
+  id: warehouse_stocktaking_journal
+  name: Stocktaking Journal
+  order: 400
+  access: warehouse_contents | warehouse_management
+  params:
+    action: Inventory/stocktaking_journal
+- parent: warehouse_reports
+  id: warehouse_stock_counting_items
+  name: Stock Counting Items
+  order: 500
+  access: warehouse_management
+  params:
+    action: StockCounting/list
+    group_counting_items: 1
 - id: general_ledger
   name: General Ledger
   icon: gl
@@ -620,13 +686,29 @@
   params:
     action: GoBD/filter
 - parent: general_ledger
-  id: general_ledger_cbob_transactions
-  name: CB/OB Transactions
+  id: year_end_closing
+  name: Year-end closing
   icon: cbob
   order: 470
   access: general_ledger
   params:
-    action: YearEndTransactions/filter
+    action: YearEndTransactions/form
+- parent: general_ledger
+  id: zugferd_import
+  name: Factur-X/ZUGFeRD import
+  icon: cbob
+  order: 485
+  access: ap_transactions
+  params:
+    action: ZUGFeRD/upload_zugferd
+- parent: general_ledger
+  id: pay_posting_import
+  name: DATEV - Pay Postings Import
+  icon: datev
+  order: 495
+  access: datev_export & client/feature_datev
+  params:
+    action: PayPostingImport/upload_pay_postings
 - parent: general_ledger
   id: general_ledger_reports
   name: Reports
@@ -723,6 +805,12 @@
   order: 200
   params:
     action: BankImport/upload_mt940
+- parent: cash_bank_import_menu
+  id: cash_bank_import_camt053
+  name: Camt.053 format
+  order: 300
+  params:
+    action: BankImport/upload_camt053
 - parent: cash
   id: cash_bank_transactions_mt940
   name: Bank transactions MT940
@@ -806,9 +894,15 @@
   icon: chart_of_accounts
   order: 100
   access: report
-  module: ca.pl
   params:
-    action: chart_of_accounts
+    action: ChartOfAccounts/list
+- parent: reports
+  id: reports_list_transactions
+  name: List Transactions
+  order: 150
+  access: report
+  params:
+    action: ListTransactions/report_settings
 - parent: reports
   id: reports_trial_balance
   name: Trial Balance
@@ -859,7 +953,7 @@
     report: balance_sheet
 - parent: reports
   id: reports_ustva
-  name: UStVa
+  name: UStVA
   icon: ustva
   order: 600
   access: advance_turnover_tax_return & client/feature_ustva
@@ -985,11 +1079,11 @@
   name: Productivity
   icon: productivity
   order: 900
-  access: productivity
 - parent: productivity
   id: productivity_show_todo_list
   name: Show TODO list
   order: 100
+  access: productivity
   module: todo.pl
   params:
     action: show_todo_list
@@ -997,6 +1091,7 @@
   id: productivity_add_follow_up
   name: Add Follow-Up
   order: 200
+  access: productivity
   module: fu.pl
   params:
     action: add
@@ -1004,6 +1099,7 @@
   id: productivity_edit_access_rights
   name: Edit Access Rights
   order: 300
+  access: productivity
   module: fu.pl
   params:
     action: edit_access_rights
@@ -1015,6 +1111,7 @@
   id: productivity_reports_follow_ups
   name: Follow-Ups
   order: 100
+  access: productivity
   module: fu.pl
   params:
     action: search
@@ -1022,6 +1119,7 @@
   id: productivity_reports_email_journal
   name: Email journal
   order: 200
+  access: email_journal
   module: controller.pl
   icon: mail_journal
   params:
@@ -1040,7 +1138,7 @@
     action: ClientConfig/edit
 - parent: system
   id: system_ustva_einstellungen
-  name: UStVa Einstellungen
+  name: UStVA Configuration
   order: 200
   access: client/feature_ustva
   module: ustva.pl
@@ -1140,6 +1238,21 @@
     action: SimpleSystemSetting/list
     type: price_factor
 - parent: system
+  id: system_reclamation_reasons
+  name: Reclamation Reasons
+  order: 1220
+  access: client/show_sales_reclamation | client/show_purchase_reclamation
+  params:
+    action: ReclamationReason/list
+    type: reclamation_reason
+- parent: system
+  id: system_greetings
+  name: Greetings
+  order: 1250
+  params:
+    action: SimpleSystemSetting/list
+    type: greeting
+- parent: system
   id: system_departments
   name: Departments
   order: 1300
@@ -1153,6 +1266,27 @@
   params:
     action: SimpleSystemSetting/list
     type: business
+- parent: system
+  id: system_contact_titles
+  name: Contact Titles
+  order: 1420
+  params:
+    action: SimpleSystemSetting/list
+    type: contact_title
+- parent: system
+  id: system_contact_departments
+  name: Contact Departments
+  order: 1430
+  params:
+    action: SimpleSystemSetting/list
+    type: contact_department
+- parent: system
+  id: system_order_statuses
+  name: RFQ/Order Statuses
+  order: 1500
+  params:
+    action: SimpleSystemSetting/list
+    type: order_status
 - parent: system
   id: system_project_types
   name: Project Types
@@ -1225,6 +1359,14 @@
     action: SimpleSystemSetting/list
     type: language
 - parent: system_languages_and_translations
+  id: system_languages_and_translations_countries
+  name: Country Names
+  order: 200
+  access: admin
+  params:
+    action: SimpleSystemSetting/list
+    type: country
+- parent: system_languages_and_translations
   id: system_languages_and_translations_greetings
   name: Greetings
   order: 300
@@ -1238,6 +1380,13 @@
   module: generictranslations.pl
   params:
     action: edit_sepa_strings
+- parent: system_languages_and_translations
+  id: system_languages_and_translations_zugferd_notes
+  name: Factur-X/ZUGFeRD/XRechnung notes for each invoice
+  order: 450
+  module: generictranslations.pl
+  params:
+    action: edit_zugferd_notes
 - parent: system_languages_and_translations
   id: system_languages_and_translations_email_strings
   name: Preset email strings
@@ -1271,6 +1420,13 @@
   params:
     action: list_warehouses
 - parent: system
+  id: system_stock_countings
+  name: Stock Countings
+  order: 2320
+  params:
+    action: SimpleSystemSetting/list
+    type: stock_counting
+- parent: system
   id: system_shops
   name: Web shops
   order: 2350
@@ -1295,6 +1451,13 @@
   params:
     action: CsvImport/new
     profile.type: contacts
+- parent: system_import_csv
+  id: system_import_csv_additional_billing_address
+  name: Additional Billing Addresses
+  order: 250
+  params:
+    action: CsvImport/new
+    profile.type: billing_addresses
 - parent: system_import_csv
   id: system_import_csv_shipto
   name: Shipto
@@ -1331,35 +1494,26 @@
     action: CsvImport/new
     profile.type: orders
 - parent: system_import_csv
+  id: system_import_csv_delivery_orders
+  name: Delivery Orders
+  order: 720
+  params:
+    action: CsvImport/new
+    profile.type: delivery_orders
+- parent: system_import_csv
   id: system_import_csv_ar_transactions
   name: AR Transactions
   order: 800
   params:
     action: CsvImport/new
     profile.type: ar_transactions
-- parent: system
-  id: system_templates
-  name: Templates
-  order: 2500
-  access: admin
-- parent: system_templates
-  id: system_templates_html_templates
-  name: HTML Templates
-  order: 100
-  module: amtemplates.pl
+- parent: system_import_csv
+  id: system_import_csv_ap_transactions
+  name: AP Transactions
+  order: 820
   params:
-    action: display_template_form
-    type: templates
-    format: html
-- parent: system_templates
-  id: system_templates_latex_templates
-  name: LaTeX Templates
-  order: 200
-  module: amtemplates.pl
-  params:
-    action: display_template_form
-    format: tex
-    type: templates
+    action: CsvImport/new
+    profile.type: ap_transactions
 - parent: system
   id: system_general_ledger_corrections
   name: General Ledger Corrections
@@ -1390,6 +1544,13 @@
   order: 300
   params:
     action: TaskServer/show
+- parent: system
+  id: system_secrets
+  name: Secrets
+  order: 2800
+  params:
+    action: SimpleSystemSetting/list
+    type: secret
 - parent: system
   id: system_audit_control
   name: Audit Control
@@ -1429,6 +1590,12 @@
   params:
     action: CTI/list_internal_extensions
 - parent: program
+  id: program_oauth
+  name: OAuth Tokens
+  order: 150
+  params:
+    action: OAuth/list
+- parent: program
   id: program_version
   name: Version
   icon: version
@@ -1438,22 +1605,6 @@
     action: company_logo
     no_todo_list: 1
 - parent: program
-  id: program_kivitendo_modul
-  name: kivitendo modules
-  order: 350
-- parent: program_kivitendo_modul
-  id: program_kivitendo_modul_overview
-  name: Overview kivitendo modules
-  order: 100
-  href: http://www.kivitendo-premium.de/module.shtml
-  target: _blank
-- parent: program_kivitendo_modul
-  id: program_kivitendo_modul_activate
-  name: Activate kivitendo module
-  order: 200
-  href: http://www.kivitendo-premium.de/modul-aktivieren.shtml
-  target: _blank
-- parent: program
   id: program_administration_area
   name: Administration area
   order: 400
@@ -1461,10 +1612,20 @@
   params:
     action: Admin/login
 - parent: program
-  id: program_documentation_in_german_
+  id: program_documentation_in_german
   name: Documentation (in German)
   order: 500
+- parent: program_documentation_in_german
+  id: program_documentation_in_german_pdf
+  name: PDF
+  order: 100
   href: doc/kivitendo-Dokumentation.pdf
+  target: _blank
+- parent: program_documentation_in_german
+  id: program_documentation_in_german_html
+  name: HTML
+  order: 200
+  href: doc/html/index.html
   target: _blank
 - parent: program
   id: program_kivitendo_website_external_
@@ -1479,3 +1640,86 @@
   order: 700
   params:
     action: LoginScreen/logout
+
+- id: develop
+  name: Developer Tools
+  icon: developer
+  order: 1200
+  access: developer
+- parent: develop
+  id: generic_presenter_test
+  name: Generic Presenter Test
+  access: developer
+  order: 100
+  params:
+    action: GenericPresenterTest/show
+- parent: develop
+  id: part_test
+  name: Part Test
+  access: developer
+  icon: part
+  order: 150
+  params:
+    action: Part/test_page
+- parent: develop
+  id: chart_test
+  name: Chart Test
+  access: developer
+  order: 200
+  params:
+    action: Chart/test_page
+- parent: develop
+  id: chart_test
+  name: Contact Test
+  access: developer
+  order: 250
+  params:
+    action: Contact/test_page
+- parent: develop
+  id: customervendor_test
+  name: Customer-Vendor Test
+  access: developer
+  order: 300
+  params:
+    action: CustomerVendor/test_page
+- parent: develop
+  id: project_test
+  name: Project Test
+  access: developer
+  order: 400
+  params:
+    action: Project/test_page
+- parent: develop
+  id: warehouse_test
+  name: Warehouse Test
+  access: developer
+  order: 430
+  params:
+    action: Warehouse/test_page
+- parent: develop
+  id: ckeditor_test
+  name: CKEditor5 Test
+  access: developer
+  order: 450
+  params:
+    action: Test/ckeditor_test_page
+- parent: develop
+  id: flash_test
+  name: Flash-Test
+  access: developer
+  order: 460
+  params:
+    action: Flash/test_page
+- parent: develop
+  id: js_tests
+  name: JS Tests
+  access: developer
+  order: 500
+  params:
+    action: JSTests/run
+- parent: develop
+  id: css_documentation_in_german_html
+  name: CSS-Documentation
+  order: 600
+  href: css/design40/manual/index.html
+  target: _blank

@@ -1,0 +1,90 @@
+[% USE HTML %]
+[% USE LxERP %]
+[% USE L %]
+[% USE P %]
+[% USE T8 %]
+
+<div class="wrapper">
+
+<table class="tbl-horizontal">
+  <caption>[% 'Bank account' | $T8 %]</caption>
+  <colgroup><col class="wi-mediumsmall"><col class="wi-wide"></colgroup>
+  <tbody>
+    <tr>
+      <th>[% LxERP.t8('Name') %][% P.context_help_tag(LxERP.t8('To be used in ZUGFeRD exported invoices.')) %]</th>
+      <td>[% L.input_tag("object.name", SELF.object.name, class='wi-wider', "data-validate"="required", "data-title"=LxERP.t8("Name")) %]</td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('IBAN') %]</th>
+      <td>[% L.input_tag("object.iban", SELF.object.iban, class='wi-wider', "data-validate"="required", "data-title"=LxERP.t8("IBAN")) %]</td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('QR-IBAN (Swiss)') %]</th>
+      <td>[% L.input_tag("object.qr_iban", SELF.object.qr_iban, class='wi-wider') %]</td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('Bank') %]</th>
+      <td>[% L.input_tag("object.bank", SELF.object.bank, class='wi-wider') %]</td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('Account number') %]</th>
+      <td>[% L.input_tag("object.account_number", SELF.object.account_number, class='wi-wider') %]</td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('BIC') %]</th>
+      <td>[% L.input_tag("object.bic", SELF.object.bic, class='wi-wider') %]</td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('Bank code') %]/[% LxERP.t8('SWIFT') %]</th>
+      <td>[% L.input_tag("object.bank_code", SELF.object.bank_code, class='wi-wider') %]</td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('Bank Account Id Number (Swiss)') %]</th>
+      <td>[%- L.input_tag("object.bank_account_id", SELF.object.bank_account_id, class='wi-wider') %]</td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('Chart') %]</th>
+      <td>[% P.chart.picker("object.chart_id", SELF.object.chart_id, type='AR_paid,AP_paid', category='A,L,Q', choose=1, class='wi-wider', "data-validate"="required", "data-title"=LxERP.t8("Chart")) %]</td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('Use with bank import') %]</th>
+      <td>
+        [% L.checkbox_tag('object.use_with_bank_import', checked = SELF.object.use_with_bank_import, for_submit=1) %]
+        <br>
+        <strong>[% LxERP.t8('Warning') %]:</strong> [% LxERP.t8('If this option is disabled, the bank import is not possible for this account anymore. In the case of invoices and accounts payable and receivable entries, incoming and outgoing payments can then be posted directly to the account manually.') %]
+      </td>
+    </tr>
+    <tr>
+     <th>[% LxERP.t8('Use for Factur-X/ZUGFeRD') %]</th>
+     <td>[% L.checkbox_tag('object.use_for_zugferd', checked = SELF.object.use_for_zugferd, for_submit=1) %]</td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('Use for Swiss QR-Bill') %]</th>
+      <td>[% L.checkbox_tag('object.use_for_qrbill', checked = SELF.object.use_for_qrbill, for_submit=1) %]</td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('Exempt from DATEV export') %]</th>
+      <td>[% L.checkbox_tag('object.exempt_from_datev_export', checked = SELF.object.exempt_from_datev_export, for_submit=1) %]
+        <br>
+        [% LxERP.t8('If this option is enabled, the transactions of the corresponding chart and corresponding skonto tax corrections are not included in DATEV exports. This is desirable if your tax consultant receives bank transactions directly via DATEV.') %]
+      </td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('Obsolete') %]</th>
+      <td>[% L.checkbox_tag('object.obsolete', checked = SELF.object.obsolete, for_submit=1) %]</td>
+    </tr>
+    <tr>
+      <th class="caption" colspan="2">[% LxERP.t8('Reconciliation') %]: </th>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('Starting date') %]</th>
+      <td>[% L.date_tag('object.reconciliation_starting_date', SELF.object.reconciliation_starting_date, class="wi-small date") %]</td>
+    </tr>
+    <tr>
+      <th>[% LxERP.t8('Starting balance') %]</th>
+      <td>[% L.input_tag('object.reconciliation_starting_balance_as_number', SELF.object.reconciliation_starting_balance_as_number, class="wi-small numeric") %]</td>
+    </tr>
+  </tbody>
+</table>
+
+</div><!-- /.wrapper -->

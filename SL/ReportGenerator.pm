@@ -10,6 +10,7 @@ use Text::CSV_XS;
 use strict;
 use SL::Helper::GlAttachments qw(append_gl_pdf_attachments);
 use SL::Helper::CreatePDF     qw(merge_pdfs);
+use SL::JSON qw(to_json);
 
 # Cause locales.pl to parse these files:
 # parse_html_template('report_generator/html_report')
@@ -29,6 +30,7 @@ sub new {
     'controller_class   '   => '',
     'allow_pdf_export'      => 1,
     'allow_csv_export'      => 1,
+    'allow_chart_export'    => 1,
     'html_template'         => 'report_generator/html_report',
     'pdf_export'            => {
       'paper_size'          => 'a4',
@@ -51,6 +53,10 @@ sub new {
       'eol_style'           => 'Unix',
       'headers'             => 1,
       'encoding'            => 'UTF-8',
+    },
+    'chart_export'          => {
+      'assignment_x'        => '',
+      'assignments_y'       => [],
     },
   };
   $self->{export}   = {
@@ -165,7 +171,11 @@ sub set_options {
 
   while (my ($key, $value) = each %options) {
     if ($key eq 'pdf_export') {
-      map { $self->{options}->{pdf_export}->{$_} = $value->{$_} } keys %{ $value };
+      $self->{options}->{pdf_export}->{$_} = $value->{$_} for keys %{ $value };
+    } elsif ($key eq 'csv_export') {
+      $self->{options}->{csv_export}->{$_} = $value->{$_} for keys %{ $value };
+    } elsif ($key eq 'chart_export') {
+      $self->{options}->{chart_export}->{$_} = $value->{$_} for keys %{ $value };
     } else {
       $self->{options}->{$key} = $value;
     }
@@ -183,7 +193,7 @@ sub set_options_from_form {
     $self->{options}->{$key} = $form->{$full_key} if (defined $form->{$full_key});
   }
 
-  foreach my $format (qw(pdf csv)) {
+  foreach my $format (qw(pdf csv chart)) {
     my $opts = $self->{options}->{"${format}_export"};
     foreach my $key (keys %{ $opts }) {
       my $full_key = "report_generator_${format}_options_${key}";
@@ -253,8 +263,11 @@ sub generate_with_headers {
   } elsif ($format eq 'pdf') {
     $self->generate_pdf_content();
 
+  } elsif ($format eq 'chart') {
+    $self->generate_chart_content();
+
   } else {
-    $form->error('Incorrect usage -- unknown format (supported are HTML, CSV, PDF)');
+    $form->error('Incorrect usage -- unknown format (supported are HTML, CSV, PDF, Chart)');
   }
 }
 
@@ -399,7 +412,8 @@ sub prepare_html_content {
     'RAW_BOTTOM_INFO_TEXT' => $opts->{raw_bottom_info_text},
     'ALLOW_PDF_EXPORT'     => $allow_pdf_export,
     'ALLOW_CSV_EXPORT'     => $opts->{allow_csv_export},
-    'SHOW_EXPORT_BUTTONS'  => ($allow_pdf_export || $opts->{allow_csv_export}) && $self->{data_present},
+    'ALLOW_CHART_EXPORT'   => $opts->{allow_chart_export},
+    'SHOW_EXPORT_BUTTONS'  => ($allow_pdf_export || $opts->{allow_csv_export} || $opts->{allow_chart_export}) && $self->{data_present},
     'HEADER_ROWS'          => $header_rows,
     'NUM_COLUMNS'          => scalar @column_headers,
     'ROWS'                 => \@rows,
@@ -416,10 +430,10 @@ sub prepare_html_content {
 }
 
 sub create_action_bar_actions {
-  my ($self, $variables) = @_;
+  my ($self, $variables, %params) = @_;
 
   my @actions;
-  foreach my $type (qw(pdf csv)) {
+  foreach my $type (qw(pdf csv chart)) {
     next unless $variables->{"ALLOW_" . uc($type) . "_EXPORT"};
 
     my $key   = $variables->{CONTROLLER_DISPATCH} ? 'action' : 'report_generator_dispatch_to';
@@ -427,8 +441,13 @@ sub create_action_bar_actions {
     $value    = $variables->{CONTROLLER_DISPATCH} . "/${value}" if $variables->{CONTROLLER_DISPATCH};
 
     push @actions, action => [
-      $type eq 'pdf' ? $::locale->text('PDF export') : $::locale->text('CSV export'),
-      submit => [ '#report_generator_form', { $key => $value } ],
+      $type eq 'pdf' ? $::locale->text('PDF export') : $type eq 'csv' ? $::locale->text('CSV export') : $::locale->text('Chart export'),
+      submit => [ '#report_generator_form', {(
+            $key => $value,
+            defined $params{action_bar_additional_submit_values}
+            ? %{$params{action_bar_additional_submit_values}}
+            : undef
+          )} ],
     ];
   }
 
@@ -447,7 +466,7 @@ sub create_action_bar_actions {
 sub setup_action_bar {
   my ($self, $variables, %params) = @_;
 
-  my @actions = $self->create_action_bar_actions($variables);
+  my @actions = $self->create_action_bar_actions($variables, %params);
 
   if ($params{action_bar_setup_hook}) {
     $params{action_bar_setup_hook}->(@actions);
@@ -464,7 +483,6 @@ sub generate_html_content {
   $params{action_bar} //= 1;
 
   my $variables = $self->prepare_html_content(%params);
-
   $self->setup_action_bar($variables, %params) if $params{action_bar};
 
   my $stuff  = $self->{form}->parse_html_template($self->{options}->{html_template}, $variables);
@@ -484,6 +502,7 @@ sub generate_pdf_content {
   };
 
   my $self       = shift;
+  my %params     = @_;
   my $variables  = $self->prepare_html_content();
   my $form       = $self->{form};
   my $myconfig   = $self->{myconfig};
@@ -716,13 +735,17 @@ sub generate_pdf_content {
     $content = $self->append_gl_pdf_attachments($form,$content);
   }
 
+  # 1. check if we return the report as binary pdf
+  if ($params{want_binary_pdf}) {
+    return $content;
+  }
+  # 2. check if we want and can directly print the report
   my $printer_command;
   if ($pdfopts->{print} && $pdfopts->{printer_id}) {
     $form->{printer_id} = $pdfopts->{printer_id};
     $form->get_printer_code($myconfig);
     $printer_command = $form->{printer_command};
   }
-
   if ($printer_command) {
     $self->_print_content('printer_command' => $printer_command,
                           'content'         => $content,
@@ -730,6 +753,7 @@ sub generate_pdf_content {
     $form->{report_generator_printed} = 1;
 
   } else {
+  # 3. default: redirect http with file attached
     my $filename = $self->get_attachment_basename();
 
     print qq|content-type: application/pdf\n|;
@@ -843,6 +867,62 @@ sub _generate_csv_content {
       $csv->print($stdout, \@data);
     }
   }
+}
+
+sub generate_chart_content {
+  my ($self, %params) = @_;
+
+  $params{action_bar} //= 1;
+
+  my $opts            = $self->{options};
+
+  my $assignment_x  = $opts->{chart_export}->{assignment_x};
+  my $assignments_y = $opts->{chart_export}->{assignments_y};
+
+  my @labels;
+  my @datasets;
+  foreach my $row_set (@{ $self->{data} }) {
+    next if ('ARRAY' ne ref $row_set);
+    foreach my $row (@{ $row_set }) {
+      my $label = $row->{$assignment_x}->{data}->[0];
+      if ($label) {
+        push @labels, $label;
+
+        my @set;
+        foreach my $assignment_y (@$assignments_y) {
+          my $y = $row->{$assignment_y}->{data}->[0];
+          push @set, $y;
+        }
+        push @datasets, \@set;
+      }
+    }
+  }
+
+  my $variables = {
+    'TOP_INFO_TEXT'        => $self->html_format($opts->{top_info_text}),
+    'RAW_TOP_INFO_TEXT'    => $opts->{raw_top_info_text},
+    'BOTTOM_INFO_TEXT'     => $self->html_format($opts->{bottom_info_text}),
+    'RAW_BOTTOM_INFO_TEXT' => $opts->{raw_bottom_info_text},
+    'EXPORT_VARIABLE_LIST' => join(' ', @{ $self->{export}->{variable_list} }),
+    'EXPORT_NEXTSUB'       => $self->{export}->{nextsub},
+    'DATA_PRESENT'         => $self->{data_present},
+    'CONTROLLER_DISPATCH'  => $opts->{controller_class},
+    'TABLE_CLASS'          => $opts->{table_class},
+    'SKIP_BUTTONS'         => !!$params{action_bar},
+  };
+
+  $::request->layout->add_javascripts('chart.js', 'kivi.ChartReport.js');
+
+  $::form->{title} = $opts->{title};
+  $::form->header;
+  print $::form->parse_html_template('report_generator/chart_report',
+                                      {
+                                        labels      => to_json(\@labels),
+                                        datasets    => to_json(\@datasets),
+                                        data_labels => to_json($assignments_y),
+                                        %$variables,
+                                      }
+  );
 }
 
 sub check_for_pdf_api {
@@ -972,6 +1052,11 @@ The html generation function. Is invoked by generate_with_headers.
 =item generate_pdf_content
 
 The PDF generation function. It is invoked by generate_with_headers and renders the PDF with the PDF::API2 library.
+
+If the param want_binary_pdf is set, the binary pdf stream will be returned.
+If $pdfopts->{print} && $pdfopts->{printer_id} are set, the pdf will be printed (output is directed to print command).
+
+Otherwise and the default a html form with a downloadable file is returned.
 
 =item generate_csv_content
 

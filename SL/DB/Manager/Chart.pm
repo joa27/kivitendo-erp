@@ -9,8 +9,10 @@ use SL::DB::Helper::Sorted;
 use SL::DB::Helper::Paginated;
 use SL::DB::Helper::Filtered;
 use SL::MoreCommon qw(listify);
-use DateTime;
 use SL::DBUtils;
+
+use Carp;
+use DateTime;
 use Data::Dumper;
 
 sub object_class { 'SL::DB::Chart' }
@@ -38,7 +40,30 @@ __PACKAGE__->add_filter_specs(
     my ($key, $value) = @_;
     return __PACKAGE__->booked_filter($value);
   },
+  status => sub {
+    my ($key, $value) = @_;
+    return __PACKAGE__->invalid_filter($value);
+  },
+
 );
+sub invalid_filter {
+  my ($class, $status) = @_;
+
+  croak "Wrong call, need status invalid, all or valid, got:" . $status unless $status =~ m/invalid|all|valid/;
+
+  my @filter;
+
+  if ($status eq 'all') {
+     push @filter, ( id => [ \"SELECT id FROM chart" ] );
+  } elsif ($status eq 'valid') {
+     push @filter, ( id => [ \"SELECT id FROM chart WHERE NOT invalid" ] );
+  } elsif ($status eq 'invalid') {
+     push @filter, ( id => [ \"SELECT id FROM chart WHERE invalid" ] );
+  } else { die "Wrong state for invalid_filter"; }
+
+  return @filter;
+}
+
 
 sub booked_filter {
   my ($class, $booked) = @_;
@@ -135,7 +160,7 @@ sub cache_taxkeys {
   my $rows = selectall_hashref_query($::form, $::form->get_standard_dbh, <<"", $date);
     SELECT DISTINCT ON (chart_id) chart_id, startdate, id
     FROM taxkeys
-    WHERE startdate < ?
+    WHERE startdate <= ?
     ORDER BY chart_id, startdate DESC;
 
   for (@$rows) {

@@ -1,0 +1,39 @@
+[%- USE T8 %]
+[%- USE LxERP %]
+[%- USE P %]
+[%- USE HTML %]
+
+<div id="orders_report" class="wrapper">
+  <table class="tbl-list wi-moderate">
+    <caption>[%- HTML.escape(title) %]</caption>
+    <thead>
+      <tr>
+        <th>[% 'Type' | $T8 %]</th>
+        <th>[% 'Order/RFQ Number' | $T8 %]</th>
+        <th>[% 'Date' | $T8 %]</th>
+        <th>[% 'Amount' | $T8 %]</th>
+        <th>[% 'Salesman' | $T8 %]</th>
+        <th>[% 'Transaction description' | $T8 %]</th>
+      </tr>
+    </thead>
+    <tbody>
+
+      [%- FOREACH row = orders %]
+      <tr class="listrow[% loop.count % 2 %]">
+        <td>
+          [%- IF row.quotation -%]
+            [% IF FORM.db == 'customer' %][% 'Sales quotation' | $T8 %][% ELSE %][% 'RFQ' | $T8 %][% END %]
+          [%- ELSE -%]
+            [% IF FORM.db == 'customer' %][% 'Sales Order' | $T8 %][% ELSE %][% 'Purchase Order' | $T8 %][% END %]
+          [%- END -%]
+        </td>
+        <td>[% IF row.id %][% P.order.order(row) %][% END %]</td>
+        <td>[% row.transdate.to_kivitendo | html %]</td>
+        <td class="numeric">[%- LxERP.format_amount(row.amount, 2) %]</td>
+        <td>[% row.employee.name | html %]</td>
+        <td>[% row.transaction_description | html %]</td>
+      </tr>
+      [% END %]
+    </tbody>
+  </table>
+</div>

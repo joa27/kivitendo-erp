@@ -12,7 +12,6 @@ use SL::DB::Shop;
 use SL::DB::History;
 use SL::DBUtils;
 use SL::Shop;
-use SL::Presenter;
 use SL::Helper::Flash;
 use SL::Locale::String;
 use SL::Controller::Helper::ParseFilter;
@@ -30,33 +29,45 @@ sub action_get_orders {
   my ( $self ) = @_;
   my $orders_fetched;
   my $new_orders;
-  my %new_order;
-  my $active_shops = SL::DB::Manager::Shop->get_all(query => [ obsolete => 0 ]);
-  foreach my $shop_config ( @{ $active_shops } ) {
-    my $shop = SL::Shop->new( config => $shop_config );
-    my $connect = $shop->check_connectivity;
 
-    if( !$connect->{success} ){
-      %new_order  = (
-        number_of_orders => $connect->{data}->{version},
-        shop_id          => $shop->config->description,
-        error            => 1,
-     );
-     $new_orders = \%new_order;
-    }else{
+  my $type = $::form->{type};
+  if ( $type eq "get_next" ) {
+    my $active_shops = SL::DB::Manager::Shop->get_all(query => [ obsolete => 0 ]);
+    foreach my $shop_config ( @{ $active_shops } ) {
+      my $shop = SL::Shop->new( config => $shop_config );
+
       $new_orders = $shop->connector->get_new_orders;
+      push @{ $orders_fetched }, $new_orders ;
     }
-    push @{ $orders_fetched }, $new_orders ;
+
+  } elsif ( $type eq "get_one" ) {
+    my $shop_id = $::form->{shop_id};
+    my $shop_ordernumber = $::form->{shop_ordernumber};
+
+    if ( $shop_id && $shop_ordernumber ){
+      my $shop_config = SL::DB::Manager::Shop->get_first(query => [ id => $shop_id, obsolete => 0 ]);
+      my $shop = SL::Shop->new( config => $shop_config );
+      unless ( SL::DB::Manager::ShopOrder->get_all_count( query => [ shop_ordernumber => $shop_ordernumber, shop_id => $shop_id, obsolete => 'f' ] )) {
+        my $connect = $shop->check_connectivity;
+        $new_orders = $shop->connector->get_one_order($shop_ordernumber);
+        push @{ $orders_fetched }, $new_orders ;
+      } else {
+        flash_later('error', t8('Shoporder "#2" From Shop "#1" is already fetched', $shop->config->description, $shop_ordernumber));
+      }
+    } else {
+        flash_later('error', t8('Shop or ordernumber not selected.'));
+    }
   }
 
   foreach my $shop_fetched(@{ $orders_fetched }) {
     if($shop_fetched->{error}){
-      flash_later('error', t8('From shop "#1" :  #2 ', $shop_fetched->{shop_id}, $shop_fetched->{number_of_orders},));
+      flash_later('error', t8('From shop "#1" :  #2 ', $shop_fetched->{shop_description}, $shop_fetched->{message},));
     }else{
-      flash_later('info', t8('From shop #1 :  #2 shoporders have been fetched.', $shop_fetched->{shop_id}, $shop_fetched->{number_of_orders},));
+      flash_later('info', t8('From shop #1 :  #2 shoporders have been fetched.', $shop_fetched->{shop_description}, $shop_fetched->{number_of_orders},));
     }
   }
-  $self->redirect_to(controller => "ShopOrder", action => 'list');
+
+  $self->redirect_to(controller => "ShopOrder", action => 'list', filter => { 'transferred:eq_ignore_empty' => 0, obsolete => 0 });
 }
 
 sub action_list {
@@ -66,22 +77,14 @@ sub action_list {
   my $transferred = $::form->{filter}->{transferred_eq_ignore_empty} ne '' ? $::form->{filter}->{transferred_eq_ignore_empty} : '';
   my $sort_by = $::form->{sort_by} ? $::form->{sort_by} : 'order_date';
   $sort_by .=$::form->{sort_dir} ? ' DESC' : ' ASC';
-  my $shop_orders = SL::DB::Manager::ShopOrder->get_all( %filter, sort_by => $sort_by,
-                                                      with_objects => ['shop_order_items', 'kivi_customer', 'shop'],
-                                                    );
+  my $shop_orders = SL::DB::Manager::ShopOrder->get_all( %filter, with_objects => [ 'customer_country', 'billing_country', 'delivery_country'], sort_by => $sort_by );
 
   foreach my $shop_order(@{ $shop_orders }){
-
-    my $open_invoices = SL::DB::Manager::Invoice->get_all_count(
-      query => [customer_id => $shop_order->{kivi_customer_id},
-              paid => {lt_sql => 'amount'},
-      ],
-    );
-    $shop_order->{open_invoices} = $open_invoices;
+    $shop_order->{open_invoices} = $shop_order->check_for_open_invoices;
   }
+  $::form->{title} = t8('ShopOrders') . ' (' . t8('Number of data sets') . ': ' . scalar(@$shop_orders) . ')';
   $self->_setup_list_action_bar;
   $self->render('shop_order/list',
-                title       => t8('ShopOrders'),
                 SHOPORDERS  => $shop_orders,
                 TOOK        => $transferred,
               );
@@ -103,6 +106,14 @@ sub action_show {
 
 }
 
+sub action_customer_assign_to_shoporder {
+  my ($self) = @_;
+
+  $self->shop_order->assign_attributes( kivi_customer => $::form->{customer} );
+  $self->shop_order->save;
+  $self->redirect_to(controller => "ShopOrder", action => 'show', id => $self->shop_order->id);
+}
+
 sub action_delete_order {
   my ( $self ) = @_;
 
@@ -116,27 +127,32 @@ sub action_undelete_order {
 
   $self->shop_order->obsolete(0);
   $self->shop_order->save;
-  $self->redirect_to(controller => "ShopOrder", action => 'show', id => $self->shop_order->id);
+  $self->redirect_to(controller => "ShopOrder", action => 'list', filter => { 'transferred:eq_ignore_empty' => 0, obsolete => 0 });
 }
 
 sub action_transfer {
   my ( $self ) = @_;
 
+  $::form->{customer} ||= $::form->{partial_transfer_customer_id};
+
   my $customer = SL::DB::Manager::Customer->find_by(id => $::form->{customer});
-  die "Can't find customer" unless $customer;
+  die "Can't find customer" unless ref $customer eq 'SL::DB::Customer';
+
   my $employee = SL::DB::Manager::Employee->current;
   die "Can't find employee" unless $employee;
 
   die "Can't load shop_order form form->import_id" unless $self->shop_order;
-  my $order = $self->shop_order->convert_to_sales_order(customer => $customer, employee => $employee);
+  my $order = $self->shop_order->convert_to_sales_order(customer => $customer, employee => $employee,
+                                                        pos_ids  => $::form->{pos_ids}               );
 
   if ($order->{error}){
-    flash_later('error',@{$order->{errors}});
+    flash_later('error', $_) for @{$order->{errors}};
     $self->redirect_to(controller => "ShopOrder", action => 'show', id => $self->shop_order->id);
   }else{
     $order->db->with_transaction( sub {
       $order->calculate_prices_and_taxes;
       $order->save;
+      SL::DB::OrderVersion->new(oe_id => $order->id, version => 1)->save;
 
       my $snumbers = "ordernumber_" . $order->ordnumber;
       SL::DB::History->new(
@@ -157,7 +173,7 @@ sub action_transfer {
       $self->shop_order->save;
       $self->shop_order->link_to_record($order);
     }) || die $order->db->error;
-    $self->redirect_to(controller => "oe.pl", action => 'edit', type => 'sales_order', vc => 'customer', id => $order->id);
+    $self->redirect_to(controller => 'Order', action => 'edit', type => 'sales_order', vc => 'customer', id => $order->id);
   }
 }
 
@@ -172,9 +188,10 @@ sub action_mass_transfer {
   )->set_data(
      shop_order_record_ids       => [ @shop_orders ],
      num_order_created           => 0,
+     num_order_failed            => 0,
      num_delivery_order_created  => 0,
      status                      => SL::BackgroundJob::ShopOrderMassTransfer->WAITING_FOR_EXECUTION(),
-     conversion_errors         => [ ],
+     conversion_errors         => [],
    )->update_next_run_at;
 
    SL::System::TaskServer->new->wake_up;
@@ -209,7 +226,7 @@ sub action_apply_customer {
                   'zipcode'               => $::form->{$what.'_zipcode'},
                   'city'                  => $::form->{$what.'_city'},
                   'email'                 => $::form->{$what.'_email'},
-                  'country'               => $::form->{$what.'_country'},
+                  'country_id'            => $::form->{$what.'_country_id'},
                   'phone'                 => $::form->{$what.'_phone'},
                   'email'                 => $::form->{$what.'_email'},
                   'greeting'              => $::form->{$what.'_greeting'},
@@ -278,10 +295,17 @@ sub _setup_list_action_bar {
           t8('Search'),
           submit    => [ '#shoporders', { action => "ShopOrder/list" } ],
         ],
-         link => [
-          t8('Shoporders'),
-          link => [ $self->url_for(action => 'get_orders') ],
-          tooltip => t8('New shop orders'),
+        combobox => [
+          link => [
+            t8('Shoporders'),
+            call    => [ 'kivi.ShopOrder.get_orders_next' ],
+            tooltip => t8('New shop orders'),
+          ],
+          action => [
+            t8('Get one order'),
+            call    => [ 'kivi.ShopOrder.get_one_order_setup', id => "get_one" ],
+            tooltip => t8('Get one order by shopordernumber'),
+          ],
         ],
         'separator',
         action => [
@@ -347,6 +371,8 @@ Marks the shoporder obsolete = false
 =item C<action_transfer>
 
 Transfers one shoporder to an order.
+If the optional  $::form->{pos_ids} exists, they will be added
+as a param for the convert_to_sales_order method
 
 =item C<action_apply_customer>
 

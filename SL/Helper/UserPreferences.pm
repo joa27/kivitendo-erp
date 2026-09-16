@@ -4,7 +4,7 @@ use strict;
 use parent qw(Rose::Object);
 use version;
 
-use SL::DBUtils qw(selectall_hashref_query selectfirst_hashref_query do_query selectall_ids);
+use SL::DBUtils qw(selectall_hashref_query selectfirst_hashref_query do_query selectcol_array_query);
 use SL::DB;
 
 use Rose::Object::MakeMethods::Generic (
@@ -85,7 +85,7 @@ sub get_all {
 sub get_keys {
   my ($self) = @_;
 
-  my @keys = selectall_ids($::form, $::form->get_standard_dbh, <<"", 0, $self->login, $self->namespace);
+  my @keys = selectcol_array_query($::form, SL::DB->client->dbh, <<"", $self->login, $self->namespace);
     SELECT key FROM user_preferences WHERE login = ? AND namespace = ?
 
   return @keys;
@@ -139,7 +139,7 @@ sub _update {
 
 ### defaults stuff
 
-sub init_login             { SL::DB::Manager::Employee->current->login    }
+sub init_login             { $::myconfig{login}                           }
 sub init_namespace         { ref $_[0]                                    }
 sub init_upgrade_callbacks { +{}                                          }
 sub init_current_version   { version->parse((ref $_[0])->VERSION)->numify }

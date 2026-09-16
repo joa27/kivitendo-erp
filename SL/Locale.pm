@@ -74,6 +74,12 @@ sub new {
   return $locales_by_country{$country}
 }
 
+sub is_supported {
+  my ($country) = @_;
+
+  return -f "locale/$country/all";
+}
+
 sub _init {
   my $self     = shift;
   my $country  = shift;
@@ -265,7 +271,7 @@ sub findsub {
   $sub_name   = first { defined(&{ "::${_}" }) } @{ $self->{texts_reverse}->{$text_rev} } if $self->{texts_reverse}->{$text_rev};
   $sub_name ||= $text_rev if ($text_rev =~ m/^[a-z][a-z0-9_]+$/) && defined &{ "::${text_rev}" };
 
-  $main::form->error("$text not defined in locale/$self->{countrycode}/all") if !$sub_name;
+  $main::form->error($self->quote_special_chars('HTML', "$text not defined in locale/$self->{countrycode}/all")) if !$sub_name;
 
   $main::lxdebug->leave_sub();
 

@@ -30,7 +30,10 @@ sub action_search {
   my ($self) = @_;
 
   $self->setup_search_action_bar;
-  $self->render('reconciliation/search');
+  $self->render('reconciliation/search',
+                title => t8('Reconciliation with bank'),
+               );
+
 }
 
 sub action_reconciliation {
@@ -45,7 +48,8 @@ sub action_reconciliation {
   $self->setup_reconciliation_action_bar;
   $self->render('reconciliation/form',
                 ui_tab => scalar(@{$self->{PROPOSALS}}) > 0?1:0,
-                title => t8('Reconciliation'));
+                title => t8('Reconciliation'),
+               );
 }
 
 sub action_load_overview {
@@ -104,7 +108,7 @@ sub action_reconcile {
 
   if (@errors) {
     unshift(@errors, (t8('Could not reconcile chosen elements!')));
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     $self->action_reconciliation;
     return;
   }
@@ -179,26 +183,28 @@ sub action_reconcile_proposals {
 
   my $counter = 0;
 
-  foreach my $bt_id ( @{ $::form->{bt_ids} }) {
-    my $rec_group = SL::DB::Manager::ReconciliationLink->get_new_rec_group();
-    my $bank_transaction = SL::DB::Manager::BankTransaction->find_by(id => $bt_id);
-    $bank_transaction->cleared('1');
-    if ( $bank_transaction->isa('SL::DB::BankTransaction') ) {
-      $bank_transaction->invoice_amount($bank_transaction->amount);
+  # reconcile transaction safe
+  SL::DB->client->with_transaction(sub {
+    foreach my $bt_id ( @{ $::form->{bt_ids} }) {
+      my $rec_group = SL::DB::Manager::ReconciliationLink->get_new_rec_group();
+      my $bank_transaction = SL::DB::Manager::BankTransaction->find_by(id => $bt_id);
+      $bank_transaction->cleared('1');
+      $bank_transaction->save;
+      foreach my $acc_trans_id (@{ $::form->{proposal_list}->{$bt_id}->{BB} }) {
+        SL::DB::ReconciliationLink->new(
+          rec_group => $rec_group,
+          bank_transaction_id => $bt_id,
+          acc_trans_id => $acc_trans_id
+        )->save;
+        my $acc_trans = SL::DB::Manager::AccTransaction->find_by(acc_trans_id => $acc_trans_id);
+        $acc_trans->cleared('1');
+        $acc_trans->save;
+      }
+      $counter++;
     }
-    $bank_transaction->save;
-    foreach my $acc_trans_id (@{ $::form->{proposal_list}->{$bt_id}->{BB} }) {
-      SL::DB::ReconciliationLink->new(
-        rec_group => $rec_group,
-        bank_transaction_id => $bt_id,
-        acc_trans_id => $acc_trans_id
-      )->save;
-      my $acc_trans = SL::DB::Manager::AccTransaction->find_by(acc_trans_id => $acc_trans_id);
-      $acc_trans->cleared('1');
-      $acc_trans->save;
-    }
-    $counter++;
-  }
+
+  1;
+  }) or die t8('Unable to reconcile, database transaction failure');
 
   flash('ok', t8('#1 proposal(s) saved.', $counter));
 
@@ -255,7 +261,7 @@ sub _get_proposals {
       if ($linked_record->to_table eq 'ar') {
         $invoice = SL::DB::Manager::Invoice->find_by(id => $linked_record->to_id);
         #find payments
-        my $payments = SL::DB::Manager::AccTransaction->get_all(where => [ trans_id => $invoice->id, chart_link => { like => '%AR_paid%' }, transdate => $bt->transdate ]);
+        my $payments = SL::DB::Manager::AccTransaction->get_all(where => [ trans_id => $invoice->id, chart_id => $bt->local_bank_account->chart_id , transdate => $bt->transdate ]);
         foreach my $payment (@{ $payments }) {
           $check_sum += $payment->amount;
           push @{ $proposal->{BB} }, $payment;
@@ -264,7 +270,7 @@ sub _get_proposals {
       if ($linked_record->to_table eq 'ap') {
         $invoice = SL::DB::Manager::PurchaseInvoice->find_by(id => $linked_record->to_id);
         #find payments
-        my $payments = SL::DB::Manager::AccTransaction->get_all(where => [ trans_id => $invoice->id, chart_link => { like => '%AP_paid%' }, transdate => $bt->transdate ]);
+        my $payments = SL::DB::Manager::AccTransaction->get_all(where => [ trans_id => $invoice->id, chart_id => $bt->local_bank_account->chart_id, transdate => $bt->transdate ]);
         foreach my $payment (@{ $payments }) {
           $check_sum += $payment->amount;
           push @{ $proposal->{BB} }, $payment;
@@ -275,7 +281,7 @@ sub _get_proposals {
     #add proposal if something in acc_trans was found
     #otherwise try to find another entry in acc_trans and add it
     # for linked_records we allow a slight difference / imprecision, for acc_trans search we don't
-    if (scalar @{ $proposal->{BB} } and abs($check_sum) <= 0.01 ) {
+    if (scalar @{ $proposal->{BB} } and abs($check_sum) < 0.005 ) {
       push @proposals, $proposal;
     } elsif (!scalar @{ $proposal->{BB} }) {
       # use account_number and iban for matching remote account number
@@ -344,7 +350,7 @@ sub _get_elements_and_validate {
   }
 
   if ($::form->round_amount($bt_sum + $bb_sum, 2) != 0) {
-    push @errors, t8('Out of balance!');
+    push @errors, t8('Out of balance!'), t8('Sum of bank #1 and sum of bookings #2',$bt_sum, $bb_sum);
   }
 
   $self->{ELEMENTS} = \@elements;
@@ -357,33 +363,38 @@ sub _get_elements_and_validate {
 sub _reconcile {
   my ($self) = @_;
 
-  # 1. step: set AccTrans and BankTransactions to 'cleared'
-  foreach my $element (@{ $self->{ELEMENTS} }) {
-    $element->cleared('1');
-    $element->invoice_amount($element->amount) if $element->isa('SL::DB::BankTransaction');
-    $element->save;
-  }
+  # reconcile transaction safe
+  SL::DB->client->with_transaction(sub {
 
-  # 2. step: insert entry in reconciliation_links
-  my $rec_group = SL::DB::Manager::ReconciliationLink->get_new_rec_group();
-  #There is either a 1:n relation or a n:1 relation
-  if (scalar @{ $::form->{bt_ids} } == 1) {
-    my $bt_id = @{ $::form->{bt_ids} }[0];
-    foreach my $bb_id (@{ $::form->{bb_ids} }) {
-      my $rec_link = SL::DB::ReconciliationLink->new(bank_transaction_id => $bt_id,
-                                                     acc_trans_id        => $bb_id,
-                                                     rec_group           => $rec_group);
-      $rec_link->save;
+    # 1. step: set AccTrans and BankTransactions to 'cleared'
+    foreach my $element (@{ $self->{ELEMENTS} }) {
+      $element->cleared('1');
+      # veto either invoice_amount is fully assigned or not! No state tricks in later workflow!
+      $element->save;
     }
-  } else {
-    my $bb_id = @{ $::form->{bb_ids} }[0];
-    foreach my $bt_id (@{ $::form->{bt_ids} }) {
-      my $rec_link = SL::DB::ReconciliationLink->new(bank_transaction_id => $bt_id,
-                                                     acc_trans_id        => $bb_id,
-                                                     rec_group           => $rec_group);
-      $rec_link->save;
+    # 2. step: insert entry in reconciliation_links
+    my $rec_group = SL::DB::Manager::ReconciliationLink->get_new_rec_group();
+    #There is either a 1:n relation or a n:1 relation
+    if (scalar @{ $::form->{bt_ids} } == 1) {
+      my $bt_id = @{ $::form->{bt_ids} }[0];
+      foreach my $bb_id (@{ $::form->{bb_ids} }) {
+        my $rec_link = SL::DB::ReconciliationLink->new(bank_transaction_id => $bt_id,
+                                                       acc_trans_id        => $bb_id,
+                                                       rec_group           => $rec_group);
+        $rec_link->save;
+      }
+    } else {
+      my $bb_id = @{ $::form->{bb_ids} }[0];
+      foreach my $bt_id (@{ $::form->{bt_ids} }) {
+        my $rec_link = SL::DB::ReconciliationLink->new(bank_transaction_id => $bt_id,
+                                                       acc_trans_id        => $bb_id,
+                                                       rec_group           => $rec_group);
+        $rec_link->save;
+      }
     }
-  }
+
+  1;
+  }) or die t8('Unable to reconcile, database transaction failure');
 }
 
 sub _filter_to_where {

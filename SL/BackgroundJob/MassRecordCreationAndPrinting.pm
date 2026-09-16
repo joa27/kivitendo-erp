@@ -11,11 +11,11 @@ use SL::DB::Invoice;
 use SL::DB::Printer;
 use SL::SessionFile;
 use SL::Template;
+use SL::ARAP;
 use SL::Locale::String qw(t8);
 use SL::Helper::MassPrintCreatePDF qw(:all);
 use SL::Helper::CreatePDF qw(:all);
-use SL::Helper::File qw(store_pdf append_general_pdf_attachments);
-use SL::Webdav;
+use SL::Helper::File qw(store_pdf append_general_pdf_attachments doc_storage_enabled);
 
 use constant WAITING_FOR_EXECUTION       => 0;
 use constant CONVERTING_DELIVERY_ORDERS  => 1;
@@ -42,6 +42,7 @@ sub create_invoices {
 
   my $job_obj = $self->{job_obj};
   my $db      = $job_obj->db;
+  my $dbh     = $db->dbh;
 
   $job_obj->set_data(status => CONVERTING_DELIVERY_ORDERS())->save;
 
@@ -50,16 +51,40 @@ sub create_invoices {
     my $data   = $job_obj->data_as_hash;
 
     eval {
-      my $invoice;
       my $sales_delivery_order = SL::DB::DeliveryOrder->new(id => $delivery_order_id)->load;
       $number                  = $sales_delivery_order->donumber;
 
-      if (!$db->with_transaction(sub {
-        $invoice = $sales_delivery_order->convert_to_invoice(sub { $data->{transdate} ? ('attributes' => { transdate => $data->{transdate} }) :
-                                                                         undef }->() ) || die $db->error;
-        1;
-      })) {
-        die $db->error;
+      # Only process open delivery orders. In this list should only be open
+      # delivery orders, but if the background job is restarted (for what
+      # reason so ever), a new creation of invoices for delivery orders which
+      # are closed now can be triggered.
+      # Prevent this.
+      if ($sales_delivery_order->closed) {
+        die "Delivery Order already closed!\n";
+      }
+
+      my %conversion_params    = $data->{transdate} ? ('attributes' => { transdate => $data->{transdate} }) : ();
+      my $invoice              = $sales_delivery_order->convert_to_invoice(%conversion_params);
+
+      die $db->error if !$invoice;
+
+      ARAP->close_orders_if_billed('dbh'     => $dbh,
+                                   'arap_id' => $invoice->id,
+                                   'table'   => 'ar',);
+
+      # update shop status
+      my @linked_shop_orders = $invoice->linked_records(
+        from      => 'ShopOrder',
+        via       => [ 'DeliveryOrder', 'Order' ],
+      );
+      #if (scalar @linked_shop_orders[0][0] >= 1){
+        #do update
+      my $shop_order = $linked_shop_orders[0][0];
+      if ($shop_order){
+      require SL::Shop;
+        my $shop_config = SL::DB::Manager::Shop->get_first( query => [ id => $shop_order->shop_id ] );
+        my $shop = SL::Shop->new( config => $shop_config );
+        $shop->connector->set_orderstatus($shop_order->shop_trans_id, "completed");
       }
 
       $data->{num_created}++;
@@ -104,32 +129,18 @@ sub convert_invoices_to_pdf {
   foreach my $invoice (@{ $self->{invoices} }) {
 
     eval {
+      my @errors = ();
       my %params = (
         variables => \%variables,
         return    => 'file_name',
         document  => $invoice,
+        errors    => \@errors,
       );
       push @pdf_file_names, $self->create_massprint_pdf(%params);
-
       $data->{num_printed}++;
 
-      # OLD WebDAV Code, may be deleted:
-      # copy file to webdav folder
-      if ($::instance_conf->get_webdav_documents) {
-        my $webdav = SL::Webdav->new(
-          type     => 'invoice',
-          number   => $invoice->invnumber,
-        );
-        my $webdav_file = SL::Webdav::File->new(
-          webdav   => $webdav,
-          filename => t8('Invoice') . '_' . $invoice->invnumber . '.pdf',
-        );
-        eval {
-          $webdav_file->store(file => $pdf_file_names[-1]);
-          1;
-        } or do {
-          push @{ $data->{print_errors} }, { id => $invoice->id, number => $invoice->invnumber, message => $@ };
-        }
+      if (scalar @errors) {
+        push @{ $data->{print_errors} }, { id => $invoice->id, number => $invoice->invnumber, message => join(', ', @errors) };
       }
 
       1;

@@ -3,7 +3,9 @@ package SL::DB::InvoiceItem;
 use strict;
 
 use SL::DB::MetaSetup::InvoiceItem;
+use SL::DB::Manager::InvoiceItem;
 use SL::DB::Helper::ActsAsList;
+use SL::DB::Helper::AttrHTML;
 use SL::DB::Helper::LinkedRecords;
 use SL::DB::Helper::RecordItem;
 use SL::DB::Helper::CustomVariables (
@@ -16,8 +18,7 @@ use SL::DB::Helper::CustomVariables (
     },
   },
 );
-
-__PACKAGE__->meta->make_manager_class;
+use Rose::DB::Object::Helpers qw(as_tree strip);
 
 __PACKAGE__->configure_acts_as_list(group_by => [qw(trans_id)]);
 
@@ -36,6 +37,8 @@ __PACKAGE__->meta->add_relationships(
 );
 
 __PACKAGE__->meta->initialize;
+
+__PACKAGE__->attr_html('longdescription');
 
 sub record {
   my ($self) = @_;

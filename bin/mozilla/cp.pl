@@ -129,6 +129,7 @@ sub form_header {
 
   setup_cp_form_action_bar(can_post => !!$form->{rowcount});
 
+  $form->{title} = $form->{type} eq 'receipt' ? t8('Receipt'): t8('Payment');
   $form->header;
 
   $arap = lc $form->{ARAP};
@@ -235,7 +236,8 @@ sub update {
   if (!$form->{forex}) {        # read exchangerate from input field (not hidden)
     $form->{exchangerate} = $form->parse_amount(\%myconfig, $form->{exchangerate});
   }
-  $form->{forex}        = $form->check_exchangerate( \%myconfig, $form->{currency}, $form->{datepaid}, $buysell);
+  $form->{forex}        = $form->check_exchangerate( \%myconfig, $form->{currency}, $form->{datepaid}, $buysell)
+    if $form->{defaultcurrency} ne $form->{currency} && $form->{datepaid};
   $form->{exchangerate} = $form->{forex} if $form->{forex};
 
   $amount = $form->{amount} = $form->parse_amount(\%myconfig, $form->{amount});
@@ -255,8 +257,6 @@ sub update {
       $form->{"amount_$i"} = $ref->{amount} / $ref->{exchangerate};
       $form->{"due_$i"}    =
         ($ref->{amount} - $ref->{paid}) / $ref->{exchangerate};
-      $form->{"checked_$i"} = "";
-      $form->{"paid_$i"}    = "";
 
       # need to format
       map {

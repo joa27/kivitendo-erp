@@ -11,6 +11,7 @@ use SL::DB::MetaSetup::BackgroundJob;
 use SL::DB::Manager::BackgroundJob;
 
 use SL::System::Process;
+use SL::YAML;
 
 __PACKAGE__->meta->initialize;
 
@@ -46,6 +47,7 @@ sub run {
 
     $history = SL::DB::BackgroundJobHistory
       ->new(package_name => $self->package_name,
+            description  => $self->description,
             run_at       => $run_at,
             status       => SL::DB::BackgroundJobHistory::SUCCESS(),
             result       => $result,
@@ -61,7 +63,7 @@ sub run {
       ->new(package_name => $self->package_name,
             run_at       => $run_at,
             status       => SL::DB::BackgroundJobHistory::FAILURE(),
-            error_col    => $error,
+            error_col    => '' . $error,
             data         => $self->data);
     $history->save;
 
@@ -76,18 +78,18 @@ sub run {
 sub data_as_hash {
   my $self = shift;
 
-  $self->data(YAML::Dump($_[0])) if @_;
+  $self->data(SL::YAML::Dump($_[0])) if @_;
 
   return {}                        if !$self->data;
   return $self->data               if ref($self->{data}) eq 'HASH';
-  return YAML::Load($self->{data}) if !ref($self->{data});
+  return SL::YAML::Load($self->{data}) if !ref($self->{data});
   return {};
 }
 
 sub set_data {
   my ($self, %data) = @_;
 
-  $self->data(YAML::Dump({
+  $self->data(SL::YAML::Dump({
     %{ $self->data_as_hash },
     %data,
   }));

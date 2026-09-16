@@ -12,19 +12,27 @@ use SL::DB::Default;
 use SL::DB::Language;
 use SL::DB::Part;
 use SL::DB::Unit;
+use SL::DB::Customer;
 use SL::Helper::Flash;
 use SL::Locale::String qw(t8);
 use SL::PriceSource::ALL;
 use SL::Template;
+use SL::DB::Order::TypeData;
+use SL::DB::DeliveryOrder::TypeData;
+use SL::DB::Reclamation::TypeData;
 use SL::Controller::TopQuickSearch;
-use SL::Helper::ShippedQty;
+use SL::DB::Helper::AccountingPeriod qw(get_balance_startdate_method_options);
+use SL::VATIDNr;
+use SL::ZUGFeRD;
 
 __PACKAGE__->run_before('check_auth');
 
 use Rose::Object::MakeMethods::Generic (
-  'scalar --get_set_init' => [ qw(defaults all_warehouses all_weightunits all_languages all_currencies all_templates all_price_sources h_unit_name available_quick_search_modules available_shipped_qty_item_identity_fields
-                                  all_project_statuses all_project_types
-                                  posting_options payment_options accounting_options inventory_options profit_options balance_startdate_method_options) ],
+  'scalar --get_set_init' => [ qw(defaults all_warehouses all_weightunits all_languages all_currencies all_templates all_price_sources h_unit_name available_quick_search_modules
+                                  all_project_statuses all_project_types zugferd_settings
+                                  posting_options payment_options accounting_options inventory_options profit_options balance_startdate_method_options yearend_options
+                                  displayable_name_specs_by_module available_documents_with_no_positions
+                                  zugferd_attach_linked_sales_delivery_orders_options) ],
 );
 
 sub action_edit {
@@ -48,8 +56,6 @@ sub action_save {
     undef $defaults->{$_} if !$defaults->{$_};
   }
 
-  $defaults->{$_} = $::form->parse_amount(\%::myconfig, $defaults->{$_}) for qw(customer_hourly_rate);
-
   $self->defaults->assign_attributes(%{ $defaults });
 
   my %errors_idx;
@@ -72,13 +78,21 @@ sub action_save {
       $existing_currency->name($new_name);
     }
   }
-
   if ($::form->{new_currency} && $new_currency_names{ $::form->{new_currency} }) {
     $errors_idx{1} = t8('Currency names must be unique.');
   }
 
   my @errors = map { $errors_idx{$_} } sort keys %errors_idx;
 
+  # check valid mail adresses
+  foreach (qw(email_sender_sales_quotation email_sender_request_quotation email_sender_sales_order
+             email_sender_purchase_order email_sender_sales_delivery_order email_sender_purchase_delivery_order
+             email_sender_invoice email_sender_purchase_invoice email_sender_letter email_sender_dunning
+             global_bcc)) {
+    next unless $defaults->{$_};
+    next if     $defaults->{$_} =~ /^[a-z0-9.]+\@[a-z0-9.-]+$/i;
+    push @errors, t8('The email entry for #1 looks invalid', $_);
+  }
   # Check templates
   $::form->{new_templates}        =~ s:/::g;
   $::form->{new_master_templates} =~ s:/::g;
@@ -96,10 +110,15 @@ sub action_save {
     }
   }
 
+  my $cleaned_ustid = SL::VATIDNr->clean($defaults->{co_ustid});
+  if ($cleaned_ustid && !SL::VATIDNr->validate($cleaned_ustid)) {
+    push @errors, t8("The VAT ID number '#1' is invalid.", $defaults->{co_ustid});
+  }
+
   # Show form again if there were any errors. Nothing's been changed
   # yet in the database.
   if (@errors) {
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     return $self->edit_form;
   }
 
@@ -131,6 +150,11 @@ sub action_save {
     $self->defaults->templates('templates/' . $::form->{new_templates});
   }
 
+  # Displayable name preferences
+  foreach my $specs (@{ $::form->{displayable_name_specs} }) {
+    $self->displayable_name_specs_by_module->{$specs->{module}}->{prefs}->store_default($specs->{default});
+  }
+
   # Finally save defaults.
   $self->defaults->save;
 
@@ -152,6 +176,7 @@ sub init_all_templates   { +{ SL::Template->available_templates }               
 sub init_h_unit_name     { first { SL::DB::Manager::Unit->find_by(name => $_) } qw(Std h Stunde)                         }
 sub init_all_project_types    { SL::DB::Manager::ProjectType->get_all_sorted                                             }
 sub init_all_project_statuses { SL::DB::Manager::ProjectStatus->get_all_sorted                                           }
+sub init_zugferd_settings     { \@SL::ZUGFeRD::customer_settings                                                         }
 
 sub init_posting_options {
   [ { title => t8("never"),           value => 0           },
@@ -181,11 +206,12 @@ sub init_profit_options {
 }
 
 sub init_balance_startdate_method_options {
-  [ { title => t8("After closed period"),                       value => "closed_to"                   },
-    { title => t8("Start of year"),                             value => "start_of_year"               },
-    { title => t8("All transactions"),                          value => "all_transactions"            },
-    { title => t8("Last opening balance or all transactions"),  value => "last_ob_or_all_transactions" },
-    { title => t8("Last opening balance or start of year"),     value => "last_ob_or_start_of_year"    }, ]
+  return SL::DB::Helper::AccountingPeriod::get_balance_startdate_method_options;
+}
+
+sub init_yearend_options {
+  [ { title => t8("default"),         value => "default"   },
+    { title => t8("simple"),          value => "simple"    }, ]
 }
 
 sub init_all_price_sources {
@@ -198,8 +224,39 @@ sub init_available_quick_search_modules {
   [ SL::Controller::TopQuickSearch->new->available_modules ];
 }
 
-sub init_available_shipped_qty_item_identity_fields {
-  [ SL::Helper::ShippedQty->new->available_item_identity_fields ];
+sub init_displayable_name_specs_by_module {
+  +{
+     'SL::DB::Customer' => {
+       specs => SL::DB::Customer->displayable_name_specs,
+       prefs => SL::DB::Customer->displayable_name_prefs,
+     },
+     'SL::DB::Vendor' => {
+       specs => SL::DB::Vendor->displayable_name_specs,
+       prefs => SL::DB::Vendor->displayable_name_prefs,
+     },
+     'SL::DB::Part' => {
+       specs => SL::DB::Part->displayable_name_specs,
+       prefs => SL::DB::Part->displayable_name_prefs,
+     },
+  };
+}
+
+sub init_available_documents_with_no_positions {
+  my @docs = ( @{SL::DB::Order::TypeData::valid_types()},
+               @{SL::DB::DeliveryOrder::TypeData::valid_types()},
+               @{SL::DB::Reclamation::TypeData::valid_types()} );
+
+  my @available_docs = map { {name => $_, description => $::form->get_formname_translation($_)} } @docs;
+
+  return \@available_docs;
+}
+
+sub init_zugferd_attach_linked_sales_delivery_orders_options {
+  [ { title => t8('No'),             value => 'no'             },
+    { title => t8('Only if exists'), value => 'only_if_exists' },
+    { title => t8('Yes'),            value => 'yes'            },
+    { title => t8('Create always'),  value => 'create_always'  },
+  ]
 }
 
 #

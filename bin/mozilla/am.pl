@@ -42,6 +42,7 @@ use SL::AM;
 use SL::CA;
 use SL::Form;
 use SL::Helper::Flash;
+use SL::Helper::UserPreferences;
 use SL::User;
 use SL::USTVA;
 use SL::Iconv;
@@ -573,6 +574,7 @@ sub config {
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
   my $locale   = $main::locale;
+  my $defaults = SL::DB::Default->get;
 
   _build_cfg_options('dateformat', qw(mm/dd/yy dd/mm/yy dd.mm.yy yyyy-mm-dd));
   _build_cfg_options('timeformat', qw(hh:mm hh:mm:ss));
@@ -580,8 +582,7 @@ sub config {
 
   my @formats = ();
   if ($::lx_office_conf{print_templates}->{opendocument}
-      && $::lx_office_conf{applications}->{openofficeorg_writer} && (-x $::lx_office_conf{applications}->{openofficeorg_writer})
-      && $::lx_office_conf{applications}->{xvfb}                 && (-x $::lx_office_conf{applications}->{xvfb})) {
+      && $::lx_office_conf{applications}->{openofficeorg_writer} && (-x $::lx_office_conf{applications}->{openofficeorg_writer})) {
     push(@formats, { "name" => $locale->text("PDF (OpenDocument/OASIS)"),
                      "value" => "opendocument_pdf" });
   }
@@ -635,7 +636,7 @@ sub config {
   }
 
   $form->{STYLESHEETS} = [];
-  foreach my $item (qw(lx-office-erp.css kivitendo.css)) {
+  foreach my $item (qw(design40.css)) {
     push @{ $form->{STYLESHEETS} }, {
       'name'     => $item,
       'value'    => $item,
@@ -643,17 +644,43 @@ sub config {
     };
   }
 
+  my $user_prefs = SL::Helper::UserPreferences->new(
+    namespace         => 'TopQuickSearch',
+  );
+  my $prefs_val;
+  my @quick_search_modules;
+  if ($user_prefs) {
+    $prefs_val            = $user_prefs->get('quick_search_modules');
+    @quick_search_modules = split ',', $prefs_val;
+  }
+
+  my $enabled_quick_search = [ SL::Controller::TopQuickSearch->new->available_modules ];
+  $form->{enabled_quick_searchmodules} = \@{$enabled_quick_search};
+  $form->{default_quick_searchmodules} = \@quick_search_modules;
+
+  $form->{displayable_name_specs_by_module}       = AM->displayable_name_specs_by_module();
+  $form->{positions_scrollbar_height}             = AM->positions_scrollbar_height();
+  $form->{purchase_search_makemodel}              = AM->purchase_search_makemodel();
+  $form->{sales_search_customer_partnumber}       = AM->sales_search_customer_partnumber();
+  $form->{positions_show_update_button}           = AM->positions_show_update_button();
+  $form->{time_recording_use_duration}            = AM->time_recording_use_duration();
+  $form->{longdescription_dialog_size_percentage} = AM->longdescription_dialog_size_percentage();
+  $form->{layout_style}                           = AM->layout_style();
+  $form->{part_picker_search_all_as_list_default} = AM->part_picker_search_all_as_list_default();
+  $form->{order_item_input_position}              = AM->order_item_input_position();
+
   $myconfig{show_form_details} = 1 unless (defined($myconfig{show_form_details}));
   $form->{CAN_CHANGE_PASSWORD} = $main::auth->can_change_password();
   $form->{todo_cfg}            = { TODO->get_user_config('login' => $::myconfig{login}) };
-
   $form->{title}               = $locale->text('Edit Preferences for #1', $::myconfig{login});
+  $form->{follow_up_notify_by_email} = $myconfig{follow_up_notify_by_email};
+
+  $::request->{layout}->use_javascript("${_}.js") for qw(jquery.multiselect2side ckeditor5/ckeditor ckeditor5/translations/de);
 
   setup_am_config_action_bar();
-
   $form->header();
 
-  $form->{full_signature} = $form->create_email_signature();
+  $form->{company_signature} = SL::DB::Default->get->signature;
 
   print $form->parse_html_template('am/config');
 
@@ -671,6 +698,11 @@ sub save_preferences {
 
   TODO->save_user_config('login' => $::myconfig{login}, %{ $form->{todo_cfg} || { } });
 
+  if ($form->{quick_search_modules}) {
+    my $user_prefs = SL::Helper::UserPreferences->new( namespace => 'TopQuickSearch',);
+    my $quick_search_modules = join ',', @{$form->{quick_search_modules}};
+    $user_prefs->store('quick_search_modules', $quick_search_modules);
+  }
   if (AM->save_preferences($form)) {
     if ($::auth->can_change_password()
         && defined $form->{new_password}
@@ -685,10 +717,11 @@ sub save_preferences {
       $::auth->change_password($::myconfig{login}, $form->{new_password});
     }
 
-    $form->redirect($locale->text('Preferences saved!'));
+    flash_later('info', $locale->text('Preferences saved!'));
+    print $form->redirect_header('am.pl?action=config');
+  } else {
+    $form->error($locale->text('Cannot save preferences!'));
   }
-
-  $form->error($locale->text('Cannot save preferences!'));
 
   $main::lxdebug->leave_sub();
 }
@@ -961,7 +994,7 @@ sub show_history_search {
 
   setup_am_show_history_search_action_bar();
 
-  $form->{title} = $locale->text("History Search");
+  $form->{title} = $locale->text("history search engine");
   $form->header();
 
   print $form->parse_html_template("common/search_history");
@@ -1062,7 +1095,7 @@ sub add_tax {
 
   $main::auth->assert('config');
 
-  $form->{title} =  $locale->text('Add');
+  $form->{title} =  $locale->text('Add Tax');
 
   $form->{callback} ||= "am.pl?action=add_tax";
 
@@ -1097,7 +1130,7 @@ sub edit_tax {
 
   $main::auth->assert('config');
 
-  $form->{title} =  $locale->text('Edit');
+  $form->{title} =  $locale->text('Edit Tax');
 
   AM->get_tax(\%myconfig, \%$form);
 
@@ -1198,7 +1231,9 @@ sub save_tax {
   $form->{translations} = { map { $_ =~ '^translation_(\d+)'; $1 => $form->{$_} } @translation_keys };
 
   AM->save_tax(\%myconfig, \%$form);
-  $form->redirect($locale->text('Tax saved!'));
+  flash_later('info', $locale->text("Tax saved!"));
+
+  print $form->redirect_header('am.pl?action=list_tax');
 
   $main::lxdebug->leave_sub();
 }
@@ -1308,6 +1343,7 @@ sub save_warehouse {
   $main::auth->assert('config');
 
   $form->isblank("description", $locale->text('Description missing!'));
+  $form->isblank("number_of_new_bins", $locale->text('Number')  . $locale->text(' missing!'));
 
   $form->{number_of_new_bins} = $form->parse_amount(\%myconfig, $form->{number_of_new_bins});
 

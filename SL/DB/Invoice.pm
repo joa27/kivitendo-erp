@@ -5,7 +5,7 @@ use strict;
 use Carp;
 use List::Util qw(first sum);
 
-use Rose::DB::Object::Helpers qw(has_loaded_related forget_related);
+use Rose::DB::Object::Helpers qw(has_loaded_related forget_related as_tree strip);
 use SL::DB::MetaSetup::Invoice;
 use SL::DB::Manager::Invoice;
 use SL::DB::Helper::Payment qw(:ALL);
@@ -13,11 +13,16 @@ use SL::DB::Helper::AttrHTML;
 use SL::DB::Helper::AttrSorted;
 use SL::DB::Helper::FlattenToForm;
 use SL::DB::Helper::LinkedRecords;
+use SL::DB::Helper::PDF_A;
 use SL::DB::Helper::PriceTaxCalculator;
 use SL::DB::Helper::PriceUpdater;
+use SL::DB::Helper::RecordLink qw(RECORD_ID RECORD_TYPE_REF RECORD_ITEM_ID RECORD_ITEM_TYPE_REF);
+use SL::DB::Helper::SalesPurchaseInvoice;
 use SL::DB::Helper::TransNumberGenerator;
+use SL::DB::Helper::ZUGFeRD qw(:CREATE);
+use SL::DB::Helper::ZUGFeRDValidator;
 use SL::Locale::String qw(t8);
-use SL::DB::CustomVariable;
+use SL::MIME;
 
 __PACKAGE__->meta->add_relationship(
   invoiceitems => {
@@ -60,6 +65,11 @@ __PACKAGE__->meta->add_relationship(
       sort_by      => 'acc_trans_id ASC',
     },
   },
+  dunnings       => {
+    type         => 'one to many',
+    class        => 'SL::DB::Dunning',
+    column_map   => { id => 'trans_id' },
+  },
 );
 
 __PACKAGE__->meta->initialize;
@@ -67,9 +77,18 @@ __PACKAGE__->meta->initialize;
 __PACKAGE__->attr_html('notes');
 __PACKAGE__->attr_sorted('items');
 
+__PACKAGE__->before_save('_before_save_set_record_type');
 __PACKAGE__->before_save('_before_save_set_invnumber');
+__PACKAGE__->after_save('_after_save_link_records');
 
 # hooks
+
+sub _before_save_set_record_type {
+  my ($self) = @_;
+  return 1 if $self->record_type;
+  $self->record_type( $self->invoice_type );
+  return 1;
+}
 
 sub _before_save_set_invnumber {
   my ($self) = @_;
@@ -77,6 +96,20 @@ sub _before_save_set_invnumber {
   $self->create_trans_number if !$self->invnumber;
 
   return 1;
+}
+
+sub _after_save_link_records {
+  my ($self) = @_;
+
+  my @allowed_record_sources = qw(SL::DB::Reclamation SL::DB::Order SL::DB::DeliveryOrder);
+  my @allowed_item_sources = qw(SL::DB::ReclamationItem SL::DB::OrderItem SL::DB::DeliveryOrderItem);
+
+  SL::DB::Helper::RecordLink::link_records(
+    $self,
+    \@allowed_record_sources,
+    \@allowed_item_sources,
+    close_source_quotations => 1,
+  );
 }
 
 # methods
@@ -128,6 +161,17 @@ sub closed {
   return $self->paid >= $self->amount;
 }
 
+sub convert_to_reclamation {
+  my ($self, %params) = @_;
+  $params{destination_type} = $self->is_sales ? 'sales_reclamation'
+                                              : 'purchase_reclamation';
+
+  require SL::DB::Reclamation;
+  my $reclamation = SL::DB::Reclamation->new_from($self, %params);
+
+  return $reclamation;
+}
+
 sub _clone_orderitem_delivery_order_item_cvar {
   my ($cvar) = @_;
 
@@ -148,7 +192,7 @@ sub new_from {
   my (@columns, @item_columns, $item_parent_id_column, $item_parent_column);
 
   if (ref($source) eq 'SL::DB::Order') {
-    @columns      = qw(quonumber delivery_customer_id delivery_vendor_id);
+    @columns      = qw(quonumber delivery_customer_id delivery_vendor_id tax_point_start tax_point);
     @item_columns = qw(subtotal);
 
     $item_parent_id_column = 'trans_id';
@@ -165,8 +209,9 @@ sub new_from {
   $terms = $source->customer->payment_terms if !defined $terms && $source->customer;
 
   my %args = ( map({ ( $_ => $source->$_ ) } qw(customer_id taxincluded shippingpoint shipvia notes intnotes salesman_id cusordnumber ordnumber department_id
-                                                cp_id language_id taxzone_id globalproject_id transaction_description currency_id delivery_term_id), @columns),
-               transdate   => DateTime->today_local,
+                                                cp_id language_id taxzone_id tax_point globalproject_id transaction_description currency_id delivery_term_id
+                                                billing_address_id), @columns),
+               transdate   => $params{transdate} // DateTime->today_local,
                gldate      => DateTime->today_local,
                duedate     => $terms ? $terms->calc_date(reference_date => DateTime->today_local) : DateTime->today_local,
                invoice     => 1,
@@ -176,11 +221,20 @@ sub new_from {
                employee_id => (SL::DB::Manager::Employee->current || SL::DB::Employee->new(id => $source->employee_id))->id,
             );
 
+  $args{record_type} = $params{record_type} or die "new_from needs explicit record_type";
+
   $args{payment_id} = ( $terms ? $terms->id : $source->payment_id);
 
-  if ($source->type =~ /_order$/) {
+  if ($source->type =~ /_delivery_order$/) {
+    $args{deliverydate} = $source->reqdate;
+    if (my $order = SL::DB::Manager::Order->find_by(ordnumber => $source->ordnumber)) {
+      $args{orddate}    = $order->transdate;
+    }
+
+  } elsif ($source->type =~ /_order$/) {
     $args{deliverydate} = $source->reqdate;
     $args{orddate}      = $source->transdate;
+
   } else {
     $args{quodate}      = $source->transdate;
   }
@@ -201,6 +255,15 @@ sub new_from {
   my $items   = delete($params{items}) || $source->items_sorted;
   my %item_parents;
 
+  if ($params{honor_recurring_billing_mode}) {
+    $items = [
+      grep {    !$_->can('recurring_billing_mode')
+             || ($_->recurring_billing_mode eq 'always')
+             || (($_->recurring_billing_mode eq 'once') && !$_->recurring_billing_invoice_id)
+      } @{ $items }
+    ];
+  }
+
   my @items = map {
     my $source_item      = $_;
     my $source_item_id   = $_->$item_parent_id_column;
@@ -219,10 +282,13 @@ sub new_from {
                                donumber         => ref($item_parent) eq 'SL::DB::DeliveryOrder' ? $item_parent->donumber  : $source_item->can('donumber') ? $source_item->donumber : '',
                              );
 
-    $current_invoice_item->{"converted_from_orderitems_id"}           = $_->{id} if ref($item_parent) eq 'SL::DB::Order';
-    $current_invoice_item->{"converted_from_delivery_order_items_id"} = $_->{id} if ref($item_parent) eq 'SL::DB::DeliveryOrder';
+    $current_invoice_item->{RECORD_ITEM_ID()}           = $_->{id};
+    $current_invoice_item->{RECORD_ITEM_TYPE_REF()}     = ref $source_item;
     $current_invoice_item;
   } @{ $items };
+
+  $invoice->{RECORD_ID()}           = $source->id;
+  $invoice->{RECORD_TYPE_REF()}     = ref $source;
 
   @items = grep { $params{item_filter}->($_) } @items if $params{item_filter};
   @items = grep { $_->qty * 1 } @items if $params{skip_items_zero_qty};
@@ -236,7 +302,7 @@ sub new_from {
 sub post {
   my ($self, %params) = @_;
 
-  die "not an invoice" unless $self->invoice;
+  die "not an invoice" unless $self->type_data->properties('is_invoice');
 
   require SL::DB::Chart;
   if (!$params{ar_id}) {
@@ -260,7 +326,7 @@ sub post {
 
     $self->_post_add_acctrans($data{amounts_cogs});
     $self->_post_add_acctrans($data{amounts});
-    $self->_post_add_acctrans($data{taxes});
+    $self->_post_add_acctrans($data{taxes_by_chart_id});
 
     $self->_post_add_acctrans({ $params{ar_id} => $self->amount * -1 });
 
@@ -290,14 +356,16 @@ sub _post_add_acctrans {
     $chart_link = SL::DB::Manager::Chart->find_by(id => $chart_id)->{'link'};
     $chart_link ||= '';
 
-    SL::DB::AccTransaction->new(trans_id   => $self->id,
-                                chart_id   => $chart_id,
-                                amount     => $spec->{amount},
-                                tax_id     => $spec->{tax_id},
-                                taxkey     => $spec->{taxkey},
-                                project_id => $self->globalproject_id,
-                                transdate  => $self->transdate,
-                                chart_link => $chart_link)->save;
+    if ($spec->{amount} != 0) {
+      SL::DB::AccTransaction->new(trans_id   => $self->id,
+                                  chart_id   => $chart_id,
+                                  amount     => $spec->{amount},
+                                  tax_id     => $spec->{tax_id},
+                                  taxkey     => $spec->{taxkey},
+                                  project_id => $self->globalproject_id,
+                                  transdate  => $self->transdate,
+                                  chart_link => $chart_link)->save;
+    }
   }
 }
 
@@ -341,7 +409,8 @@ sub add_ar_amount_row {
   if ( $tax and $tax->rate != 0 ) {
     ($netamount, $taxamount) = Form->calculate_tax($params{amount}, $tax->rate, $self->taxincluded, $roundplaces);
   };
-  next unless $netamount; # netamount mustn't be zero
+
+  return unless $netamount; # netamount mustn't be zero
 
   my $sign = $self->customer_id ? 1 : -1;
   my $acc = SL::DB::AccTransaction->new(
@@ -349,6 +418,7 @@ sub add_ar_amount_row {
     chart_id   => $params{chart}->id,
     chart_link => $params{chart}->link,
     transdate  => $self->transdate,
+    gldate     => $self->gldate,
     taxkey     => $tax->taxkey,
     tax_id     => $tax->id,
     project_id => $params{project_id},
@@ -363,6 +433,7 @@ sub add_ar_amount_row {
        chart_id   => $tax->chart_id,
        chart_link => $tax->chart->link,
        transdate  => $self->transdate,
+       gldate     => $self->gldate,
        taxkey     => $tax->taxkey,
        tax_id     => $tax->id,
      );
@@ -406,7 +477,7 @@ sub create_ar_row {
   $self->add_transactions( $acc );
   push( @$acc_trans, $acc );
   return $acc_trans;
-};
+}
 
 sub validate_acc_trans {
   my ($self, %params) = @_;
@@ -481,18 +552,16 @@ sub recalculate_amounts {
 sub _post_create_assemblyitem_entries {
   my ($self, $assembly_entries) = @_;
 
-  my $items = $self->invoiceitems;
+  my @items = grep { !$_->assemblyitem } @{ $self->items_sorted };
   my @new_items;
 
-  my $item_idx = 0;
-  foreach my $item (@{ $items }) {
-    next if $item->assemblyitem;
+  foreach my $item_idx (0 .. scalar(@items)-1) {
+    my $item = $items[$item_idx];
 
     push @new_items, $item;
-    $item_idx++;
 
     foreach my $assembly_item (@{ $assembly_entries->[$item_idx] || [ ] }) {
-      push @new_items, SL::DB::InvoiceItem->new(parts_id     => $assembly_item->{part},
+      push @new_items, SL::DB::InvoiceItem->new(parts_id     => $assembly_item->{part}->id,
                                                 description  => $assembly_item->{part}->description,
                                                 unit         => $assembly_item->{part}->unit,
                                                 qty          => $assembly_item->{qty},
@@ -517,12 +586,25 @@ sub _post_update_allocated {
 
 sub invoice_type {
   my ($self) = @_;
+  return $self->record_type   if $self->record_type;
 
-  return 'ar_transaction'     if !$self->invoice;
-  return 'credit_note'        if $self->type eq 'credit_note' && $self->amount < 0 && !$self->storno;
-  return 'invoice_storno'     if $self->type ne 'credit_note' && $self->amount < 0 &&  $self->storno;
-  return 'credit_note_storno' if $self->type eq 'credit_note' && $self->amount > 0 &&  $self->storno;
+  ### only valid if object comes out of database or is ready to be stored in database
+  return 'ar_transaction_storno' if !$self->invoice && $self->storno;
+  return 'ar_transaction'        if !$self->invoice;
+  return 'invoice_for_advance_payment_storno' if $self->type eq 'invoice_for_advance_payment' && $self->amount < 0 && $self->storno;
+  return 'invoice_for_advance_payment'        if $self->type eq 'invoice_for_advance_payment';
+  return 'final_invoice'                      if $self->type eq 'final_invoice';
+  # stornoed credit_notes are still credit notes and not invoices
+  return 'credit_note'        if $self->type eq 'credit_note' && $self->amount < 0;
+  return 'invoice_storno'     if $self->type ne 'credit_note' && $self->amount < 0 && $self->storno;
+  return 'credit_note_storno' if $self->type eq 'credit_note' && $self->amount > 0 && $self->storno;
   return 'invoice';
+}
+
+sub is_credit_note {
+  my ($self) = @_;
+
+  return $self->invoice_type eq 'credit_note' ? 1 : undef;
 }
 
 sub displayable_state {
@@ -534,25 +616,36 @@ sub displayable_state {
 sub displayable_type {
   my ($self) = @_;
 
-  return t8('AR Transaction')                         if $self->invoice_type eq 'ar_transaction';
-  return t8('Credit Note')                            if $self->invoice_type eq 'credit_note';
-  return t8('Invoice') . "(" . t8('Storno') . ")"     if $self->invoice_type eq 'invoice_storno';
-  return t8('Credit Note') . "(" . t8('Storno') . ")" if $self->invoice_type eq 'credit_note_storno';
-  return t8('Invoice');
+  return $self->type_data->text('type');
 }
 
 sub displayable_name {
   join ' ', grep $_, map $_[0]->$_, qw(displayable_type record_number);
 };
 
+sub email_replacement_specs {
+  {
+    options => [
+      {name => 'cusordnumber',               title => t8('Customer Order Number')},
+      {name => 'invnumber',                  title => t8('Invoice Number')},
+      {name => 'notes',                      title => t8('Notes')},
+      {name => 'intnotes',                   title => t8('Internal Notes')},
+      {name => 'shippingpoint',              title => t8('Shipping Point')},
+      {name => 'shipvia',                    title => t8('Ship via')},
+      {name => 'transaction_description',    title => t8('Transaction description')},
+    ],
+  };
+}
+
 sub abbreviation {
   my ($self) = @_;
 
-  return t8('AR Transaction (abbreviation)')         if $self->invoice_type eq 'ar_transaction';
-  return t8('Credit note (one letter abbreviation)') if $self->invoice_type eq 'credit_note';
-  return t8('Invoice (one letter abbreviation)') . "(" . t8('Storno (one letter abbreviation)') . ")" if $self->invoice_type eq 'invoice_storno';
-  return t8('Credit note (one letter abbreviation)') . "(" . t8('Storno (one letter abbreviation)') . ")"  if $self->invoice_type eq 'credit_note_storno';
-  return t8('Invoice (one letter abbreviation)');
+  # with storno
+  if (!($self->storno_id || $self->storno_obj) && $self->storno) {
+    return $self->type_data->text('abbreviation') . '(' . t8('Storno (one letter abbreviation)') . ')';
+  }
+
+  return $self->type_data->text('abbreviation');
 }
 
 sub oneline_summary {
@@ -578,8 +671,8 @@ sub link {
   my ($self) = @_;
 
   my $html;
-  $html   = SL::Presenter->get->sales_invoice($self, display => 'inline') if $self->invoice;
-  $html   = SL::Presenter->get->ar_transaction($self, display => 'inline') if !$self->invoice;
+  $html   = $self->presenter->sales_invoice(display => 'inline') if $self->invoice;
+  $html   = $self->presenter->ar_transaction(display => 'inline') if !$self->invoice;
 
   return $html;
 }
@@ -588,6 +681,123 @@ sub mark_as_paid {
   my ($self) = @_;
 
   $self->update_attributes(paid => $self->amount);
+}
+
+sub effective_tax_point {
+  my ($self) = @_;
+
+  return $self->tax_point || $self->deliverydate || $self->transdate;
+}
+
+sub netamount_base_currency {
+  my ($self) = @_;
+
+  return $self->netamount; # already matches base currency
+}
+
+sub type_data {
+  SL::DB::Helper::TypeDataProxy->new(ref $_[0], $_[0]->record_type);
+}
+
+sub get_zugferd_additional_documents {
+  my ($self) = @_;
+
+  my @docs = ();
+
+  # get docs from file management which are marked as zugferd attachment
+  my @object_types = ($self->record_type);
+  push @object_types, qw(dunning1 dunning2 dunning3 dunning_invoice dunning_orig_invoice) if $self->record_type eq 'invoice'; # hardcoded object types?
+
+  require SL::File;
+
+  my @file_versions = SL::File->get_all_versions(object_id   => $self->id,
+                                                 object_type => \@object_types);
+
+  @file_versions = grep { $_->file_version->zugferd_option && $_->file_version->zugferd_option->attach } @file_versions;
+
+  foreach my $file (@file_versions) {
+    push @docs, {
+      doc_id    => $file->file_version->zugferd_option->doc_id,
+      name      => $file->file_version->zugferd_option->doc_name,
+      filename  => $file->db_file->file_name,
+      mime_code => $file->db_file->mime_type,
+      file      => $file->file_version->get_system_location(),
+    };
+  }
+
+  my $delivery_order_docs = $self->_find_or_create_linked_delivery_orders_documents();
+
+  push @docs, @{$delivery_order_docs};
+
+  return \@docs;
+}
+
+sub _find_or_create_linked_delivery_orders_documents {
+  my ($self) = @_;
+
+  my @docs = ();
+
+  return \@docs if 'no' eq $::instance_conf->get_zugferd_attach_linked_sales_delivery_orders;
+
+  my $linked_delivery_orders = $self->linked_records(
+    from  => 'DeliveryOrder',
+    query => [record_type => 'sales_delivery_order']);
+
+  foreach my $linked_delivery_order (@$linked_delivery_orders) {
+    my @files;
+
+    if ('create_always' ne $::instance_conf->get_zugferd_attach_linked_sales_delivery_orders) {
+      # get files (if filename changes (i.e. because of language), this is a new file, not a version)
+      @files = SL::File->get_all(
+        object_id     => $linked_delivery_order->id,
+        object_type   => $linked_delivery_order->record_type,
+        file_type     => 'document',
+        print_variant => $linked_delivery_order->record_type,
+      );
+    }
+
+    my ($filename, $file, $content, $mime_code);
+
+    my $should_create =    (!@files && 'yes'           eq $::instance_conf->get_zugferd_attach_linked_sales_delivery_orders)
+                        || (           'create_always' eq $::instance_conf->get_zugferd_attach_linked_sales_delivery_orders);
+
+    if ($should_create) {
+      my $doc;
+
+      require SL::Model::Record;
+
+      my @errors = SL::Model::Record->generate_doc($linked_delivery_order, \$doc);
+      die t8('Generating delivery order document to attach failed: #1', "\n" . join "\n", @errors) if scalar @errors;
+
+      $content   = $doc;
+      $filename  = SL::Model::Record->generate_doc_filename($linked_delivery_order);
+      $mime_code = SL::MIME->mime_type_from_ext($filename);
+
+      # ignore errors silently here: maybe a warn log or collect and return as warning?
+      SL::Model::Record->store_doc_to_webdav_and_filemanagement($linked_delivery_order, $doc,
+                                                                filename  => $filename,
+                                                                mime_type => $mime_code);
+
+    } elsif (@files) {
+      my $latest_file_version = $files[0];
+      $filename  = $latest_file_version->file_name;
+      $file      = $latest_file_version->get_file;
+      $mime_code = $latest_file_version->mime_type;
+    }
+
+    next if !$filename;
+
+    push @docs, {
+      doc_id    => $linked_delivery_order->record_number,
+      name      => t8('Sales Delivery Order'),
+      filename  => $filename,
+      mime_code => $mime_code,
+     (file      => $file)    x !!$file,
+     (content   => $content) x !!$content,
+    };
+  }
+
+  return \@docs;
 }
 
 1;
@@ -714,7 +924,7 @@ See L<SL::DB::Object::basic_info>.
 =item C<closed>
 
 Returns 1 or 0, depending on whether the invoice is closed or not. Currently
-invoices that are overpaid also count as closed.
+invoices that are overpaid also count as closed and credit notes in general.
 
 =item C<recalculate_amounts %params>
 

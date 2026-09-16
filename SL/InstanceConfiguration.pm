@@ -52,6 +52,21 @@ sub get_currencies {
   return @{ $self->currencies };
 }
 
+sub get_address {
+  # Compatibility function: back in the day there was only a single
+  # address field.
+  my ($self) = @_;
+
+  my $zipcode_city = join ' ', grep { $_ } ($self->get_address_zipcode, $self->get_address_city);
+
+  return join "\n", grep { $_ } ($self->get_address_street1, $self->get_address_street2, $zipcode_city, $self->get_address_country);
+}
+
+sub get_layout_style {
+  return $_[0]->data->{layout_style} if exists $_[0]->data->{layout_style};
+  return '';
+}
+
 sub AUTOLOAD {
   our $AUTOLOAD;
 
@@ -69,6 +84,12 @@ sub AUTOLOAD {
 
   croak "Invalid method '${method}'" if !$self->can($method);
   return $self->$method(@_);
+}
+
+sub get_address_country {
+  my ($self) = @_;
+  my $country_description_key = SL::DB::Country->description_column_localized($::myconfig{countrycode});
+  return SL::DB::Country->new(id => $self->get_address_country_id)->load->$country_description_key;
 }
 
 1;
@@ -110,6 +131,11 @@ Returns an array of configured currencies.
 
 Returns the default currency or undef if no currency has been
 configured.
+
+=item C<get_layout_style>
+
+Returns the forced default layout style or '' if the database column
+does not exist yet.
 
 =item C<get_accounting_method>
 
@@ -176,7 +202,7 @@ Returns the default behavior for showing best before date, true or false
 
 =item C<get_ap_show_mark_as_paid>
 
-Returns the default behavior for showing the mark as paid button for the
+Returns the default behavior for showing the "mark as paid" button for the
 corresponding record type (true or false).
 
 =item C<get_sales_order_show_delete>
@@ -205,10 +231,8 @@ current stock quantity
 
 =item C<get_bin_id_ignore_onhand>
 
-Returns the default bin_id for transfers without checking the.
+Returns the default bin_id for transfers without checking the
 current stock quantity
-
-
 
 =item C<get_transfer_default>
 
@@ -230,14 +254,6 @@ Returns the configuration for WebDAV
 
 Returns the configuration for storing documents in the corresponding WebDAV folder
 
-=item C<get_vertreter>
-
-Returns the configuration for "vertreter"
-
-=item C<get_feature_experimental>
-
-Returns the configuration for experimental features
-
 =item C<get_parts_show_image>
 
 Returns the configuarion for show image in parts
@@ -248,7 +264,7 @@ Returns the css format string for images shown in parts
 
 =item C<get_parts_listing_image>
 
-Returns the configuartion for showing the picture in the results when you search for parts
+Returns the configuration for showing the picture in the results when you search for parts
 
 =back
 

@@ -53,10 +53,25 @@ sub bank_transfer_add {
   my $translation_list = GenericTranslations->list(translation_type => 'sepa_remittance_info_pfx');
   my %translations     = map { ( ($_->{language_id} || 'default') => $_->{translation} ) } @{ $translation_list };
 
+  my $only_approved  = $vc eq 'vendor' && $::instance_conf->get_payment_approval ? 1 : undef;
+
   foreach my $invoice (@{ $invoices }) {
-    my $prefix                    = $translations{ $invoice->{language_id} } || $translations{default} || $::locale->text('Invoice');
+    if ($invoice->{open_amount} < 0) {
+      $invoice->{credit_note} = 1;
+    }
+
+    my $prefix = $invoice->{vc_vc_id} ? $invoice->{vc_vc_id} . ": " : '';
+    $prefix   .=  $invoice->{credit_note}
+                ? $::locale->text('Credit Note')
+                : $translations{ $invoice->{language_id} } || $translations{default} || $::locale->text('Invoice');
     $prefix                      .= ' ' unless $prefix =~ m/ $/;
     $invoice->{reference_prefix}  = $prefix;
+
+    # add PaymentApproval info for ap. set approved for strict approved payments only
+    $invoice->{payment_approval} = $vc eq 'vendor' ? SL::DB::Manager::PaymentApproval->find_by(ap_id => $invoice->{id}) : undef;
+    $invoice->{approved}         =   !$only_approved ? 1
+                                   :  $only_approved && ref $invoice->{payment_approval} eq 'SL::DB::PaymentApproval' ? 1
+                                   :  undef;
 
     # add c_vendor_id or v_vendor_id as a prefix if a entry exists
     next unless $invoice->{vc_vc_id};
@@ -73,6 +88,7 @@ sub bank_transfer_add {
                                    { 'INVOICES'           => $invoices,
                                      'BANK_ACCOUNTS'      => $bank_accounts,
                                      'vc'                 => $vc,
+                                     'combine_payments'   => $::instance_conf->get_sepa_combine_payments,
                                    });
 
   $main::lxdebug->leave_sub();
@@ -100,38 +116,72 @@ sub bank_transfer_create {
   }
 
   my $arap_id        = $vc eq 'customer' ? 'ar_id' : 'ap_id';
-  my $invoices       = SL::SEPA->retrieve_open_invoices(vc => $vc);
+  my $only_approved  = $vc eq 'vendor' && $::instance_conf->get_payment_approval ? 1 : undef;
+  my $invoices       = SL::SEPA->retrieve_open_invoices(vc => $vc, payment_approval => $only_approved);
 
-  # load all open invoices (again), but grep out the ones that were selected with checkboxes beforehand ($_->selected). At this stage we again have all the invoice information, including dropdown with payment_type options
-  # all the information from retrieve_open_invoices is then ADDED to what was passed via @{ $form->{bank_transfers} }
-  # parse amount from the entry in the form, but take skonto_amount from PT again
-  # the map inserts the values of invoice_map directly into the array of hashes
+  # Load all open invoices (again), but grep out the ones that were selected with checkboxes beforehand ($_->selected).
+  # At this stage we again have all the invoice information, including dropdown with payment_type options.
+  # All the information from retrieve_open_invoices is then ADDED to what was passed via @{ $form->{bank_transfers} }.
+  # Parse amount from the entry in the form, but take skonto_amount from PT again.
+  # The map inserts the values of invoice_map directly into the array of hashes.
   my %selected_ids   = map { ($_ => 1) } @{ $form->{ids} || [] };
   my %invoices_map   = map { $_->{id} => $_ } @{ $invoices };
   my @bank_transfers =
     map  +{ %{ $invoices_map{ $_->{$arap_id} } }, %{ $_ } },
-    grep  { ($_->{selected} || $selected_ids{$_->{$arap_id}}) && (0 < $_->{amount}) && $invoices_map{ $_->{$arap_id} } }
+    grep  { ($_->{selected} || $selected_ids{$_->{$arap_id}}) && $invoices_map{ $_->{$arap_id} } && !($invoices_map{ $_->{$arap_id} }->{is_sepa_blocked}) }
     map   { $_->{amount} = $form->parse_amount($myconfig, $_->{amount}); $_ }
           @{ $form->{bank_transfers} || [] };
 
   # override default payment_type selection and set it to the one chosen by the user
   # in the previous step, so that we don't need the logic in the template
+  my $subtract_days   = $::instance_conf->get_sepa_set_skonto_date_buffer_in_days;
+  my $set_skonto_date = $::instance_conf->get_sepa_set_skonto_date_as_default_exec_date;
+  my $set_duedate     = $::instance_conf->get_sepa_set_duedate_as_default_exec_date;
+  my (%vc_id_num_of_transactions, %vc_id_total);
+  my ($total_trans, $total_trans_skonto);
+
   foreach my $bt (@bank_transfers) {
+    # add a good recommended exec date
+    # set to skonto date if exists or to duedate
+    # in both cases subtract the same buffer (if configured, default 0)
+    $bt->{recommended_execution_date} =
+      $set_skonto_date && $bt->{payment_type} eq 'with_skonto_pt' ?
+                   DateTime->from_kivitendo($bt->{skonto_date})->subtract(days => $subtract_days)->to_kivitendo
+   :  $set_duedate && $bt->{duedate}                              ?
+                   DateTime->from_kivitendo($bt->{duedate}    )->subtract(days => $subtract_days)->to_kivitendo
+   :  undef;
+
+
     foreach my $type ( @{$bt->{payment_select_options}} ) {
       if ( $type->{payment_type} eq $bt->{payment_type} ) {
         $type->{selected} = 1;
       } else {
         $type->{selected} = 0;
-      };
-    };
-  };
+      }
+    }
+    $bt->{credit_note} = 1 if $bt->{amount} < 0;
+    die t8('Cannot select Credit Notes without combining payments.') if $bt->{credit_note} && !$form->{combine_payments};
+    # count transaction per vendor
+    $vc_id_num_of_transactions{$bt->{vc_id}} += 1;
+
+    # calc totals
+    my $open_amount_with_pt =   $bt->{payment_type} eq 'with_skonto_pt'
+                              ? $bt->{open_amount_less_skonto}
+                              : $bt->{open_amount };
+
+    $total_trans_skonto        += $open_amount_with_pt;
+    $total_trans               += $bt->{open_amount};
+    $vc_id_total{$bt->{vc_id}} += $open_amount_with_pt;
+  }
 
   if (!scalar @bank_transfers) {
     $form->error($locale->text('You have selected none of the invoices.'));
   }
-
-  my $total_trans = sum map { $_->{open_amount} } @bank_transfers;
-
+  for my $vc_id_total (values %vc_id_total) {
+    if ($vc_id_total <= 0) {
+      $form->error($locale->text('Can only balance credits against invoice if some amount still has to be paid.'))
+    }
+  }
   my ($vc_bank_info);
   my $error_message;
 
@@ -156,7 +206,25 @@ sub bank_transfer_create {
     my @vc_bank_info           = sort { lc $a->{name} cmp lc $b->{name} } values %{ $vc_bank_info };
 
     setup_sepa_create_transfer_action_bar(is_vendor => $vc eq 'vendor');
+    # 1. combine all known payments
+    my %combine_payments;
+    if ($form->{combine_payments}) {
+      foreach my $bt (@bank_transfers) {
+        next unless $vc_id_num_of_transactions{$bt->{vc_id}} > 1; # combine only if we have more than one inv
+        $combine_payments{$bt->{vc_id}}{amount}    += $bt->{amount};
+        $combine_payments{$bt->{vc_id}}{reference} .=  !$combine_payments{$bt->{vc_id}}{reference} && $bt->{vc_vc_id}
+                                                      ? $bt->{vc_vc_id} . ': ' . $bt->{invnumber}
+                                                      : !$combine_payments{$bt->{vc_id}}{reference}
+                                                      ? $bt->{invnumber}
+                                                      : ' / ' . $bt->{invnumber};
 
+        # check if we have mixed payment types for the same vc
+        $combine_payments{$bt->{vc_id}}{payment_type}{with_skonto_pt} = 1 if $bt->{payment_type} eq 'with_skonto_pt';
+        $combine_payments{$bt->{vc_id}}{payment_type}{without_skonto} = 1 if $bt->{payment_type} eq 'without_skonto';
+
+        $bt->{collective_transfer} = 1;
+      }
+    }
     $form->header();
     print $form->parse_html_template('sepa/bank_transfer_create',
                                      { 'BANK_TRANSFERS'     => \@bank_transfers,
@@ -166,10 +234,16 @@ sub bank_transfer_create {
                                        'error_message'      => $error_message,
                                        'vc'                 => $vc,
                                        'total_trans'        => $total_trans,
+                                       'total_trans_skonto' => $total_trans_skonto,
+                                       'combine_payments'   => \%combine_payments,
                                      });
 
   } else {
-    foreach my $bank_transfer (@bank_transfers) {
+    #  convert user number 3.002,34 to database 3000.33420
+    my @collective_bank_transfers = map  { $_->{amount} = $form->parse_amount($myconfig, $_->{amount}); $_ }
+                                        @{ $form->{collective_bank_transfers} || [] };
+
+    foreach my $bank_transfer (@bank_transfers, @collective_bank_transfers) {
       foreach (@bank_columns) {
         $bank_transfer->{"vc_${_}"}  = $vc_bank_info->{ $bank_transfer->{vc_id} }->{$_};
         $bank_transfer->{"our_${_}"} = $bank_account->{$_};
@@ -180,10 +254,12 @@ sub bank_transfer_create {
 
     my $id = SL::SEPA->create_export('employee'       => $::myconfig{login},
                                      'bank_transfers' => \@bank_transfers,
+                                     'collective_bank_transfers' => \@collective_bank_transfers,
                                      'vc'             => $vc);
 
     $form->header();
-    print $form->parse_html_template('sepa/bank_transfer_created', { 'id' => $id, 'vc' => $vc });
+    my %sepa_versions = SL::SEPA::XML->get_supported_versions;
+    print $form->parse_html_template('sepa/bank_transfer_created', { 'id' => $id, 'vc' => $vc, sepa_versions => \%sepa_versions });
   }
 
   $main::lxdebug->leave_sub();
@@ -281,8 +357,10 @@ sub bank_transfer_list {
   push @options, $form->{l_executed} ? $locale->text('executed') : $locale->text('not yet executed')               if ($form->{l_executed} != $form->{l_not_executed});
   push @options, $form->{l_closed}   ? $locale->text('closed')   : $locale->text('open')                           if ($form->{l_open}     != $form->{l_closed});
 
+  my %sepa_versions = SL::SEPA::XML->get_supported_versions;
+
   $report->set_options('top_info_text'         => join("\n", @options),
-                       'raw_top_info_text'     => $form->parse_html_template('sepa/bank_transfer_list_top'),
+                       'raw_top_info_text'     => $form->parse_html_template('sepa/bank_transfer_list_top',    { 'show_buttons' => $open_available, sepa_versions => \%sepa_versions, }),
                        'raw_bottom_info_text'  => $form->parse_html_template('sepa/bank_transfer_list_bottom', { 'show_buttons' => $open_available, vc => $vc }),
                        'std_column_visibility' => 1,
                        'output_format'         => 'HTML',
@@ -343,7 +421,7 @@ sub bank_transfer_edit {
   my $export;
 
   foreach my $id (@ids) {
-    my $curr_export = SL::SEPA->retrieve_export('id' => $id, 'details' => 1, 'vc' => $vc);
+    my $curr_export = SL::SEPA->retrieve_export(id => $id, details => 1, vc => $vc);
 
     foreach my $item (@{ $curr_export->{items} }) {
       map { $item->{"export_${_}"} = $curr_export->{$_} } grep { !ref $curr_export->{$_} } keys %{ $curr_export };
@@ -367,7 +445,9 @@ sub bank_transfer_edit {
     $form->error($locale->text('That export does not exist.'));
   }
 
-  my $show_post_payments_button = any { !$_->{export_closed} && !$_->{executed} } @{ $export->{items} };
+  my $show_post_payments_button =  SL::DB::Default->get->payments_changeable == 0 ? undef # maybe yes, if sepa bank has no booking bank account
+                                 : any { !$_->{export_closed} && !$_->{executed} && !$_->{is_combined_payment} } @{ $export->{items} };
+
   my $has_executed              = any { $_->{executed}                          } @{ $export->{items} };
 
   setup_sepa_edit_transfer_action_bar(
@@ -375,7 +455,7 @@ sub bank_transfer_edit {
     has_executed              => $has_executed,
   );
 
-  $form->{title}    = $locale->text('View SEPA export');
+  $form->{title}    = $locale->text('View SEPA export') . ': ' . join(', ', @ids);
   $form->header();
   print $form->parse_html_template('sepa/bank_transfer_edit',
                                    { ids                       => \@ids,
@@ -488,7 +568,6 @@ sub bank_transfer_payment_list_as_pdf {
   $main::lxdebug->leave_sub();
 }
 
-# TODO
 sub bank_transfer_download_sepa_xml {
   $main::lxdebug->enter_sub();
 
@@ -538,6 +617,7 @@ sub bank_transfer_download_sepa_xml {
                                       'message_id'  => $message_id,
                                       'grouped'     => 1,
                                       'collection'  => $vc eq 'customer',
+                                      'version'     => $form->{sepa_xml_version},
     );
 
   foreach my $item (@items) {
@@ -584,13 +664,70 @@ sub bank_transfer_download_sepa_xml {
 
   my $xml = $sepa_xml->to_xml();
 
+  my $file_extension   =  $::instance_conf->get_sepa_export_xml ? '.xml'
+                        : $vc eq 'customer'                     ? '.cdd'
+                        : $vc eq 'vendor'                       ? '.cct'
+                        : undef;
+
+  die "invalid state for vendor/customer suffix" unless $file_extension;
+
   print $cgi->header('-type'                => 'application/octet-stream',
-                     '-content-disposition' => 'attachment; filename="SEPA_' . $message_id . ($vc eq 'customer' ? '.cdd' : '.cct') . '"',
+                     '-content-disposition' => 'attachment; filename="SEPA_' . $message_id . $file_extension . '"',
                      '-content-length'      => length $xml);
   print $xml;
 
   $main::lxdebug->leave_sub();
 }
+
+sub bank_transfer_download_sepa_docs_preview {
+  $main::lxdebug->enter_sub();
+
+  my $form     = $main::form;
+  my $locale   = $main::locale;
+
+  my @items = map { ( { ap_id => $_->{ap_id}, ar_id => $_->{ar_id} } ) } @{$form->{bank_transfers}};
+
+  SL::SEPA->send_concatinated_sepa_pdfs(arap_ids => \@items, download_filename => $locale->text('SEPA_#1_Documents.pdf', $locale->text('Preview')));
+}
+
+sub bank_transfer_download_sepa_docs {
+  $main::lxdebug->enter_sub();
+
+  my $form     = $main::form;
+  my $defaults = SL::DB::Default->get;
+  my $locale   = $main::locale;
+
+  if (!$defaults->doc_storage) {
+    $form->show_generic_error($locale->text('Doc Storage is not enabled'));
+  }
+
+  my @ids;
+  if ($form->{mode} && ($form->{mode} eq 'multi')) {
+     @ids = @{ $form->{ids} || [] };
+  } else {
+    @ids = ($form->{id});
+  }
+
+  if (!@ids) {
+    $form->show_generic_error($locale->text('You have not selected any export.'));
+  }
+
+  my @items;
+  foreach my $id (@ids) {
+    my $sepa_export = SL::DB::Manager::SepaExport->find_by(id => $id);
+    # check for combined and normal sepa export items
+    foreach my $sepa_entry (@{ $sepa_export->find_sepa_exports_acc_trans },
+                            @{ $sepa_export->find_sepa_export_items      } ) {
+      push @items, { ap_id => $sepa_entry->{ap_id} }  if $sepa_entry->{ap_id};
+      push @items, { ar_id => $sepa_entry->{ar_id} }  if $sepa_entry->{ar_id};
+    }
+  }
+
+  SL::SEPA->send_concatinated_sepa_pdfs(arap_ids => \@items, download_filename => $locale->text('SEPA_#1_Documents.pdf', (join '_', @ids)));
+
+  $main::lxdebug->leave_sub();
+}
+
 
 sub bank_transfer_mark_as_closed {
   $main::lxdebug->enter_sub();
@@ -628,7 +765,8 @@ sub dispatcher {
   foreach my $action (qw(bank_transfer_create bank_transfer_edit bank_transfer_list
                          bank_transfer_post_payments bank_transfer_download_sepa_xml
                          bank_transfer_mark_as_closed_step1 bank_transfer_mark_as_closed_step2
-                         bank_transfer_payment_list_as_pdf bank_transfer_undo_sepa_xml)) {
+                         bank_transfer_payment_list_as_pdf bank_transfer_undo_sepa_xml
+                         bank_transfer_download_sepa_docs bank_transfer_download_sepa_docs_preview)) {
     if ($form->{"action_${action}"}) {
       call_sub($action);
       return;
@@ -658,6 +796,10 @@ sub setup_sepa_create_transfer_action_bar {
 
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
+      action => [
+        t8('Download Documents for exported bookings'),
+        submit    => [ '#form', { action => 'bank_transfer_download_sepa_docs_preview' } ],
+      ],
       action => [
         t8('Create'),
         submit    => [ '#form', { action => "bank_transfer_create" } ],
@@ -700,6 +842,11 @@ sub setup_sepa_list_transfers_action_bar {
           submit => [ '#form', { action => 'bank_transfer_download_sepa_xml' } ],
           checks => [ [ 'kivi.check_if_entries_selected', '[name="ids[]"]' ] ],
         ],
+         action => [
+          t8('SEPA XML PDF Document download'),
+          submit => [ '#form', { action => 'bank_transfer_download_sepa_docs' } ],
+          checks => [ [ 'kivi.check_if_entries_selected', '[name="ids[]"]' ] ],
+        ],
         action => [
           t8('Post payments'),
           submit => [ '#form', { action => 'bank_transfer_edit' } ],
@@ -734,7 +881,7 @@ sub setup_sepa_edit_transfer_action_bar {
         accesskey => 'enter',
         tooltip   => t8('Post payments for selected invoices'),
         checks    => [ [ 'kivi.check_if_entries_selected', '[name="ids[]"]' ] ],
-        only_if   => $params{show_post_payments_button},
+        disabled  => $params{show_post_payments_button} ? undef : t8('All payments have already been posted.'),
       ],
       action => [
         t8('Payment list'),
@@ -742,7 +889,7 @@ sub setup_sepa_edit_transfer_action_bar {
         accesskey => 'enter',
         tooltip   => t8('Download list of payments as PDF'),
         checks    => [ [ 'kivi.check_if_entries_selected', '[name="ids[]"]' ] ],
-        not_if    => $params{show_post_payments_button},
+        disabled  => $params{show_post_payments_button} ? t8('All payments must be posted before the payment list can be downloaded.') : undef,
       ],
     );
   }

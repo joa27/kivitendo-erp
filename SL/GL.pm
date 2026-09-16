@@ -46,6 +46,8 @@ use SL::DATEV qw(:CONSTANTS);
 use SL::DBUtils;
 use SL::DB::Chart;
 use SL::DB::Draft;
+use SL::DB::ValidityToken;
+use SL::DB::GLTransaction;
 use SL::Util qw(trim);
 use SL::DB;
 
@@ -76,6 +78,16 @@ sub post_transaction {
 sub _post_transaction {
   my ($self, $myconfig, $form) = @_;
   $main::lxdebug->enter_sub();
+
+  my $validity_token;
+  if (!$form->{id}) {
+    $validity_token = SL::DB::Manager::ValidityToken->fetch_valid_token(
+      scope => SL::DB::ValidityToken::SCOPE_GL_TRANSACTION_POST(),
+      token => $form->{form_validity_token},
+    );
+
+    die $::locale->text('The form is not valid anymore.') if !$validity_token;
+  }
 
   my ($debit, $credit) = (0, 0);
   my $project_id;
@@ -123,13 +135,15 @@ sub _post_transaction {
   $query =
     qq|UPDATE gl SET
          reference = ?, description = ?, notes = ?,
-         transdate = ?, department_id = ?, taxincluded = ?,
-         storno = ?, storno_id = ?, ob_transaction = ?, cb_transaction = ?
+         transdate = ?, deliverydate = ?, tax_point = ?, department_id = ?, taxincluded = ?,
+         storno = ?, storno_id = ?, ob_transaction = ?, cb_transaction = ?,
+         transaction_description = ?
        WHERE id = ?|;
 
   @values = ($form->{reference}, $form->{description}, $form->{notes},
-             conv_date($form->{transdate}), conv_i($form->{department_id}), $form->{taxincluded} ? 't' : 'f',
+             conv_date($form->{transdate}), conv_date($form->{deliverydate}), conv_date($form->{tax_point}), conv_i($form->{department_id}), $form->{taxincluded} ? 't' : 'f',
              $form->{storno} ? 't' : 'f', conv_i($form->{storno_id}), $form->{ob_transaction} ? 't' : 'f', $form->{cb_transaction} ? 't' : 'f',
+             $form->{transaction_description},
              conv_i($form->{id}));
   do_query($form, $dbh, $query, @values);
 
@@ -210,6 +224,9 @@ sub _post_transaction {
       die join "\n", $::locale->text('DATEV check returned errors:'), $datev->errors;
     }
   }
+
+  $validity_token->delete if $validity_token;
+  delete $form->{form_validity_token};
 
   return 1;
 }
@@ -299,6 +316,15 @@ sub all_transactions {
     push(@apvalues, like($form->{notes}));
   }
 
+  if (trim($form->{transaction_description})) {
+    $glwhere .= " AND g.transaction_description ILIKE ?";
+    $arwhere .= " AND a.transaction_description ILIKE ?";
+    $apwhere .= " AND a.transaction_description ILIKE ?";
+    push(@glvalues, like($form->{transaction_description}));
+    push(@arvalues, like($form->{transaction_description}));
+    push(@apvalues, like($form->{transaction_description}));
+  }
+
   if ($form->{accno}) {
     $glwhere .= " AND c.accno = '$form->{accno}'";
     $arwhere .= " AND c.accno = '$form->{accno}'";
@@ -328,10 +354,15 @@ sub all_transactions {
     push(@apvalues, $project_id, $project_id);
   }
 
-  my ($project_columns, $project_join);
+  my ($project_columns,            $project_join);
+  my ($arap_globalproject_columns, $arap_globalproject_join);
+  my ($gl_globalproject_columns);
   if ($form->{"l_projectnumbers"}) {
-    $project_columns = qq|, ac.project_id, pr.projectnumber|;
-    $project_join = qq|LEFT JOIN project pr ON (ac.project_id = pr.id)|;
+    $project_columns            = qq|, ac.project_id, pr.projectnumber|;
+    $project_join               = qq|LEFT JOIN project pr ON (ac.project_id = pr.id)|;
+    $arap_globalproject_columns = qq|, a.globalproject_id, globalpr.projectnumber AS globalprojectnumber|;
+    $arap_globalproject_join    = qq|LEFT JOIN project globalpr ON (a.globalproject_id = globalpr.id)|;
+    $gl_globalproject_columns   = qq|, NULL AS globalproject_id, '' AS globalprojectnumber|;
   }
 
   if ($form->{accno}) {
@@ -350,17 +381,20 @@ sub all_transactions {
   }
 
   my %sort_columns =  (
-    'id'           => [ qw(id)                   ],
-    'transdate'    => [ qw(transdate id)         ],
-    'gldate'       => [ qw(gldate id)         ],
-    'reference'    => [ qw(lower_reference id)   ],
-    'description'  => [ qw(lower_description id) ],
-    'accno'        => [ qw(accno transdate id)   ],
+    'id'                      => [ qw(id)                   ],
+    'transdate'               => [ qw(transdate id)         ],
+    'gldate'                  => [ qw(gldate id)         ],
+    'reference'               => [ qw(lower_reference id)   ],
+    'description'             => [ qw(lower_description id) ],
+    'accno'                   => [ qw(accno transdate id)   ],
+    'department'              => [ qw(department transdate id)   ],
+    'transaction_description' => [ qw(lower_transaction_description id) ],
     );
   my %lowered_columns =  (
-    'reference'       => { 'gl' => 'g.reference',   'arap' => 'a.invnumber', },
-    'source'          => { 'gl' => 'ac.source',     'arap' => 'ac.source',   },
-    'description'     => { 'gl' => 'g.description', 'arap' => 'ct.name',     },
+    'reference'               => { 'gl' => 'g.reference',               'arap' => 'a.invnumber',               },
+    'source'                  => { 'gl' => 'ac.source',                 'arap' => 'ac.source',                 },
+    'description'             => { 'gl' => 'g.description',             'arap' => 'ct.name',                   },
+    'transaction_description' => { 'gl' => 'g.transaction_description', 'arap' => 'a.transaction_description', },
     );
 
   # sortdir = sort direction (ascending or descending)
@@ -381,11 +415,13 @@ sub all_transactions {
         ac.acc_trans_id, g.id, 'gl' AS type, FALSE AS invoice, g.reference, ac.taxkey, c.link,
         g.description, ac.transdate, ac.gldate, ac.source, ac.trans_id,
         ac.amount, c.accno, g.notes, t.chart_id,
+        d.description AS department, g.transaction_description,
         CASE WHEN (COALESCE(e.name, '') = '') THEN e.login ELSE e.name END AS employee
-        $project_columns
+        $project_columns $gl_globalproject_columns
         $columns_for_sorting{gl}
       FROM gl g
-      LEFT JOIN employee e ON (g.employee_id = e.id),
+      LEFT JOIN employee e ON (g.employee_id = e.id)
+      LEFT JOIN department d ON (g.department_id = d.id),
       acc_trans ac $project_join, chart c
       LEFT JOIN tax t ON (t.chart_id = c.id)
       WHERE $glwhere
@@ -397,11 +433,14 @@ sub all_transactions {
       SELECT ac.acc_trans_id, a.id, 'ar' AS type, a.invoice, a.invnumber, ac.taxkey, c.link,
         ct.name, ac.transdate, ac.gldate, ac.source, ac.trans_id,
         ac.amount, c.accno, a.notes, t.chart_id,
+        d.description AS department, a.transaction_description,
         CASE WHEN (COALESCE(e.name, '') = '') THEN e.login ELSE e.name END AS employee
-        $project_columns
+        $project_columns $arap_globalproject_columns
         $columns_for_sorting{arap}
       FROM ar a
-      LEFT JOIN employee e ON (a.employee_id = e.id),
+      LEFT JOIN employee e ON (a.employee_id = e.id)
+      LEFT JOIN department d ON (a.department_id = d.id)
+      $arap_globalproject_join,
       acc_trans ac $project_join, customer ct, chart c
       LEFT JOIN tax t ON (t.chart_id=c.id)
       WHERE $arwhere
@@ -414,11 +453,14 @@ sub all_transactions {
       SELECT ac.acc_trans_id, a.id, 'ap' AS type, a.invoice, a.invnumber, ac.taxkey, c.link,
         ct.name, ac.transdate, ac.gldate, ac.source, ac.trans_id,
         ac.amount, c.accno, a.notes, t.chart_id,
+        d.description AS department, a.transaction_description,
         CASE WHEN (COALESCE(e.name, '') = '') THEN e.login ELSE e.name END AS employee
-        $project_columns
+        $project_columns $arap_globalproject_columns
         $columns_for_sorting{arap}
       FROM ap a
-      LEFT JOIN employee e ON (a.employee_id = e.id),
+      LEFT JOIN employee e ON (a.employee_id = e.id)
+      LEFT JOIN department d ON (a.department_id = d.id)
+      $arap_globalproject_join,
       acc_trans ac $project_join, vendor ct, chart c
       LEFT JOIN tax t ON (t.chart_id=c.id)
       WHERE $apwhere
@@ -484,7 +526,8 @@ sub all_transactions {
       }
 
       $ref->{"projectnumbers"} = {};
-      $ref->{"projectnumbers"}->{$ref->{"projectnumber"}} = 1 if ($ref->{"projectnumber"});
+      $ref->{"projectnumbers"}->{$ref->{"projectnumber"}}       = 1 if ($ref->{"projectnumber"});
+      $ref->{"projectnumbers"}->{$ref->{"globalprojectnumber"}} = 1 if ($ref->{"globalprojectnumber"});
 
       $balance = $ref->{amount};
 
@@ -540,7 +583,8 @@ sub all_transactions {
       $balance =
         (int($balance * 100000) + int(100000 * $ref2->{amount})) / 100000;
 
-      $ref->{"projectnumbers"}->{$ref2->{"projectnumber"}} = 1 if ($ref2->{"projectnumber"});
+      $ref->{"projectnumbers"}->{$ref2->{"projectnumber"}}       = 1 if ($ref2->{"projectnumber"});
+      $ref->{"projectnumbers"}->{$ref2->{"globalprojectnumber"}} = 1 if ($ref2->{"globalprojectnumber"});
 
       if ($ref2->{chart_id} > 0) { # all tax accounts, following lines
         if ($ref2->{amount} < 0) {
@@ -637,10 +681,12 @@ sub transaction {
 
   if ($form->{id}) {
     $query =
-      qq|SELECT g.reference, g.description, g.notes, g.transdate, g.storno, g.storno_id,
+      qq|SELECT g.reference, g.description, g.notes, g.transdate, g.deliverydate, g.tax_point,
+           g.storno, g.storno_id,
            g.department_id, d.description AS department,
            e.name AS employee, g.taxincluded, g.gldate,
-         g.ob_transaction, g.cb_transaction
+           g.ob_transaction, g.cb_transaction,
+           g.transaction_description
          FROM gl g
          LEFT JOIN department d ON (d.id = g.department_id)
          LEFT JOIN employee e ON (e.id = g.employee_id)
@@ -752,6 +798,19 @@ sub _storno {
     do_query($form, $dbh, $query, (values %$row));
   }
 
+  if ($form->{workflow_email_journal_id}) {
+    my $ar_transaction_storno = SL::DB::GLTransaction->new(id => $new_id)->load;
+    my $email_journal = SL::DB::EmailJournal->new(
+      id => delete $form->{workflow_email_journal_id}
+    )->load;
+    $email_journal->link_to_record_with_attachment(
+      $ar_transaction_storno,
+      delete $form->{workflow_email_attachment_id}
+    );
+    $form->{callback} = delete $form->{workflow_email_callback};
+  }
+
+  $form->{storno_id} = $id;
   return 1;
 }
 
@@ -772,12 +831,22 @@ sub get_chart_balances {
 }
 
 sub get_active_taxes_for_chart {
-  my ($self, $chart_id, $transdate) = @_;
+  my ($self, $chart_id, $transdate, $tax_id) = @_;
 
   my $chart         = SL::DB::Chart->new(id => $chart_id)->load;
   my $active_taxkey = $chart->get_active_taxkey($transdate);
+
+  my $where = [ chart_categories => { like => '%' . $chart->category . '%' } ];
+
+  if ( defined $tax_id && $tax_id >= 0 ) {
+    $where = [ or => [ chart_categories => { like => '%' . $chart->category . '%' },
+                       id               => $tax_id
+                     ]
+             ];
+  }
+
   my $taxes         = SL::DB::Manager::Tax->get_all(
-    where   => [ chart_categories => { like => '%' . $chart->category . '%' }],
+    where   => $where,
     sort_by => 'taxkey, rate',
   );
 
@@ -788,3 +857,50 @@ sub get_active_taxes_for_chart {
 }
 
 1;
+
+__END__
+
+=pod
+
+=encoding utf8
+
+=head1 NAME
+
+SL::GL - some useful GL functions
+
+=head1 FUNCTIONS
+
+=over 4
+
+=item C<get_active_taxes_for_chart> $transdate $tax_id
+
+Returns a list of valid taxes for a certain chart.
+
+If the optional param transdate exists one entry in the returning list
+may get the attribute C<is_default> for this specific tax-dependent date.
+The possible entries are filtered by the charttype of the tax, i.e. only taxes
+whose chart_categories match the category of the chart will be shown.
+
+In the case of existing records, e.g. when opening an old ar record, due to
+changes in the configurations the desired tax might not be available in the
+dropdown anymore. If we are loading an old record and know its tax_id (from
+acc_trans), we can pass $tax_id as the third parameter and be sure that the
+original tax always appears in the dropdown.
+
+The functions returns an array which may be used for building dropdowns in ar/ap/gl code.
+
+=back
+
+=head1 TODO
+
+Nothing here yet.
+
+=head1 BUGS
+
+Nothing here yet.
+
+=head1 AUTHOR
+
+G. Richardson E<lt>grichardson@kivitec.deE<gt>
+
+=cut

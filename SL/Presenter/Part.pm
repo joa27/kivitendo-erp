@@ -5,53 +5,73 @@ use strict;
 use SL::DB::Part;
 use SL::DB::PartClassification;
 use SL::Locale::String qw(t8);
+use SL::Presenter::EscapedText qw(escape is_escaped);
+use SL::Presenter::Tag qw(input_tag html_tag name_to_id select_tag link_tag);
 
 use Exporter qw(import);
-our @EXPORT = qw(part_picker part select_classification classification_abbreviation type_abbreviation separate_abbreviation typeclass_abbreviation);
+our @EXPORT_OK = qw(
+  part_picker part select_classification classification_abbreviation
+  type_abbreviation separate_abbreviation typeclass_abbreviation
+  vendor_price_dropdown
+);
+our %EXPORT_TAGS = (ALL => \@EXPORT_OK);
 
 use Carp;
 
 sub part {
-  my ($self, $part, %params) = @_;
+  my ($part, %params) = @_;
 
   $params{display} ||= 'inline';
 
   croak "Unknown display type '$params{display}'" unless $params{display} =~ m/^(?:inline|table-cell)$/;
 
-  my $text = join '', (
-    $params{no_link} ? '' : '<a href="controller.pl?action=Part/edit&part.id=' . $self->escape($part->id) . '">',
-    $self->escape($part->partnumber),
-    $params{no_link} ? '' : '</a>',
-  );
-  return $self->escaped_text($text);
+  my $text = escape($part->partnumber);
+  if (! delete $params{no_link}) {
+    my $href = 'controller.pl?action=Part/edit'
+               . '&part.id=' . escape($part->id);
+    $text = link_tag($href, $text, %params);
+  }
+
+  is_escaped($text);
 }
 
 sub part_picker {
-  my ($self, $name, $value, %params) = @_;
+  my ($name, $value, %params) = @_;
 
   $value = SL::DB::Manager::Part->find_by(id => $value) if $value && !ref $value;
-  my $id = $params{id} || $self->name_to_id($name);
+  my $id = delete($params{id}) || name_to_id($name);
 
   my @classes = $params{class} ? ($params{class}) : ();
   push @classes, 'part_autocomplete';
 
+  # If there is no 'onClick' parameter, set it to 'this.select()',
+  # so that the user can type directly in the input field
+  # to search another part.
+  if (!grep { m{onclick}i } keys %params) {
+    $params{onClick} = 'this.select()';
+  }
+
   my $ret =
-    $self->input_tag($name, (ref $value && $value->can('id') ? $value->id : ''), class => "@classes", type => 'hidden', id => $id,
+    input_tag($name, (ref $value && $value->can('id') ? $value->id : ''), class => "@classes", type => 'hidden', id => $id,
       'data-part-picker-data' => JSON::to_json(\%params),
     ) .
-    $self->input_tag("", ref $value ? $value->displayable_name : '', id => "${id}_name", %params);
+    input_tag("", ref $value ? $value->displayable_name : '', id => "${id}_name", %params);
 
   $::request->layout->add_javascripts('kivi.Part.js');
   $::request->presenter->need_reinit_widgets($id);
 
-  $self->html_tag('span', $ret, class => 'part_picker');
+  html_tag('span', $ret, class => 'part_picker');
 }
+
+sub picker { goto &part_picker }
 
 #
 # shortcut for article type
 #
 sub type_abbreviation {
-  my ($self, $part_type) = @_;
+  my ($part_type) = @_;
+
+  return ''                                               if !$part_type;
   return $::locale->text('Assembly (typeabbreviation)')   if $part_type eq 'assembly';
   return $::locale->text('Part (typeabbreviation)')       if $part_type eq 'part';
   return $::locale->text('Assortment (typeabbreviation)') if $part_type eq 'assortment';
@@ -77,23 +97,29 @@ sub type_abbreviation {
 # shortcut for article type
 #
 sub classification_abbreviation {
-  my ($self, $id) = @_;
+  my ($id) = @_;
+
+  return '' if !$id;
+
   SL::DB::Manager::PartClassification->cache_all();
   my $obj = SL::DB::PartClassification->load_cached($id);
   $obj && $obj->abbreviation ? t8($obj->abbreviation) : '';
 }
 
 sub typeclass_abbreviation {
-  my ($self, $part) = @_;
+  my ($part) = @_;
   return '' if !$part || !$part->isa('SL::DB::Part');
-  return $self->type_abbreviation($part->part_type).$self->classification_abbreviation($part->classification_id);
+  return type_abbreviation($part->part_type) . classification_abbreviation($part->classification_id);
 }
 
 #
 # shortcut for article type
 #
 sub separate_abbreviation {
-  my ($self, $id) = @_;
+  my ($id) = @_;
+
+  return '' if !$id;
+
   SL::DB::Manager::PartClassification->cache_all();
   my $obj = SL::DB::PartClassification->load_cached($id);
   $obj && $obj->abbreviation && $obj->report_separate ? t8($obj->abbreviation) : '';
@@ -103,7 +129,7 @@ sub separate_abbreviation {
 # generate selection tag
 #
 sub select_classification {
-  my ($self, $name, %attributes) = @_;
+  my ($name, %attributes) = @_;
 
   $attributes{value_key} = 'id';
   $attributes{title_key} = 'description';
@@ -112,7 +138,32 @@ sub select_classification {
 
   my $collection = SL::DB::Manager::PartClassification->get_all_sorted( where => $classification_type_filter );
   $_->description($::locale->text($_->description)) for @{ $collection };
-  return $self->select_tag( $name, $collection, %attributes );
+  select_tag( $name, $collection, %attributes );
+}
+
+sub vendor_price_dropdown {
+  my ($name, $part, %attributes) = @_;
+
+  $attributes{value_key} = 'id';
+  $attributes{title_key} = 'text';
+
+  my @vendor_price_list = map {{
+        id => $_->vendor->id,
+        text => $_->vendor->vendornumber . "--" .$_->vendor->name
+                   . " ("
+                     . $::form->format_amount(\%::myconfig, $_->lastcost, 2)
+                   . ")",
+      }}
+    @{$part->makemodels};
+
+  my $count = scalar(@vendor_price_list);
+  if ($count) {
+    $attributes{size}    = $count;
+    $attributes{default} = $vendor_price_list[0]->{id};
+    select_tag( $name, \@vendor_price_list, %attributes );
+  } else {
+    html_tag('span', $::locale->text('No vendor available'));
+  }
 }
 
 1;
@@ -146,15 +197,20 @@ see L<SL::Presenter>
 Returns a rendered version (actually an instance of
 L<SL::Presenter::EscapedText>) of the part object C<$object>
 
-C<%params> can include:
+Remaining C<%params> are passed to the function
+C<SL::Presenter::Tag::link_tag>. It can include:
 
 =over 4
 
 =item * display
 
-Either C<inline> (the default) or C<table-cell>. At the moment both
-representations are identical and produce the part's name linked
-to the corresponding 'edit' action.
+Either C<inline> (the default) or C<table-cell>. Is passed to the function
+C<SL::Presenter::Tag::link_tag>.
+
+=item * no_link
+
+If falsish (the default) then the part number will be linked to the "edit"
+dialog.
 
 =back
 
@@ -196,6 +252,25 @@ The id of the selected item.
 
 =over 2
 
+=item C<vendor_price_dropdown $name, $part, %params>
+
+Returns an HTML select tag with all available vendors with the best price
+for the given part. The value of the select tag is the vendor id.
+
+C<%params> can include:
+
+=over 4
+
+=item * default
+
+The id of the selected vendor.
+
+=back
+
+=back
+
+=over 2
+
 =item C<part_picker $name, $value, %params>
 
 All-in-one picker widget for parts. The name will be both id and name
@@ -212,12 +287,42 @@ If C<%params> contains C<part_type> only parts of this type will be used
 for autocompletion. You may comma separate multiple types as in
 C<part,assembly>.
 
+If C<%params> contains C<status> only parts of this status will be used
+for autocompletion. C<status> can be one of the following strings:
+C<active>, C<obsolete> or C<all>. C<active> is the default if C<status> is
+not given.
+
 If C<%params> contains C<unit> only parts with this unit will be used
 for autocompletion. You may comma separate multiple units as in
 C<h,min>.
 
 If C<%params> contains C<convertible_unit> only parts with a unit
 that's convertible to unit will be used for autocompletion.
+
+If C<%params> contains C<with_makemodel> or C<with_customer_partnumber> even
+parts will be used for autocompletion which partnumber is a vendor partnumber
+(makemodel) or a customer partnumber.
+
+If C<%params> contains C<multiple> an alternative popup will be opened,
+allowing multiple items to be selected. Note however that this requires
+an additional callback C<set_multi_items> to work.
+Also note that you can set C<multiple> to 0 (or not set C<multiple>) on
+creation of the picker, but can open the alternative multi select popup
+with js like this:
+C<$("#pp_id").data("part_picker").o.multiple=1; $("#pp_id").data("part_picker").open_dialog()'>
+where C<pp_id> is the dom id of the part picker.
+Or you can even do it the other way round setting C<multiple> to 1 on creation
+and open a single selection popup with js.
+
+If C<%params> contains C<multiple_pos_input> an input field with the dom id
+C<multi_items_position> will be rendered in the alternative popup.
+This can be used in the callback for C<set_multi_items> to controll the
+input postion for the items.
+
+If C<%params> contains C<multiple_limit> the alternative popup will not
+show any results if there are more than C<multiple_limit> results. A warning
+message is displayed in this case. Set C<multiple_limit> to 0 to disable
+the limitation. The limit defaults to 100.
 
 Obsolete parts will by default not be displayed for selection. However they are
 accepted as default values and can persist during updates. As with other
@@ -252,10 +357,7 @@ If more than one element matches the input, the internal state will be set to
 undefined.
 
 After that the action C<commit_one> will be executed, which defaults to
-opening a popup dialog for graphical interaction. If C<params> contains
-C<multiple> an alternative popup will be opened, allowing multiple items to be
-selected. Note however that this requires an additional callback
-C<set_multi_items> to work.
+opening a popup dialog for graphical interaction.
 
 =item * C<commit_none>
 

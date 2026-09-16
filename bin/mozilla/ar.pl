@@ -41,16 +41,23 @@ use SL::Controller::Base;
 use SL::FU;
 use SL::GL;
 use SL::IS;
+use SL::DB::BankTransactionAccTrans;
 use SL::DB::Business;
 use SL::DB::Chart;
 use SL::DB::Currency;
 use SL::DB::Default;
 use SL::DB::Employee;
-use SL::DB::Invoice;
+use SL::DB::Manager::Invoice;
+use SL::DB::InvoiceItem;
 use SL::DB::RecordTemplate;
 use SL::DB::Tax;
-use SL::Helper::Flash qw(flash);
+use SL::DB::EmailJournal;
+use SL::DB::ValidityToken;
+use SL::Helper::Flash qw(flash flash_later);
 use SL::Locale::String qw(t8);
+use SL::Presenter::Tag;
+use SL::Presenter::Chart;
+use SL::Presenter::ItemsList;
 use SL::ReportGenerator;
 
 require "bin/mozilla/common.pl";
@@ -87,6 +94,20 @@ use strict;
 # $locale->text('Nov')
 # $locale->text('Dec')
 
+sub _may_view_or_edit_this_invoice {
+  return 1 if  $::auth->assert('ar_transactions', 1); # may edit all invoices
+  return 0 if !$::form->{id};                         # creating new invoices isn't allowed without invoice_edit
+  return 0 if !$::form->{globalproject_id};           # existing records without a project ID are not allowed
+  return SL::DB::Project->new(id => $::form->{globalproject_id})->load->may_employee_view_project_invoices(SL::DB::Manager::Employee->current);
+}
+
+sub _assert_access {
+  my $cache = $::request->cache('ar.pl::_assert_access');
+
+  $cache->{_may_view_or_edit_this_invoice} = _may_view_or_edit_this_invoice()                              if !exists $cache->{_may_view_or_edit_this_invoice};
+  $::form->show_generic_error($::locale->text("You do not have the permissions to access this function.")) if !       $cache->{_may_view_or_edit_this_invoice};
+}
+
 sub load_record_template {
   $::auth->assert('ar_transactions');
 
@@ -107,16 +128,17 @@ sub load_record_template {
 
   # Fill $::form from the template.
   my $today                   = DateTime->today_local;
-  $::form->{title}            = "Add";
-  $::form->{currency}         = $template->currency->name;
-  $::form->{direct_debit}     = $template->direct_debit;
-  $::form->{globalproject_id} = $template->project_id;
-  $::form->{AR_chart_id}      = $template->ar_ap_chart_id;
-  $::form->{transdate}        = $today->to_kivitendo;
-  $::form->{duedate}          = $today->to_kivitendo;
-  $::form->{rowcount}         = @{ $template->items };
-  $::form->{paidaccounts}     = 1;
-  $::form->{$_}               = $template->$_ for qw(department_id ordnumber taxincluded employee_id notes);
+  $::form->{title}                   = "Add";
+  $::form->{currency}                = $template->currency->name;
+  $::form->{direct_debit}            = $template->direct_debit;
+  $::form->{globalproject_id}        = $template->project_id;
+  $::form->{transaction_description} = $template->transaction_description;
+  $::form->{AR_chart_id}             = $template->ar_ap_chart_id;
+  $::form->{transdate}               = $today->to_kivitendo;
+  $::form->{duedate}                 = $today->to_kivitendo;
+  $::form->{rowcount}                = @{ $template->items };
+  $::form->{paidaccounts}            = 1;
+  $::form->{$_}                      = $template->$_ for qw(department_id ordnumber taxincluded employee_id notes);
 
   if ($template->customer) {
     $::form->{customer_id} = $template->customer_id;
@@ -154,6 +176,8 @@ sub load_record_template {
 
   flash('info', $::locale->text("The record template '#1' has been loaded.", $template->template_name));
 
+  $::form->{form_validity_token} = SL::DB::ValidityToken->create(scope => SL::DB::ValidityToken::SCOPE_SALES_INVOICE_POST())->token;
+
   update(
     keep_rows_without_amount => 1,
     dont_add_new_row         => 1,
@@ -180,21 +204,22 @@ sub save_record_template {
   } (1..($::form->{rowcount} || 1));
 
   $template->assign_attributes(
-    template_type  => 'ar_transaction',
-    template_name  => $new_name,
+    template_type           => 'ar_transaction',
+    template_name           => $new_name,
 
-    currency_id    => SL::DB::Manager::Currency->find_by(name => $::form->{currency})->id,
-    ar_ap_chart_id => $::form->{AR_chart_id}      || undef,
-    customer_id    => $::form->{customer_id}      || undef,
-    department_id  => $::form->{department_id}    || undef,
-    project_id     => $::form->{globalproject_id} || undef,
-    employee_id    => $::form->{employee_id}      || undef,
-    taxincluded    => $::form->{taxincluded}  ? 1 : 0,
-    direct_debit   => $::form->{direct_debit} ? 1 : 0,
-    ordnumber      => $::form->{ordnumber},
-    notes          => $::form->{notes},
+    currency_id             => SL::DB::Manager::Currency->find_by(name => $::form->{currency})->id,
+    ar_ap_chart_id          => $::form->{AR_chart_id}      || undef,
+    customer_id             => $::form->{customer_id}      || undef,
+    department_id           => $::form->{department_id}    || undef,
+    project_id              => $::form->{globalproject_id} || undef,
+    employee_id             => $::form->{employee_id}      || undef,
+    taxincluded             => $::form->{taxincluded}  ? 1 : 0,
+    direct_debit            => $::form->{direct_debit} ? 1 : 0,
+    ordnumber               => $::form->{ordnumber},
+    notes                   => $::form->{notes},
+    transaction_description => $::form->{transaction_description},
 
-    items          => \@items,
+    items                   => \@items,
   );
 
   eval {
@@ -232,22 +257,50 @@ sub add {
 
   AR->get_transdate(\%myconfig, $form);
   $form->{initial_transdate} = $form->{transdate};
+  $form->{initial_customer_id} = $form->{customer_id};
   create_links(dont_save => 1);
   $form->{transdate} = $form->{initial_transdate};
+  $form->{customer_id} = $form->{initial_customer_id} if $form->{initial_customer_id};
 
   if ($form->{customer_id}) {
     my $last_used_ar_chart = SL::DB::Customer->load_cached($form->{customer_id})->last_used_ar_chart;
     $form->{"AR_amount_chart_id_1"} = $last_used_ar_chart->id if $last_used_ar_chart;
   }
 
+  if (!$form->{form_validity_token}) {
+    $form->{form_validity_token} = SL::DB::ValidityToken->create(scope => SL::DB::ValidityToken::SCOPE_SALES_INVOICE_POST())->token;
+  }
+
   &display_form;
   $main::lxdebug->leave_sub();
+}
+
+sub add_from_email_journal {
+  die "No 'email_journal_id' was given." unless ($::form->{email_journal_id});
+  &add;
+}
+
+sub load_record_template_from_email_journal {
+  die "No 'email_journal_id' was given." unless ($::form->{email_journal_id});
+  &load_record_template;
+}
+
+sub edit_with_email_journal_workflow {
+  my ($self) = @_;
+  die "No 'email_journal_id' was given." unless ($::form->{email_journal_id});
+  $::form->{workflow_email_journal_id}    = delete $::form->{email_journal_id};
+  $::form->{workflow_email_attachment_id} = delete $::form->{email_attachment_id};
+  $::form->{workflow_email_callback}      = delete $::form->{callback};
+
+  &edit;
 }
 
 sub edit {
   $main::lxdebug->enter_sub();
 
-  $main::auth->assert('ar_transactions');
+  # Delay access check to after the invoice's been loaded in
+  # "create_links" so that project-specific invoice rights can be
+  # evaluated.
 
   my $form     = $main::form;
 
@@ -266,7 +319,7 @@ sub edit {
 sub display_form {
   $main::lxdebug->enter_sub();
 
-  $main::auth->assert('ar_transactions');
+  _assert_access();
 
   my $form     = $main::form;
 
@@ -285,7 +338,8 @@ sub _retrieve_invoice_object {
 sub create_links {
   $main::lxdebug->enter_sub();
 
-  $main::auth->assert('ar_transactions');
+  # Delay access check to after the invoice's been loaded so that
+  # project-specific invoice rights can be evaluated.
 
   my %params   = @_;
   my $form     = $main::form;
@@ -293,6 +347,8 @@ sub create_links {
 
   $form->create_links("AR", \%myconfig, "customer");
   $form->{invoice_obj} = _retrieve_invoice_object();
+
+  _assert_access();
 
   my %saved;
   if (!$params{dont_save}) {
@@ -305,7 +361,7 @@ sub create_links {
 
   $form->{$_}          = $saved{$_} for keys %saved;
   $form->{rowcount}    = 1;
-  $form->{AR_chart_id} = $form->{acc_trans} && $form->{acc_trans}->{AR} ? $form->{acc_trans}->{AR}->[0]->{chart_id} : $form->{AR_links}->{AR}->[0]->{chart_id};
+  $form->{AR_chart_id} = $form->{acc_trans} && $form->{acc_trans}->{AR} ? $form->{acc_trans}->{AR}->[0]->{chart_id} : $::instance_conf->get_ar_chart_id || $form->{AR_links}->{AR}->[0]->{chart_id};
 
   # currencies
   $form->{defaultcurrency} = $form->get_default_currency(\%myconfig);
@@ -327,7 +383,7 @@ sub create_links {
 sub form_header {
   $main::lxdebug->enter_sub();
 
-  $main::auth->assert('ar_transactions');
+  _assert_access();
 
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
@@ -346,18 +402,11 @@ sub form_header {
   # $locale->text('Edit Accounts Receivables Transaction')
   $form->{title} = $locale->text("$title Accounts Receivables Transaction");
 
-  $readonly = ($form->{id}) ? "readonly" : "";
+  $form->{defaultcurrency} = $form->get_default_currency(\%myconfig);
+  if ($form->{currency} ne $form->{defaultcurrency}) {
+    ($form->{exchangerate}, $form->{record_forex}) = $form->check_exchangerate(\%myconfig, $form->{currency}, $form->{transdate}, "buy", $form->{id}, 'ar');
+  }
 
-  $form->{radier} = ($::instance_conf->get_ar_changeable == 2)
-                      ? ($form->current_date(\%myconfig) eq $form->{gldate})
-                      : ($::instance_conf->get_ar_changeable == 1);
-  $readonly = ($form->{radier}) ? "" : $readonly;
-
-  $form->{forex}        = $form->check_exchangerate( \%myconfig, $form->{currency}, $form->{transdate}, 'buy');
-  $form->{exchangerate} = $form->{forex} if $form->{forex};
-
-  # format exchangerate
-  $form->{exchangerate}    = $form->{exchangerate} ? $form->format_amount(\%myconfig, $form->{exchangerate}) : '';
 
   $rows = max 2, $form->numtextrows($form->{notes}, 50);
 
@@ -368,8 +417,7 @@ sub form_header {
                                     "old_id"    => \@old_project_ids },
                    "charts"    => { "key"       => "ALL_CHARTS",
                                     "transdate" => $form->{transdate} },
-                   "taxcharts" => { "key"       => "ALL_TAXCHARTS",
-                                    "module"    => "AR" },);
+                  );
 
   $form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
 
@@ -377,14 +425,23 @@ sub form_header {
 
   my %project_labels = map { $_->{id} => $_->{projectnumber} } @{ $form->{"ALL_PROJECTS"} };
 
-  my (@AR_paid_values, %AR_paid_labels);
+  my (@AR_paid_values, %AR_paid_labels, %bank_accounts);
   my $default_ar_amount_chart_id;
-
+  # don't add manual bookings for charts which are assigned to real bank accounts
+  # and are flagged for use with bank import
+  my $bank_accounts = SL::DB::Manager::BankAccount->get_all();
+  foreach my $bank (@{ $bank_accounts }) {
+    if ($bank->use_with_bank_import) {
+      my $accno_paid_bank = $bank->chart->accno;
+      $bank_accounts{$accno_paid_bank} = 1;
+    }
+  }
   foreach my $item (@{ $form->{ALL_CHARTS} }) {
     if ($item->{link_split}{AR_amount}) {
       $default_ar_amount_chart_id //= $item->{id};
 
     } elsif ($item->{link_split}{AR_paid}) {
+      next if $bank_accounts{$item->{accno}};
       push(@AR_paid_values, $item->{accno});
       $AR_paid_labels{$item->{accno}} = "$item->{accno}--$item->{description}";
     }
@@ -393,12 +450,15 @@ sub form_header {
   my $follow_up_vc         = $form->{customer_id} ? SL::DB::Customer->load_cached($form->{customer_id})->name : '';
   my $follow_up_trans_info =  "$form->{invnumber} ($follow_up_vc)";
 
-  $::request->layout->add_javascripts("autocomplete_chart.js", "show_vc_details.js", "show_history.js", "follow_up.js", "kivi.Draft.js", "kivi.GL.js", "kivi.File.js", "kivi.RecordTemplate.js", "kivi.AR.js", "kivi.CustomerVendor.js", "kivi.Validator.js");
-
-  my $transdate = $::form->{transdate} ? DateTime->from_kivitendo($::form->{transdate}) : DateTime->today_local;
+  $::request->layout->add_javascripts("autocomplete_chart.js", "show_history.js", "follow_up.js", "kivi.Draft.js", "kivi.GL.js", "kivi.File.js", "kivi.RecordTemplate.js", "kivi.AR.js", "kivi.CustomerVendor.js", "kivi.Validator.js", "autocomplete_project.js");
+  # get the correct date for tax
+  my $transdate    = $::form->{transdate}    ? DateTime->from_kivitendo($::form->{transdate})    : DateTime->today_local;
+  my $deliverydate = $::form->{deliverydate} ? DateTime->from_kivitendo($::form->{deliverydate}) : undef;
+  my $taxdate      = $deliverydate ? $deliverydate : $transdate;
+  # helpers for loop
   my $first_taxchart;
-
   my @transactions;
+
   for my $i (1 .. $form->{rowcount}) {
     my $transaction = {
       amount     => $form->{"amount_$i"},
@@ -409,22 +469,26 @@ sub form_header {
     my (%taxchart_labels, @taxchart_values, $default_taxchart, $taxchart_to_use);
     my $amount_chart_id = $form->{"AR_amount_chart_id_$i"} // $default_ar_amount_chart_id;
 
-    foreach my $item ( GL->get_active_taxes_for_chart($amount_chart_id, $transdate) ) {
+    my $used_tax_id;
+    if ( $form->{"taxchart_$i"} ) {
+      ($used_tax_id) = split(/--/, $form->{"taxchart_$i"});
+    }
+    foreach my $item ( GL->get_active_taxes_for_chart($amount_chart_id, $taxdate, $used_tax_id) ) {
       my $key             = $item->id . "--" . $item->rate;
       $first_taxchart   //= $item;
       $default_taxchart   = $item if $item->{is_default};
       $taxchart_to_use    = $item if $key eq $form->{"taxchart_$i"};
 
       push(@taxchart_values, $key);
-      $taxchart_labels{$key} = $item->taxdescription . " " . $item->rate * 100 . ' %';
+      $taxchart_labels{$key} = $item->taxkey . " - " . $item->taxdescription . " " . $item->rate * 100 . ' %';
     }
 
     $taxchart_to_use    //= $default_taxchart // $first_taxchart;
     my $selected_taxchart = $taxchart_to_use->id . '--' . $taxchart_to_use->rate;
 
     $transaction->{selectAR_amount} =
-        $::request->presenter->chart_picker("AR_amount_chart_id_$i", $amount_chart_id, style => "width: 400px", type => "AR_amount", class => ($form->{initial_focus} eq "row_$i" ? "initial_focus" : ""))
-      . $::request->presenter->hidden_tag("previous_AR_amount_chart_id_$i", $amount_chart_id);
+        SL::Presenter::Chart::picker("AR_amount_chart_id_$i", $amount_chart_id, style => "width: 400px", type => "AR_amount", class => ($form->{initial_focus} eq "row_$i" ? "initial_focus" : ""))
+      . SL::Presenter::Tag::hidden_tag("previous_AR_amount_chart_id_$i", $amount_chart_id);
 
     $transaction->{taxchart} =
       NTI($cgi->popup_menu('-name' => "taxchart_$i",
@@ -444,7 +508,32 @@ sub form_header {
   my $now = $form->current_date(\%myconfig);
 
   my @payments;
+
+  # reset form value of defaultcurrency_totalpaid, as it is currently a hidden and otherwise it gets accumulated after each update
+  # is only used if there are exchange rates
+  $form->{"defaultcurrency_totalpaid"} = 0;
+
   for my $i (1 .. $form->{paidaccounts}) {
+    # hook for calc of of defaultcurrency_paid and check if banktransaction has a record exchangerate
+    if ($form->{"exchangerate_$i"} && $form->{"acc_trans_id_$i"}) {
+      # only check for bank transactions for payments that have already been saved
+      my $bt_acc_trans = SL::DB::Manager::BankTransactionAccTrans->find_by(acc_trans_id => $form->{"acc_trans_id_$i"});
+      if ($bt_acc_trans) {
+        if ($bt_acc_trans->bank_transaction->exchangerate > 0) {
+          $form->{"exchangerate_$i"} = $bt_acc_trans->bank_transaction->exchangerate;
+          $form->{"forex_$i"}        = $form->{"exchangerate_$i"};
+          $form->{"record_forex_$i"} = 1;
+        }
+      }
+      if (!$form->{"fx_transaction_$i"}) {
+        # this is a banktransaction that was paid in internal currency. revert paid/defaultcurrency_paid
+        $form->{"defaultcurrency_paid_$i"} = $form->{"paid_$i"};
+        $form->{"paid_$i"} /= $form->{"exchangerate_$i"};
+      }
+      $form->{"defaultcurrency_paid_$i"} //= $form->{"paid_$i"} * $form->{"exchangerate_$i"};
+      $form->{"defaultcurrency_totalpaid"} += $form->{"defaultcurrency_paid_$i"};
+    } # end hook defaultcurrency_paid
+
     my $payment = {
       paid             => $form->{"paid_$i"},
       exchangerate     => $form->{"exchangerate_$i"} || '',
@@ -454,9 +543,13 @@ sub form_header {
       memo             => $form->{"memo_$i"},
       AR_paid          => $form->{"AR_paid_$i"},
       forex            => $form->{"forex_$i"},
+      record_forex     => $form->{"record_forex_$i"},
       datepaid         => $form->{"datepaid_$i"},
       paid_project_id  => $form->{"paid_project_id_$i"},
       gldate           => $form->{"gldate_$i"},
+      # only used if we have an fx currency
+      defaultcurrency_paid      => $form->{"defaultcurrency_paid_$i"},
+      defaultcurrency_totalpaid => $form->{"defaultcurrency_totalpaid_$i"},
     };
 
     # default account for current assets (i.e. 1801 - SKR04) if no account is selected
@@ -503,10 +596,13 @@ sub form_header {
   );
 
   setup_ar_form_header_action_bar();
+  $::form->{paid_missing} =  $form->{is_linked_bank_transaction} && $form->{invoice_obj}->forex ?
+                           $form->{invoice_obj}->open_amount
+                        :  $::form->{invtotal} - $::form->{totalpaid};
 
   $form->header;
   print $::form->parse_html_template('ar/form_header', {
-    paid_missing         => $::form->{invtotal} - $::form->{totalpaid},
+    paid_missing         => $::form->{paidmissing},
     show_exch            => ($::form->{defaultcurrency} && ($::form->{currency} ne $::form->{defaultcurrency})),
     payments             => \@payments,
     transactions         => \@transactions,
@@ -526,7 +622,7 @@ sub form_header {
 sub form_footer {
   $main::lxdebug->enter_sub();
 
-  $main::auth->assert('ar_transactions');
+  _assert_access();
 
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
@@ -556,6 +652,7 @@ sub mark_as_paid {
 sub show_draft {
   $::form->{transdate} = DateTime->today_local->to_kivitendo if !$::form->{transdate};
   $::form->{gldate}    = $::form->{transdate} if !$::form->{gldate};
+  $::form->{form_validity_token} = SL::DB::ValidityToken->create(scope => SL::DB::ValidityToken::SCOPE_SALES_INVOICE_POST())->token;
   update();
 }
 
@@ -579,7 +676,7 @@ sub update {
   map { $form->{$_} = $form->parse_amount(\%myconfig, $form->{$_}) }
     qw(exchangerate creditlimit creditremaining);
 
-  my @flds  = qw(amount AR_amount projectnumber oldprojectnumber project_id);
+  my @flds  = qw(amount AR_amount_chart_id projectnumber oldprojectnumber project_id taxchart tax);
   my $count = 0;
   my @a     = ();
 
@@ -745,8 +842,11 @@ sub post {
   $form->error($locale->text('Zero amount posting!'))
     unless grep $_*1, map $form->parse_amount(\%myconfig, $form->{"amount_$_"}), 1..$form->{rowcount};
 
-  $form->isblank("exchangerate", $locale->text('Exchangerate missing!'))
-    if ($form->{defaultcurrency} && ($form->{currency} ne $form->{defaultcurrency}));
+  if ($form->{defaultcurrency} && ($form->{currency} ne $form->{defaultcurrency})) {
+    $form->isblank("exchangerate", $locale->text('Exchangerate missing!'));
+    $form->error($locale->text('Cannot post invoice with negative exchange rate'))
+      unless ($form->parse_amount(\%myconfig, $form->{"exchangerate"}) > 0);
+  }
 
   delete($form->{AR});
 
@@ -780,7 +880,6 @@ sub post {
   $form->{AR}{receivables} = $form->{ARselected};
   $form->{storno}          = 0;
 
-  $form->{id} = 0 if $form->{postasnew};
   $form->error($locale->text('Cannot post transaction!')) unless AR->post_transaction(\%myconfig, \%$form);
 
   # saving the history
@@ -792,29 +891,45 @@ sub post {
   }
   # /saving the history
 
-  $form->redirect($locale->text('AR transaction posted.') . ' ' . $locale->text('ID') . ': ' . $form->{id}) unless $inline;
+  if ($form->{email_journal_id} && $form->{id} ne "") {
+    my $ar_transaction = SL::DB::Invoice->new(id => $form->{id})->load;
+    my $email_journal = SL::DB::EmailJournal->new(
+      id => delete $form->{email_journal_id}
+    )->load;
+    $email_journal->link_to_record_with_attachment($ar_transaction, delete $::form->{email_attachment_id});
+  }
+
+  if (!$inline) {
+    my $msg = $locale->text("AR transaction '#1' posted (ID: #2)", $form->{invnumber}, $form->{id});
+    if ($::instance_conf->get_ar_add_doc && $::instance_conf->get_doc_storage) {
+      my $add_doc_url = build_std_url("script=ar.pl", 'action=edit', 'id=' . E($form->{id}));
+      SL::Helper::Flash::flash_later('info', $msg);
+      print $form->redirect_header($add_doc_url);
+      $::dispatcher->end_request;
+
+    } else {
+      $form->redirect($msg);
+    }
+  }
 
   $main::lxdebug->leave_sub();
 }
 
-sub post_as_new {
+sub post_and_close {
   $main::lxdebug->enter_sub();
-
   $main::auth->assert('ar_transactions');
+  my $locale = $main::locale;
+  my $form   = $::form;
 
-  my $form     = $main::form;
-  my %myconfig = %main::myconfig;
+  # inline post
+  post(1);
 
-  $form->{postasnew} = 1;
-  # saving the history
-  if(!exists $form->{addition} && $form->{id} ne "") {
-    $form->{snumbers}  = qq|invnumber_| . $form->{invnumber};
-    $form->{what_done} = "invoice";
-    $form->{addition}  = "POSTED AS NEW";
-    $form->save_history;
-  }
-  # /saving the history
-  &post;
+  my $callback = $form->{callback}
+    || "controller.pl?action=LoginScreen/user_login";
+    my $msg = $locale->text("AR transaction '#1' posted (ID: #2)", $form->{invnumber}, $form->{id});
+  SL::Helper::Flash::flash_later('info', $msg);
+  print $form->redirect_header($callback);
+  $::dispatcher->end_request;
 
   $main::lxdebug->leave_sub();
 }
@@ -826,6 +941,10 @@ sub use_as_new {
 
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
+
+  $form->{email_journal_id}    = delete $form->{workflow_email_journal_id};
+  $form->{email_attachment_id} = delete $form->{workflow_email_attachment_id};
+  $form->{callback}            = delete $form->{workflow_email_callback};
 
   map { delete $form->{$_} } qw(printed emailed queued invnumber deliverydate id datepaid_1 gldate_1 acc_trans_id_1 source_1 memo_1 paid_1 exchangerate_1 AP_paid_1 storno);
   $form->{paidaccounts} = 1;
@@ -839,6 +958,8 @@ sub use_as_new {
     my $payment_terms = SL::DB::Customer->load_cached($form->{customer_id})->payment;
     $form->{duedate}  = $payment_terms->calc_date(reference_date => $today)->to_kivitendo if $payment_terms;
   }
+
+  $form->{form_validity_token} = SL::DB::ValidityToken->create(scope => SL::DB::ValidityToken::SCOPE_SALES_INVOICE_POST())->token;
 
   &update;
 
@@ -883,25 +1004,50 @@ sub setup_ar_search_action_bar {
 }
 
 sub setup_ar_transactions_action_bar {
-  my %params = @_;
+  my %params          = @_;
+  my $may_edit_create = $::auth->assert('invoice_edit', 1);
+
+  my $webdav_enabled = SL::DB::Default->get->webdav
+                       && SL::DB::Default->get->webdav_documents;
+  my $files_enabled  = SL::DB::Default->get->doc_storage;
 
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       action => [
         $::locale->text('Print'),
         call     => [ 'kivi.MassInvoiceCreatePrint.showMassPrintOptionsOrDownloadDirectly' ],
-        disabled => !$params{num_rows} ? $::locale->text('The report doesn\'t contain entries.') : undef,
+        disabled => !$may_edit_create  ? t8('You do not have the permissions to access this function.')
+                  : !$params{num_rows} ? $::locale->text('The report doesn\'t contain entries.')
+                  :                      undef,
       ],
-
+      combobox => [
+        action => [ $::locale->text('PDF-Export') ],
+        action => [
+          t8('WebDAV'),
+          submit   => [ '#report_form', { action => 'Invoice/webdav_pdf_export' } ],
+          checks   => [ ['kivi.check_if_entries_selected', '[name="id[]"]'] ],
+          disabled => !$webdav_enabled ? t8('WebDAV is not enabled.')
+                                       : undef,
+        ],
+        action => [
+          t8('Documents'),
+          submit   => [ '#report_form', { action => 'Invoice/files_pdf_export' } ],
+          checks   => [ ['kivi.check_if_entries_selected', '[name="id[]"]'] ],
+          disabled => !$files_enabled ? t8('No File Management enabled.')
+                                      : undef,
+        ],
+      ],
       combobox => [
         action => [ $::locale->text('Create new') ],
         action => [
           $::locale->text('AR Transaction'),
-          submit => [ '#create_new_form', { action => 'ar_transaction' } ],
+          submit   => [ '#create_new_form', { action => 'ar_transaction' } ],
+          disabled => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
         ],
         action => [
           $::locale->text('Sales Invoice'),
-          submit => [ '#create_new_form', { action => 'sales_invoice' } ],
+          submit   => [ '#create_new_form', { action => 'sales_invoice' } ],
+          disabled => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
         ],
       ], # end of combobox "Create new"
     );
@@ -911,8 +1057,6 @@ sub setup_ar_transactions_action_bar {
 sub search {
   $main::lxdebug->enter_sub();
 
-  $main::auth->assert('invoice_edit');
-
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
   my $locale   = $main::locale;
@@ -920,9 +1064,11 @@ sub search {
 
   $form->{title} = $locale->text('Invoices, Credit Notes & AR Transactions');
 
-  $form->{ALL_EMPLOYEES} = SL::DB::Manager::Employee->get_all_sorted(query => [ deleted => 0 ]);
-  $form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
-  $form->{ALL_BUSINESS_TYPES} = SL::DB::Manager::Business->get_all_sorted;
+  $form->{ALL_EMPLOYEES}      = SL::DB::Manager::Employee   ->get_all_sorted(query => [ deleted => 0 ]);
+  $form->{ALL_DEPARTMENTS}    = SL::DB::Manager::Department ->get_all_sorted;
+  $form->{ALL_BUSINESS_TYPES} = SL::DB::Manager::Business   ->get_all_sorted;
+  $form->{ALL_TAXZONES}       = SL::DB::Manager::TaxZone    ->get_all_sorted;
+  $form->{ALL_PAYMENT_TERMS}  = SL::DB::Manager::PaymentTerm->get_all_sorted;
 
   $form->{CT_CUSTOM_VARIABLES}                  = CVar->get_configs('module' => 'CT');
   ($form->{CT_CUSTOM_VARIABLES_FILTER_CODE},
@@ -967,14 +1113,13 @@ sub create_subtotal_row {
 sub ar_transactions {
   $main::lxdebug->enter_sub();
 
-  $main::auth->assert('invoice_edit');
-
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
   my $locale   = $main::locale;
 
   my ($callback, $href, @columns);
 
+  my %params   = @_;
   report_generator_set_default_sort('transdate', 1);
 
   AR->ar_transactions(\%myconfig, \%$form);
@@ -983,11 +1128,16 @@ sub ar_transactions {
 
   my $report = SL::ReportGenerator->new(\%myconfig, $form);
 
-  @columns =
-    qw(ids transdate id type invnumber ordnumber cusordnumber name netamount tax amount paid
-       datepaid due duedate transaction_description notes salesman employee shippingpoint shipvia
-       marge_total marge_percent globalprojectnumber customernumber country ustid taxzone
-       payment_terms charts customertype direct_debit dunning_description department);
+  @columns = qw(
+    ids transdate id type invnumber ordnumber cusordnumber donumber
+    deliverydate name netamount tax amount paid datepaid due duedate
+    transaction_description notes salesman employee shippingpoint shipvia
+    marge_total marge_percent globalprojectdescription globalprojectnumber customernumber country
+    ustid taxzone payment_terms charts customertype direct_debit
+    dunning_description department attachments items customer_dunning_lock
+    shiptoname shiptodepartment_1 shiptodepartment_2 shiptostreet
+    shiptozipcode shiptocity shiptocountry
+  );
 
   my $ct_cvar_configs                 = CVar->get_configs('module' => 'CT');
   my @ct_includeable_custom_variables = grep { $_->{includeable} } @{ $ct_cvar_configs };
@@ -997,20 +1147,29 @@ sub ar_transactions {
   push @columns, map { "cvar_$_->{name}" } @ct_includeable_custom_variables;
 
   my @hidden_variables = map { "l_${_}" } @columns;
-  push @hidden_variables, "l_subtotal", qw(open closed customer invnumber ordnumber cusordnumber transaction_description notes project_id transdatefrom transdateto duedatefrom duedateto
-                                           employee_id salesman_id business_id parts_partnumber parts_description department_id show_marked_as_closed);
+  push @hidden_variables, "l_subtotal", qw(
+    open closed customer invnumber ordnumber cusordnumber
+    transaction_description notes project_id transdatefrom transdateto
+    duedatefrom duedateto datepaidfrom datepaidto employee_id salesman_id
+    business_id parts_partnumber parts_description department_id
+    show_marked_as_closed show_not_mailed shippingpoint shipvia taxzone_id
+    payment_id shiptoname shiptodepartment_1 shiptodepartment_2 shiptostreet
+    shiptozipcode shiptocity shiptocountry fulltext parts_serialnumber
+  );
   push @hidden_variables, map { "cvar_$_->{name}" } @ct_searchable_custom_variables;
 
-  $href = build_std_url('action=ar_transactions', grep { $form->{$_} } @hidden_variables);
+  $href =  $params{want_binary_pdf} ? '' : build_std_url('action=ar_transactions', grep { $form->{$_} } @hidden_variables);
 
   my %column_defs = (
-    'ids'                     => { raw_header_data => $::request->presenter->checkbox_tag("", id => "check_all", checkall => "[data-checkall=1]"), align => 'center' },
+    'ids'                     => { raw_header_data => SL::Presenter::Tag::checkbox_tag("", id => "check_all", checkall => "[data-checkall=1]"), align => 'center' },
     'transdate'               => { 'text' => $locale->text('Date'), },
     'id'                      => { 'text' => $locale->text('ID'), },
     'type'                    => { 'text' => $locale->text('Type'), },
     'invnumber'               => { 'text' => $locale->text('Invoice'), },
     'ordnumber'               => { 'text' => $locale->text('Order'), },
     'cusordnumber'            => { 'text' => $locale->text('Customer Order Number'), },
+    'donumber'                => { 'text' => $locale->text('Delivery Order'), },
+    'deliverydate'            => { 'text' => $locale->text('Delivery Date'), },
     'name'                    => { 'text' => $locale->text('Customer'), },
     'netamount'               => { 'text' => $locale->text('Amount'), },
     'tax'                     => { 'text' => $locale->text('Tax'), },
@@ -1025,6 +1184,7 @@ sub ar_transactions {
     'employee'                => { 'text' => $locale->text('Employee'), },
     'shippingpoint'           => { 'text' => $locale->text('Shipping Point'), },
     'shipvia'                 => { 'text' => $locale->text('Ship via'), },
+    'globalprojectdescription' => { 'text' => $locale->text('Document Project Description'), },
     'globalprojectnumber'     => { 'text' => $locale->text('Document Project Number'), },
     'marge_total'             => { 'text' => $locale->text('Ertrag'), },
     'marge_percent'           => { 'text' => $locale->text('Ertrag prozentual'), },
@@ -1038,10 +1198,20 @@ sub ar_transactions {
     'direct_debit'            => { 'text' => $locale->text('direct debit'), },
     'department'              => { 'text' => $locale->text('Department'), },
     dunning_description       => { 'text' => $locale->text('Dunning level'), },
+    attachments               => { 'text' => $locale->text('Attachments'), },
+    items                     => { 'text' => $locale->text('Positions'), },
+    customer_dunning_lock     => { 'text' => $locale->text('Dunning lock'), },
+    shiptoname                => { 'text' => $locale->text('Name (Shipping)'), },
+    shiptodepartment_1        => { 'text' => $locale->text('Department 1 (Shipping)'), },
+    shiptodepartment_2        => { 'text' => $locale->text('Department 2 (Shipping)'), },
+    shiptostreet              => { 'text' => $locale->text('Street (Shipping)'), },
+    shiptozipcode             => { 'text' => $locale->text('Zipcode (Shipping)'), },
+    shiptocity                => { 'text' => $locale->text('City (Shipping)'), },
+    shiptocountry             => { 'text' => $locale->text('Country (Shipping)'), },
     %column_defs_cvars,
   );
 
-  foreach my $name (qw(id transdate duedate invnumber ordnumber cusordnumber name datepaid employee shippingpoint shipvia transaction_description direct_debit)) {
+  foreach my $name (qw(id transdate duedate invnumber ordnumber cusordnumber donumber deliverydate name netamount amount datepaid employee shippingpoint shipvia transaction_description direct_debit department taxzone globalprojectdescription globalprojectnumber)) {
     my $sortdir                 = $form->{sort} eq $name ? 1 - $form->{sortdir} : $form->{sortdir};
     $column_defs{$name}->{link} = $href . "&sort=$name&sortdir=$sortdir";
   }
@@ -1093,6 +1263,10 @@ sub ar_transactions {
   if ($form->{transaction_description}) {
     push @options, $locale->text('Transaction description') . " : $form->{transaction_description}";
   }
+  if ($form->{payment_id}) {
+    my $payment_term = SL::DB::Manager::PaymentTerm->find_by( id => $form->{payment_id} );
+    push @options, $locale->text('Payment Term') . " : " . $payment_term->description;
+  }
   if ($form->{parts_partnumber}) {
     push @options, $locale->text('Part Number') . " : $form->{parts_partnumber}";
   }
@@ -1104,6 +1278,18 @@ sub ar_transactions {
   }
   if ($form->{transdateto}) {
     push @options, $locale->text('Bis') . " " . $locale->date(\%myconfig, $form->{transdateto}, 1);
+  }
+  if ($form->{duedatefrom}) {
+    push @options, $locale->text('Due Date') . " " . $locale->text('from') . " " . $locale->date(\%myconfig, $form->{duedatefrom}, 1);
+  }
+  if ($form->{duedateto}) {
+    push @options, $locale->text('Due Date') . " " . $locale->text('to') . " " . $locale->date(\%myconfig, $form->{duedateto}, 1);
+  }
+  if ($form->{datepaidfrom}) {
+    push @options, $locale->text('Date Paid') . " " . $locale->text('from') . " " . $locale->date(\%myconfig, $form->{datepaidfrom}, 1);
+  }
+  if ($form->{datepaidto}) {
+    push @options, $locale->text('Date Paid') . " " . $locale->text('to') . " " . $locale->date(\%myconfig, $form->{datepaidto}, 1);
   }
   if ($form->{open}) {
     push @options, $locale->text('Open');
@@ -1118,6 +1304,39 @@ sub ar_transactions {
   }
   if ($form->{closed}) {
     push @options, $locale->text('Closed');
+  }
+  if ($form->{shipvia}) {
+    push @options, $locale->text('Ship via') . " : $form->{shipvia}";
+  }
+  if ($form->{shippingpoint}) {
+    push @options, $locale->text('Shipping Point') . " : $form->{shippingpoint}";
+  }
+  if ($form->{shiptoname}) {
+    push @options, $locale->text('Name (Shipping)') . " : $form->{shiptoname}";
+  }
+  if ($form->{shiptodepartment_1}) {
+    push @options, $locale->text('Department 1 (Shipping)') . " : $form->{shiptodepartment_1}";
+  }
+  if ($form->{shiptodepartment_2}) {
+    push @options, $locale->text('Department 2 (Shipping)') . " : $form->{shiptodepartment_2}";
+  }
+  if ($form->{shiptostreet}) {
+    push @options, $locale->text('Street (Shipping)') . " : $form->{shiptostreet}";
+  }
+  if ($form->{shiptozipcode}) {
+    push @options, $locale->text('Zipcode (Shipping)') . " : $form->{shiptozipcode}";
+  }
+  if ($form->{shiptocity}) {
+    push @options, $locale->text('City (Shipping)') . " : $form->{shiptocity}";
+  }
+  if ($form->{shiptocountry_id}) {
+    push @options, $locale->text('Country (Shipping)') . " : " . SL::DB::Country->new(id => $form->{shiptocountry_id})->load->description_localized($::myconfig{countrycode});
+  }
+  if ($form->{fulltext}) {
+    push @options, $locale->text('Full Text') . " : $form->{fulltext}";
+  }
+  if ($form->{parts_serialnumber}) {
+    push @options, $locale->text('Serial Number') . " : $form->{parts_serialnumber}";
   }
 
   $form->{ALL_PRINTERS} = SL::DB::Manager::Printer->get_all_sorted;
@@ -1155,15 +1374,30 @@ sub ar_transactions {
     $subtotals{marge_percent} = $subtotals{netamount} ? ($subtotals{marge_total} * 100 / $subtotals{netamount}) : 0;
     $totals{marge_percent}    = $totals{netamount}    ? ($totals{marge_total}    * 100 / $totals{netamount}   ) : 0;
 
+    # Preserve $ar->{type} before changing it to the abbreviation letter for
+    # getting files from file management below.
+    $ar->{object_type} = $ar->{type};
+
     my $is_storno  = $ar->{storno} &&  $ar->{storno_id};
     my $has_storno = $ar->{storno} && !$ar->{storno_id};
 
-    $ar->{type} =
-      $has_storno       ? $locale->text("Invoice with Storno (abbreviation)") :
-      $is_storno        ? $locale->text("Storno (one letter abbreviation)") :
-      $ar->{amount} < 0 ? $locale->text("Credit note (one letter abbreviation)") :
-      $ar->{invoice}    ? $locale->text("Invoice (one letter abbreviation)") :
-                          $locale->text("AR Transaction (abbreviation)");
+    if ($ar->{type} eq 'invoice_for_advance_payment') {
+      $ar->{type} =
+        $has_storno       ? $locale->text("Invoice for Advance Payment with Storno (abbreviation)") :
+        $is_storno        ? $locale->text("Storno (one letter abbreviation)") :
+                            $locale->text("Invoice for Advance Payment (one letter abbreviation)");
+
+    } elsif ($ar->{type} eq 'final_invoice') {
+      $ar->{type} = t8('Final Invoice (one letter abbreviation)');
+
+    } else {
+      $ar->{type} =
+        $has_storno       ? $locale->text("Invoice with Storno (abbreviation)") :
+        $is_storno        ? $locale->text("Storno (one letter abbreviation)") :
+        $ar->{amount} < 0 ? $locale->text("Credit Note (one letter abbreviation)") :
+        $ar->{invoice}    ? $locale->text("Invoice (one letter abbreviation)") :
+                            $locale->text("AR Transaction (abbreviation)");
+    }
 
     map { $ar->{$_} = $form->format_amount(\%myconfig, $ar->{$_}, 2) } qw(netamount tax amount paid due marge_total marge_percent);
 
@@ -1172,20 +1406,47 @@ sub ar_transactions {
     my $row = { };
 
     foreach my $column (@columns) {
+      next if ($column eq 'items');
+
       $row->{$column} = {
         'data'  => $ar->{$column},
         'align' => $column_alignment{$column},
       };
     }
 
-    $row->{invnumber}->{link} = build_std_url("script=" . ($ar->{invoice} ? 'is.pl' : 'ar.pl'), 'action=edit')
-      . "&id=" . E($ar->{id}) . "&callback=${callback}";
+    if ($::instance_conf->get_feature_experimental_invoice) {
+      $row->{invnumber}->{link} = build_std_url('script=controller.pl', 'action=Invoice/edit', 'id=' . E($ar->{id}) . '&type=' . ($ar->{invoice} ? 'invoice' : 'ar_transaction'))
+         . "&callback=${callback}" unless $params{want_binary_pdf};
+    } else {
+      $row->{invnumber}->{link} = build_std_url("script=" . ($ar->{invoice} ? 'is.pl' : 'ar.pl'), 'action=edit')
+        . "&id=" . E($ar->{id}) . "&callback=${callback}" unless $params{want_binary_pdf};
+    }
 
     $row->{ids} = {
-      raw_data =>  $::request->presenter->checkbox_tag("id[]", value => $ar->{id}, "data-checkall" => 1),
+      raw_data =>  SL::Presenter::Tag::checkbox_tag("id[]", value => $ar->{id}, "data-checkall" => 1),
       valign   => 'center',
       align    => 'center',
     };
+
+    if ($::instance_conf->get_doc_storage && $form->{l_attachments}) {
+      my @files  = SL::File->get_all_versions(object_id   => $ar->{id},
+                                              object_type => $ar->{object_type} || 'invoice',
+                                              file_type   => 'attachment',);
+      if (scalar @files) {
+        my $html            = join '<br>', map { SL::Presenter::FileObject::file_object($_) } @files;
+        my $text            = join "\n",   map { $_->file_name                              } @files;
+        $row->{attachments} = { 'raw_data' => $html, data => $text };
+      } else {
+        $row->{attachments} = { };
+      }
+
+    }
+
+    if ($form->{l_items}) {
+      my $items = SL::DB::Manager::InvoiceItem->get_all_sorted(where => [id => $ar->{item_ids}]);
+      $row->{items}->{raw_data}  = SL::Presenter::ItemsList::items_list($items)               if lc($report->{options}->{output_format}) eq 'html';
+      $row->{items}->{data}      = SL::Presenter::ItemsList::items_list($items, as_text => 1) if lc($report->{options}->{output_format}) ne 'html';
+    }
 
     my $row_set = [ $row ];
 
@@ -1202,6 +1463,11 @@ sub ar_transactions {
 
   $report->add_separator();
   $report->add_data(create_subtotal_row(\%totals, \@columns, \%column_alignment, \@subtotal_columns, 'listtotal'));
+
+  if ($params{want_binary_pdf}) {
+    $report->generate_with_headers();
+    return $report->generate_pdf_content(want_binary_pdf => 1);
+  }
 
   $::request->layout->add_javascripts('kivi.MassInvoiceCreatePrint.js');
   setup_ar_transactions_action_bar(num_rows => scalar(@{ $form->{AR} }));
@@ -1252,7 +1518,25 @@ sub setup_ar_form_header_action_bar {
 
   my $is_storno               = IS->is_storno(\%::myconfig, $::form, 'ar', $::form->{id});
   my $has_storno              = IS->has_storno(\%::myconfig, $::form, 'ar');
+  my $may_edit_create         = $::auth->assert('ar_transactions', 1);
 
+  my $is_linked_bank_transaction;
+  if ($::form->{id}
+      && SL::DB::Manager::BankTransactionAccTrans->find_by(ar_id => $::form->{id})) {
+
+    $is_linked_bank_transaction = 1;
+  }
+  # add readonly state in $::form
+  $::form->{readonly} = !$may_edit_create                           ? 1
+                      : $is_closed                                  ? 1
+                      : $is_storno                                  ? 1
+                      : $has_storno                                 ? 1
+                      : ($::form->{id} && $change_never)            ? 1
+                      : ($::form->{id} && $change_on_same_day_only) ? 1
+                      : $is_linked_bank_transaction                 ? 1
+                      : 0;
+  # and is_linked_bank_transaction
+  $::form->{is_linked_bank_transaction} = $is_linked_bank_transaction;
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       action => [
@@ -1260,6 +1544,7 @@ sub setup_ar_form_header_action_bar {
         submit    => [ '#form', { action => "update" } ],
         id        => 'update_button',
         checks    => [ 'kivi.validate_form' ],
+        disabled  => !$may_edit_create ? t8('You must not change this AR transaction.') : undef,
         accesskey => 'enter',
       ],
 
@@ -1268,21 +1553,40 @@ sub setup_ar_form_header_action_bar {
           t8('Post'),
           submit   => [ '#form', { action => "post" } ],
           checks   => [ 'kivi.validate_form', 'kivi.AR.check_fields_before_posting' ],
-          disabled => $is_closed                                  ? t8('The billing period has already been locked.')
+          disabled => !$may_edit_create                           ? t8('You must not change this AR transaction.')
+                    : $is_closed                                  ? t8('The billing period has already been locked.')
                     : $is_storno                                  ? t8('A canceled invoice cannot be posted.')
                     : ($::form->{id} && $change_never)            ? t8('Changing invoices has been disabled in the configuration.')
                     : ($::form->{id} && $change_on_same_day_only) ? t8('Invoices can only be changed on the day they are posted.')
+                    : $is_linked_bank_transaction                 ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
+                    :                                               undef,
+        ],
+        action => [
+          t8('Post and Close'),
+          submit   => [ '#form', { action => "post_and_close" } ],
+          checks   => [ 'kivi.validate_form', 'kivi.AR.check_fields_before_posting' ],
+          disabled => !$may_edit_create                           ? t8('You must not change this AR transaction.')
+                    : $is_closed                                  ? t8('The billing period has already been locked.')
+                    : $is_storno                                  ? t8('A canceled invoice cannot be posted.')
+                    : ($::form->{id} && $change_never)            ? t8('Changing invoices has been disabled in the configuration.')
+                    : ($::form->{id} && $change_on_same_day_only) ? t8('Invoices can only be changed on the day they are posted.')
+                    : $is_linked_bank_transaction                 ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
                     :                                               undef,
         ],
         action => [
           t8('Post Payment'),
           submit   => [ '#form', { action => "post_payment" } ],
-          disabled => !$::form->{id} ? t8('This invoice has not been posted yet.') : undef,
+          disabled => !$may_edit_create           ? t8('You must not change this AR transaction.')
+                    : !$::form->{id}              ? t8('This invoice has not been posted yet.')
+                    : $is_linked_bank_transaction ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
+                    :                               undef,
         ],
         action => [ t8('Mark as paid'),
           submit   => [ '#form', { action => "mark_as_paid" } ],
           confirm  => t8('This will remove the invoice from showing as unpaid even if the unpaid amount does not match the amount. Proceed?'),
-          disabled => !$::form->{id} ? t8('This invoice has not been posted yet.') : undef,
+          disabled => !$may_edit_create ? t8('You must not change this AR transaction.')
+                    : !$::form->{id}    ? t8('This invoice has not been posted yet.')
+                    :                     undef,
           only_if  => $::instance_conf->get_is_show_mark_as_paid,
         ],
       ], # end of combobox "Post"
@@ -1292,16 +1596,18 @@ sub setup_ar_form_header_action_bar {
           submit   => [ '#form', { action => "storno" } ],
           checks   => [ 'kivi.validate_form', 'kivi.AR.check_fields_before_posting' ],
           confirm  => t8('Do you really want to cancel this invoice?'),
-          disabled => !$::form->{id}         ? t8('This invoice has not been posted yet.')
-                      : $has_storno          ? t8('This invoice has been canceled already.')
-                      : $is_storno           ? t8('Reversal invoices cannot be canceled.')
-                      : $::form->{totalpaid} ? t8('Invoices with payments cannot be canceled.')
-                      :                        undef,
+          disabled => !$may_edit_create    ? t8('You must not change this AR transaction.')
+                    : !$::form->{id}       ? t8('This invoice has not been posted yet.')
+                    : $has_storno          ? t8('This invoice has been canceled already.')
+                    : $is_storno           ? t8('Reversal invoices cannot be canceled.')
+                    : $::form->{totalpaid} ? t8('Invoices with payments cannot be canceled.')
+                    :                        undef,
         ],
         action => [ t8('Delete'),
           submit   => [ '#form', { action => "delete" } ],
           confirm  => t8('Do you really want to delete this object?'),
-          disabled => !$::form->{id}           ? t8('This invoice has not been posted yet.')
+          disabled => !$may_edit_create        ? t8('You must not change this AR transaction.')
+                    : !$::form->{id}           ? t8('This invoice has not been posted yet.')
                     : $change_never            ? t8('Changing invoices has been disabled in the configuration.')
                     : $change_on_same_day_only ? t8('Invoices can only be changed on the day they are posted.')
                     : $is_closed               ? t8('The billing period has already been locked.')
@@ -1317,7 +1623,9 @@ sub setup_ar_form_header_action_bar {
           t8('Use As New'),
           submit   => [ '#form', { action => "use_as_new" } ],
           checks   => [ 'kivi.validate_form' ],
-          disabled => !$::form->{id} ? t8('This invoice has not been posted yet.') : undef,
+          disabled => !$may_edit_create ? t8('You must not change this AR transaction.')
+                    : !$::form->{id} ? t8('This invoice has not been posted yet.')
+                    :                  undef,
         ],
       ], # end of combobox "Workflow"
 
@@ -1335,14 +1643,16 @@ sub setup_ar_form_header_action_bar {
         ],
         action => [
           t8('Record templates'),
-          call => [ 'kivi.RecordTemplate.popup', 'ar_transaction' ],
+          call     => [ 'kivi.RecordTemplate.popup', 'ar_transaction' ],
+          disabled => !$may_edit_create ? t8('You must not change this AR transaction.') : undef,
         ],
         action => [
           t8('Drafts'),
           call     => [ 'kivi.Draft.popup', 'ar', 'invoice', $::form->{draft_id}, $::form->{draft_description} ],
-          disabled => $::form->{id} ? t8('This invoice has already been posted.')
-                    : $is_closed    ? t8('The billing period has already been locked.')
-                    :                 undef,
+          disabled => !$may_edit_create ? t8('You must not change this AR transaction.')
+                    : $::form->{id}     ? t8('This invoice has already been posted.')
+                    : $is_closed        ? t8('The billing period has already been locked.')
+                    :                     undef,
         ],
       ], # end of combobox "more"
     );

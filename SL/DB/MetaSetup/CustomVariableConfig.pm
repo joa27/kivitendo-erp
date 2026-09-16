@@ -11,6 +11,7 @@ __PACKAGE__->meta->table('custom_variable_configs');
 __PACKAGE__->meta->columns(
   default_value       => { type => 'text' },
   description         => { type => 'text', not_null => 1 },
+  first_tab           => { type => 'boolean', default => 'false', not_null => 1 },
   flags               => { type => 'text' },
   id                  => { type => 'integer', not_null => 1, sequence => 'custom_variable_configs_id' },
   includeable         => { type => 'boolean', not_null => 1 },
@@ -22,6 +23,7 @@ __PACKAGE__->meta->columns(
   options             => { type => 'text' },
   searchable          => { type => 'boolean', not_null => 1 },
   sortkey             => { type => 'integer', not_null => 1 },
+  sync_linked_cv      => { type => 'boolean', default => 'false' },
   type                => { type => 'text', not_null => 1 },
 );
 
@@ -30,4 +32,4 @@ __PACKAGE__->meta->primary_key_columns([ 'id' ]);
 __PACKAGE__->meta->allow_inline_column_values(1);
 
 1;
-;
+

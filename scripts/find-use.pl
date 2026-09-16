@@ -5,7 +5,6 @@ BEGIN {
 
   unshift(@INC, $FindBin::Bin . '/../modules/override'); # Use our own versions of various modules (e.g. YAML).
   push   (@INC, $FindBin::Bin . '/..');                  # '.' will be removed from @INC soon.
-  push   (@INC, $FindBin::Bin . '/../modules/fallback'); # Only use our own versions of modules if there's no system version.
 }
 
 use strict;
@@ -25,6 +24,12 @@ my (%uselines, %modules, %supplied, %requires);
   'DateTime' => {
     'DateTime::Duration'                 => 1,
     'DateTime::Infinite'                 => 1,
+  },
+  'Exception::Class' => {
+    'Exception::Class::Base'             => 1,
+  },
+  'Rose::DB' => {
+    'Rose::DB::Cache'                    => 1,
   },
   'Rose::DB::Object' => {
    'Rose::DB::Object::ConventionManager' => 1,
@@ -68,6 +73,11 @@ my (%uselines, %modules, %supplied, %requires);
   'File::MimeInfo' => {
     'File::MimeInfo::Magic'              => 1,
   },
+  'CryptX' => {
+    'Crypt::KeyDerivation'               => 1,
+    'Crypt::Mode::CTR'                   => 1,
+    'Crypt::PRNG'                        => 1,
+  },
 );
 
 GetOptions(
@@ -90,7 +100,7 @@ find(sub {
     next if /SL::/;
     next if /Support::Files/; # our own test support module
     next if /use (warnings|strict|vars|lib|constant|utf8)/;
-    next if /^use (with|the)/;
+    next if /^use (it|the|with)/;
 
     my ($useline) = m/^use\s+(.*?)$/;
 
@@ -146,7 +156,7 @@ $modules{$_->{name}} ||= { status => 'required' } for @SL::InstallationCheck::re
 $modules{$_->{name}} ||= { status => 'optional' } for @SL::InstallationCheck::optional_modules;
 $modules{$_->{name}} ||= { status => 'developer' } for @SL::InstallationCheck::developer_modules;
 
-# build transitive closure for documented dependancies
+# build transitive closure for documented dependencies
 my $changed = 1;
 while ($changed) {
   $changed = 0;
@@ -250,7 +260,7 @@ This module is included in C<modules/*>. Don't worry about it.
 =item required
 
 This module is documented in C<SL:InstallationCheck> to be necessary, or is a
-dependancy of one of these. Everything alright.
+dependency of one of these. Everything alright.
 
 =item !missing
 

@@ -26,7 +26,7 @@ use Rose::Object::MakeMethods::Generic (
    'add_full_diag'  => { interface => 'add', hash_key => 'full_diag' },
   ],
   scalar => [
-   qw(diag tester config aggreg),
+   qw(diag tester config aggreg module_nr additional_email),
   ],
 );
 
@@ -44,13 +44,21 @@ sub setup {
   $self->aggreg(TAP::Parser::Aggregator->new);
 
   $self->modules(split /\s+/, $self->config->{modules});
+  $self->modules($self->{options}->{modules}) if $self->{options}->{modules};
 }
 
 sub run {
-  my $self        = shift;
+  my $self   = shift;
+  my $db_obj = shift;
+
+  # get custom options (module list || alternate email)
+  $self->{options} = $db_obj->data_as_hash;
   $self->setup;
 
   return 1 unless $self->modules;
+
+  # set additional mail
+  $self->additional_email($self->{options}->{email}) if $self->{options}->{email} =~ m/(\S+)@(\S+)$/;
 
   foreach my $module ($self->modules) {
     $self->run_module($module);
@@ -63,8 +71,9 @@ sub run {
              $self->aggreg->failed,
              $self->aggreg->todo_passed,
   );
-
-  if (!$self->aggreg->all_passed || $self->config->{send_email_on_success}) {
+  # if (!$self->aggreg->all_passed || $self->config->{send_email_on_success}) {
+  # all_passed is not set or calculated (anymore). it is safe to check only for probs or errors
+  if ($self->aggreg->failed || $self->config->{send_email_on_success}) {
     $self->_send_email;
   }
 
@@ -87,6 +96,9 @@ sub run_module {
   $module =~ s/[^\w:]//g;
   $module = "SL::BackgroundJob::SelfTest::$module";
 
+  # increase module nr
+  $self->module_nr(($self->module_nr || 0) + 1);
+
   # try to load module;
   (my $file = $module) =~ s|::|/|g;
   eval {
@@ -102,7 +114,7 @@ sub run_module {
   } or $self->add_errors($::locale->text('Could not load class #1, #2', $module, $@)) && return;
 
   $self->add_full_diag($output);
-  $self->{diag_per_module}{$module} = $output;
+  $self->{diag_per_module}{$self->module_nr . ': ' . $module} = $output;
 
   my $parser = TAP::Parser->new({ tap => $output});
   $parser->run;
@@ -120,9 +132,12 @@ sub _send_email {
   return if !$self->config || !$self->config->{send_email_to};
 
   my $user  = $self->_email_user;
-  my $email = $user ? $user->get_config_value('email') : undef;
-
+  my $email = $self->{options}->{mail_to} ? $self->{options}->{mail_to}
+            : $user                       ? $user->get_config_value('email')
+            : undef;
   return unless $email;
+
+  $email .= $self->additional_email ? ',' . $self->additional_email : '';
 
   my ($output, $content_type) = $self->_prepare_report;
 
@@ -133,13 +148,14 @@ sub _send_email {
   $mail->{content_type} = $content_type;
   $mail->{message}      = $$output;
 
-  $mail->send;
+  my $err = $mail->send;
+  $self->add_errors($::locale->text('Mailer error #1', $err)) if $err;
+
 }
 
 sub _prepare_report {
   my ($self) = @_;
 
-  my $user = $self->_email_user;
   my $template = Template->new({ 'INTERPOLATE' => 0,
                                  'EVAL_PERL'   => 0,
                                  'ABSOLUTE'    => 1,
@@ -185,15 +201,5 @@ SL::BackgroundJob::SelfTest - pluggable self testing
 
   use SL::BackgroundJob::SelfTest;
   SL::BackgroundJob::SelfTest->new->run;;
-
-=head1 DESCRIPTION
-
-
-
-=head1 FUNCTIONS
-
-=head1 BUGS
-
-=head1 AUTHOR
 
 =cut

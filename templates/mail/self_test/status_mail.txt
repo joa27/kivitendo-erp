@@ -1,7 +1,7 @@
 kivitendo selftest report.
 
 [% IF errors %]
-  General error(s) have occured.
+  General error(s) have occurred.
   [% errors %]
 [% END %]
 
@@ -15,7 +15,7 @@ Result: [% SELF.aggreg.get_status %]
 Full report:
 ------------
 
-[% FOREACH module = SELF.diag_per_module.keys %]
+[% FOREACH module = SELF.diag_per_module.keys.sort %]
 Module: [% module %]
 --------------------
 

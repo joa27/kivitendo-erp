@@ -21,6 +21,7 @@ __PACKAGE__->meta->columns(
   has_sernumber      => { type => 'boolean', default => 'false' },
   id                 => { type => 'integer', not_null => 1, sequence => 'id' },
   image              => { type => 'text' },
+  intnotes           => { type => 'text' },
   itime              => { type => 'timestamp', default => 'now()' },
   lastcost           => { type => 'numeric', precision => 15, scale => 5 },
   listprice          => { type => 'numeric', precision => 15, scale => 5 },
@@ -29,22 +30,25 @@ __PACKAGE__->meta->columns(
   mtime              => { type => 'timestamp' },
   not_discountable   => { type => 'boolean', default => 'false' },
   notes              => { type => 'text' },
-  obsolete           => { type => 'boolean', default => 'false' },
+  obsolete           => { type => 'boolean', default => 'false', not_null => 1 },
   onhand             => { type => 'numeric', default => '0', precision => 25, scale => 5 },
+  order_locked       => { type => 'boolean', default => 'false' },
+  order_qty          => { type => 'numeric', default => '0', not_null => 1, precision => 15, scale => 5 },
   part_type          => { type => 'enum', check_in => [ 'part', 'service', 'assembly', 'assortment' ], db_type => 'part_type_enum', not_null => 1 },
   partnumber         => { type => 'text', not_null => 1 },
   partsgroup_id      => { type => 'integer' },
   payment_id         => { type => 'integer' },
   price_factor_id    => { type => 'integer' },
   priceupdate        => { type => 'date', default => 'now' },
-  rop                => { type => 'float', scale => 4 },
+  rop                => { type => 'float', precision => 4, scale => 4 },
   sellprice          => { type => 'numeric', precision => 15, scale => 5 },
   shop               => { type => 'boolean', default => 'false' },
   stockable          => { type => 'boolean', default => 'false' },
+  tariff_code        => { type => 'text' },
   unit               => { type => 'varchar', length => 20, not_null => 1 },
   ve                 => { type => 'integer' },
   warehouse_id       => { type => 'integer' },
-  weight             => { type => 'float', scale => 4 },
+  weight             => { type => 'float', precision => 4, scale => 4 },
 );
 
 __PACKAGE__->meta->primary_key_columns([ 'id' ]);
@@ -96,4 +100,4 @@ __PACKAGE__->meta->foreign_keys(
 );
 
 1;
-;
+

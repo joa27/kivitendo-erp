@@ -8,25 +8,25 @@ use List::MoreUtils qw(any none);
 use SL::Helper::Csv;
 use SL::Controller::CsvImport::Helper::Consistency;
 use SL::DB::Order;
+use SL::DB::Order::TypeData qw(:types);
 use SL::DB::OrderItem;
 use SL::DB::Part;
 use SL::DB::PaymentTerm;
 use SL::DB::Contact;
 use SL::DB::Department;
 use SL::DB::PriceFactor;
-use SL::DB::Pricegroup;
 use SL::DB::Project;
 use SL::DB::Shipto;
 use SL::DB::TaxZone;
 use SL::DB::Unit;
-use SL::TransNumber;
+use SL::PriceSource;
 
 use parent qw(SL::Controller::CsvImport::BaseMulti);
 
 
 use Rose::Object::MakeMethods::Generic
 (
- 'scalar --get_set_init' => [ qw(settings languages_by all_parts parts_by part_counts_by contacts_by ct_shiptos_by price_factors_by pricegroups_by units_by) ],
+ 'scalar --get_set_init' => [ qw(settings languages_by all_parts parts_by part_counts_by contacts_by ct_shiptos_by price_factors_by units_by) ],
 );
 
 
@@ -89,7 +89,7 @@ sub init_profile {
     my $prof = $p->{profile};
     if ($p->{row_ident} eq $self->_order_column) {
       # no need to handle
-      delete @{$prof}{qw(delivery_customer_id delivery_vendor_id proforma quotation amount netamount)};
+      delete @{$prof}{qw(delivery_customer_id delivery_vendor_id proforma amount netamount)};
     }
     if ($p->{row_ident} eq $self->_item_column) {
       # no need to handle
@@ -122,6 +122,7 @@ sub setup_displayable_columns {
                                  { name => 'notes',                   description => $::locale->text('Notes')                                 },
                                  { name => 'ordnumber',               description => $::locale->text('Order Number')                          },
                                  { name => 'quonumber',               description => $::locale->text('Quotation Number')                      },
+                                 { name => 'record_type',             description => $::locale->text('Order Type') . ' [3]'                   },
                                  { name => 'reqdate',                 description => $::locale->text('Reqdate')                               },
                                  { name => 'salesman_id',             description => $::locale->text('Salesman (database ID)')                },
                                  { name => 'shippingpoint',           description => $::locale->text('Shipping Point')                        },
@@ -223,10 +224,10 @@ sub init_contacts_by {
   my $all_contacts = SL::DB::Manager::Contact->get_all;
 
   my $cby;
-  # by customer/vendor id  _and_  contact person id
-  $cby->{'cp_cv_id+cp_id'}   = { map { ( $_->cp_cv_id . '+' . $_->cp_id   => $_ ) } @{ $all_contacts } };
-  # by customer/vendor id  _and_  contact person name
-  $cby->{'cp_cv_id+cp_name'} = { map { ( $_->cp_cv_id . '+' . $_->cp_name => $_ ) } @{ $all_contacts } };
+  # by contact person id
+  $cby->{cp_id}     = { map { ( $_->cp_id     => $_ ) } @{ $all_contacts } };
+  # by contact person name
+  $cby->{full_name} = { map { ( $_->full_name => $_ ) } @{ $all_contacts } };
 
   return $cby;
 }
@@ -250,13 +251,6 @@ sub init_price_factors_by {
   return { map { my $col = $_; ( $col => { map { ( $_->$col => $_ ) } @{ $all_price_factors } } ) } qw(id description) };
 }
 
-sub init_pricegroups_by {
-  my ($self) = @_;
-
-  my $all_pricegroups = SL::DB::Manager::Pricegroup->get_all;
-  return { map { my $col = $_; ( $col => { map { ( $_->$col => $_ ) } @{ $all_pricegroups } } ) } qw(id pricegroup) };
-}
-
 sub init_units_by {
   my ($self) = @_;
 
@@ -271,6 +265,7 @@ sub check_objects {
 
   my $i = 0;
   my $num_data = scalar @{ $self->controller->data };
+  my $order_entry;
   foreach my $entry (@{ $self->controller->data }) {
     $self->controller->track_progress(progress => $i/$num_data * 100) if $i % 100 == 0;
 
@@ -278,9 +273,13 @@ sub check_objects {
 
     if ($entry->{raw_data}->{datatype} eq $self->_order_column) {
       $self->handle_order($entry);
+      $order_entry = $entry;
     } elsif ($entry->{raw_data}->{datatype} eq $self->_item_column && $entry->{object}->can('part')) {
-      $self->handle_item($entry);
+      $self->handle_item($entry, $order_entry);
+    } else {
+      $order_entry = undef;
     }
+
     $self->handle_cvars($entry, sub_module => 'orderitems');
 
   } continue {
@@ -293,7 +292,9 @@ sub check_objects {
                           { header => $::locale->text('Data type'), method => 'datatype' });
 
   $self->add_info_columns($self->_order_column,
-                          { header => $::locale->text('Customer/Vendor'), method => 'vc_name' });
+                          { header => $::locale->text('Customer/Vendor'), method => 'vc_name'     },
+                          { header => $::locale->text('Record Type'),     method => 'record_type' });
+
   # Todo: access via ->[0] ok? Better: search first order column and use this
   $self->add_columns($self->_order_column,
                      map { "${_}_id" } grep { exists $self->controller->data->[0]->{raw_data}->{$_} } qw(payment delivery_term language department globalproject taxzone cp currency));
@@ -329,6 +330,7 @@ sub handle_order {
     push @{ $entry->{errors} }, $::locale->text('Error: Customer/vendor missing');
   }
 
+  $self->handle_type($entry);
   $self->check_contact($entry);
   $self->check_language($entry);
   $self->check_payment($entry);
@@ -344,6 +346,7 @@ sub handle_order {
     foreach (qw(payment_id delivery_term_id language_id taxzone_id currency_id)) {
       $object->$_($vc_obj->$_) unless $object->$_;
     }
+    $object->intnotes($vc_obj->notes) unless $object->intnotes;
   }
 
   $self->handle_salesman($entry);
@@ -381,17 +384,33 @@ sub check_language {
   return 1;
 }
 
-sub handle_item {
+sub handle_type {
   my ($self, $entry) = @_;
 
+  if (!exists $entry->{raw_data}->{record_type}) {
+    # if no type is present - set to sales order or purchase
+    # order depending on customer/vendor
+
+    $entry->{object}->record_type($entry->{object}->customer_id
+                                  ? SALES_ORDER_TYPE
+                                  : PURCHASE_ORDER_TYPE);
+  }
+
+  $entry->{info_data}->{record_type} = $::locale->text($entry->{object}->record_type);
+}
+
+sub handle_item {
+  my ($self, $entry, $order_entry) = @_;
+
+  return unless $order_entry;
+
   my $object = $entry->{object};
+
   return unless $self->check_part($entry);
 
   my $part_obj = SL::DB::Part->new(id => $object->parts_id)->load;
 
   $self->handle_unit($entry);
-  $self->handle_sellprice($entry);
-  $self->handle_discount($entry);
 
   # copy from part if not given
   $object->description($part_obj->description) unless $object->description;
@@ -404,6 +423,9 @@ sub handle_item {
   $self->check_project($entry, global => 0);
   $self->check_price_factor($entry);
   $self->check_pricegroup($entry);
+
+  $self->handle_sellprice($entry, $order_entry);
+  $self->handle_discount($entry, $order_entry);
 }
 
 sub handle_unit {
@@ -433,28 +455,63 @@ sub handle_unit {
 }
 
 sub handle_sellprice {
-  my ($self, $entry) = @_;
+  my ($self, $entry, $record_entry) = @_;
 
-  my $object = $entry->{object};
+  my $item   = $entry->{object};
+  my $record = $record_entry->{object};
 
-  # Set sellprice from part if not given. Convert with respect to unit.
-  if (!defined $object->sellprice) {
-    my $sellprice = $object->part->sellprice;
+  return if !$record->customervendor;
 
-    if ($object->unit ne $object->part->unit) {
-      $sellprice = $object->unit_obj->convert_to($sellprice, $object->part->unit_obj);
+  # If sellprice is given, set price source to pricegroup if given or to none.
+  if (exists $entry->{raw_data}->{sellprice}) {
+    my $price_source      = SL::PriceSource->new(record_item => $item, record => $record);
+    my $price_source_spec = $item->pricegroup_id ? 'pricegroup' . '/' . $item->pricegroup_id : '';
+    my $price             = $price_source->price_from_source($price_source_spec);
+    $item->active_price_source($price->source);
+
+  } else {
+    # Set sellprice the best price of price source
+    my $price_source = SL::PriceSource->new(record_item => $item, record => $record);
+    my $price        = $price_source->best_price;
+    if ($price) {
+      $item->sellprice($price->price);
+      $item->active_price_source($price->source);
+    } else {
+      $item->sellprice(0);
+      $item->active_price_source($price_source->price_from_source('')->source);
     }
-    $object->sellprice($sellprice);
   }
 }
 
 sub handle_discount {
-  my ($self, $entry) = @_;
+  my ($self, $entry, $record_entry) = @_;
 
-  my $object = $entry->{object};
+  my $item   = $entry->{object};
+  my $record = $record_entry->{object};
 
-  $object->discount($object->discount/100.0)     if $object->discount;
-  $object->discount(0)                       unless $object->discount;
+  return if !$record->customervendor;
+
+  # If discount is given, set discount source to none.
+  if (exists $entry->{raw_data}->{discount}) {
+    $item->discount($item->discount/100.0)      if $item->discount;
+    $item->discount(0)                      unless $item->discount;
+
+    my $price_source = SL::PriceSource->new(record_item => $item, record => $record);
+    my $discount     = $price_source->price_from_source('');
+    $item->active_discount_source($discount->source);
+
+  } else {
+    # Set discount the best discount of price source
+    my $price_source = SL::PriceSource->new(record_item => $item, record => $record);
+    my $discount     = $price_source->best_discount;
+    if ($discount) {
+      $item->discount($discount->discount);
+      $item->active_discount_source($discount->source);
+    } else {
+      $item->discount(0);
+      $item->active_discount_source($price_source->discount_from_source('')->source);
+    }
+  }
 }
 
 sub check_part {
@@ -538,14 +595,14 @@ sub check_contact {
   return 0 unless $cp_cv_id;
 
   # Check whether or not contact ID is valid.
-  if ($object->cp_id && !$self->contacts_by->{'cp_cv_id+cp_id'}->{ $cp_cv_id . '+' . $object->cp_id }) {
+  if ($object->cp_id && !$self->contacts_by->{cp_id}->{ $object->cp_id }) {
     push @{ $entry->{errors} }, $::locale->text('Error: Invalid contact');
     return 0;
   }
 
   # Map name to ID if given.
   if (!$object->cp_id && $entry->{raw_data}->{contact}) {
-    my $cp = $self->contacts_by->{'cp_cv_id+cp_name'}->{ $cp_cv_id . '+' . $entry->{raw_data}->{contact} };
+    my $cp = $self->contacts_by->{full_name}->{ $entry->{raw_data}->{contact} };
     if (!$cp) {
       push @{ $entry->{errors} }, $::locale->text('Error: Invalid contact');
       return 0;
@@ -555,7 +612,7 @@ sub check_contact {
   }
 
   if ($object->cp_id) {
-    $entry->{info_data}->{contact} = $self->contacts_by->{'cp_cv_id+cp_id'}->{ $cp_cv_id . '+' . $object->cp_id }->cp_name;
+    $entry->{info_data}->{contact} = $self->contacts_by->{cp_id}->{ $object->cp_id }->full_name;
   }
 
   return 1;
@@ -598,31 +655,6 @@ sub check_price_factor {
     }
 
     $object->price_factor_id($price_factor->id);
-  }
-
-  return 1;
-}
-
-sub check_pricegroup {
-  my ($self, $entry) = @_;
-
-  my $object = $entry->{object};
-
-  # Check whether or not pricegroup ID is valid.
-  if ($object->pricegroup_id && !$self->pricegroups_by->{id}->{ $object->pricegroup_id }) {
-    push @{ $entry->{errors} }, $::locale->text('Error: Invalid price group');
-    return 0;
-  }
-
-  # Map pricegroup to ID if given.
-  if (!$object->pricegroup_id && $entry->{raw_data}->{pricegroup}) {
-    my $pricegroup = $self->pricegroups_by->{pricegroup}->{ $entry->{raw_data}->{pricegroup} };
-    if (!$pricegroup) {
-      push @{ $entry->{errors} }, $::locale->text('Error: Invalid price group');
-      return 0;
-    }
-
-    $object->pricegroup_id($pricegroup->id);
   }
 
   return 1;

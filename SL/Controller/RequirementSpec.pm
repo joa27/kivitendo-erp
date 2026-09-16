@@ -23,6 +23,7 @@ use SL::DB::RequirementSpec;
 use SL::Helper::CreatePDF qw();
 use SL::Helper::Flash;
 use SL::Locale::String;
+use SL::System::Process;
 use SL::Template::LaTeX;
 
 use Rose::Object::MakeMethods::Generic
@@ -86,6 +87,7 @@ sub action_ajax_edit {
   $self->js
     ->hide('#basic_settings')
     ->after('#basic_settings', $html)
+    ->reinit_widgets
     ->render;
 }
 
@@ -157,7 +159,9 @@ sub action_ajax_save_time_and_cost_estimate {
 sub action_show {
   my ($self) = @_;
 
-  my $title  = $self->requirement_spec->is_template ? t8('Show requirement spec template') : t8('Show requirement spec');
+  my $title  = $self->requirement_spec->is_template
+             ? t8('Edit requirement spec template - #1', $self->requirement_spec->title)
+             : t8('Edit requirement spec - #1 for #2', $self->requirement_spec->title, $self->requirement_spec->customer->displayable_name);
   my $item   = $::form->{requirement_spec_item_id} ? SL::DB::RequirementSpecItem->new(id => $::form->{requirement_spec_item_id})->load : @{ $self->requirement_spec->sections_sorted }[0];
   $self->requirement_spec_item($item);
 
@@ -217,9 +221,16 @@ sub action_revert_to {
 sub action_create_pdf {
   my ($self, %params) = @_;
 
+  my $keep_temp_files = $::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files};
+  my $temp_dir        = File::Temp->newdir(
+    "kivitendo-print-XXXXXX",
+    DIR     => SL::System::Process::exe_dir() . "/" . $::lx_office_conf{paths}->{userspath},
+    CLEANUP => !$keep_temp_files,
+  );
+
   my $base_name       = $self->requirement_spec->type->template_file_name || 'requirement_spec';
-  my @pictures        = $self->prepare_pictures_for_printing;
-  my %result          = SL::Template::LaTeX->parse_and_create_pdf("${base_name}.tex", SELF => $self, rspec => $self->requirement_spec);
+  my @pictures        = $self->prepare_pictures_for_printing($temp_dir->dirname);
+  my %result          = SL::Template::LaTeX->parse_and_create_pdf("${base_name}.tex", SELF => $self, rspec => $self->requirement_spec, userspath => $temp_dir->dirname);
 
   unlink @pictures unless ($::lx_office_conf{debug} || {})->{keep_temp_files};
 
@@ -325,7 +336,7 @@ sub setup {
 
   $::auth->assert('requirement_spec_edit');
   $::request->{layout}->use_stylesheet("${_}.css") for qw(jquery.contextMenu requirement_spec);
-  $::request->{layout}->use_javascript("${_}.js")  for qw(jquery.jstree jquery/jquery.contextMenu jquery/jquery.hotkeys requirement_spec ckeditor/ckeditor ckeditor/adapters/jquery kivi.Part kivi.CustomerVendor);
+  $::request->{layout}->use_javascript("${_}.js")  for qw(jquery.jstree jquery/jquery.contextMenu jquery/jquery.hotkeys requirement_spec kivi.Part kivi.CustomerVendor ckeditor5/ckeditor ckeditor5/translations/de);
   $self->init_visible_section;
 
   return 1;
@@ -374,7 +385,7 @@ sub init_includeable_cvar_configs {
 
 sub init_include_cvars {
   my ($self) = @_;
-  return $::form->{include_cvars} if $::form->{include_cvars} && (ref($::form->{include_cvars}) eq 'HASH');
+  return { map { ($_->name => $::form->{"include_cvars_" . $_->name}) }       @{ $self->cvar_configs } } if $::form->{_include_cvars_from_form};
   return { map { ($_->name => ($_->includeable && $_->included_by_default)) } @{ $self->cvar_configs } };
 }
 
@@ -415,7 +426,7 @@ sub create_or_update {
   if (@errors) {
     return $self->js->error(@errors)->render if $::request->is_ajax;
 
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     $self->render('requirement_spec/new', title => $title);
     return;
   }
@@ -446,7 +457,7 @@ sub create_or_update {
     return $self->js->error(@errors)->render if $::request->is_ajax;
 
     $self->requirement_spec->id(undef) if $is_new;
-    flash('error', @errors);
+    flash('error', $_) for @errors;
     return $self->render('requirement_spec/new', title => $title);
   }
 
@@ -468,16 +479,15 @@ sub create_or_update {
 }
 
 sub prepare_report {
-  my ($self)      = @_;
+  my ($self)       = @_;
 
-  my $is_template = $::form->{is_template};
-  my $report      = SL::ReportGenerator->new(\%::myconfig, $::form);
-
-  $self->models->disable_plugin('paginated') if $report->{options}{output_format} =~ /^(pdf|csv)$/i;
-  $self->models->finalize; # for filter laundering
   my $callback    = $self->models->get_callback;
 
-  $self->{report} = $report;
+  my $is_template  = $::form->{is_template};
+  my $title        = $is_template ? t8('Requirement Spec Templates') : t8('Requirement Specs');
+  my $report       = SL::ReportGenerator->new(\%::myconfig, $::form);
+  $report->{title} = $title;
+  $self->{report}  = $report;
 
   my @columns     = $is_template ? qw(title mtime) : qw(title customer status type projectnumber mtime version);
   my @sortable    = $is_template ? qw(title mtime) : qw(title customer status type projectnumber mtime);
@@ -490,9 +500,9 @@ sub prepare_report {
   if (!$is_template) {
     %column_defs = (
       %column_defs,
-      customer      => { raw_data => sub { $self->presenter->customer($_[0]->customer, display => 'table-cell', callback => $callback) },
+      customer      => { raw_data => sub { $_[0]->customer->presenter->customer(display => 'table-cell', callback => $callback) },
                          sub      => sub { $_[0]->customer->name } },
-      projectnumber => { raw_data => sub { $self->presenter->project($_[0]->project, display => 'table-cell', callback => $callback) },
+      projectnumber => { raw_data => sub { $_[0]->project ? $_[0]->project->presenter->project(display => 'table-cell', callback => $callback) : '' },
                          sub      => sub { $_[0]->project_id ? $_[0]->project->projectnumber : '' } },
       status        => { sub      => sub { $_[0]->status->description } },
       type          => { sub      => sub { $_[0]->type->description } },
@@ -516,21 +526,35 @@ sub prepare_report {
     %column_defs = (%column_defs, %cvar_column_defs);
   }
 
+  my @cvar_column_form_names = ('_include_cvars_from_form', map { "include_cvars_" . $_->name } @{ $self->includeable_cvar_configs });
+
+  my %cvar_column_url_params = (_include_cvars_from_form => 1,
+                                is_template              => $is_template,
+                                map { (
+                                  'include_cvars_' . $_->name => $self->include_cvars->{$_->name} ? 1 : 0
+                                ) } @{ $self->includeable_cvar_configs });
+
+  $self->includeable_cvar_configs([]) if ($is_template);
+
   $report->set_options(
     std_column_visibility => 1,
     controller_class      => 'RequirementSpec',
     output_format         => 'HTML',
-    raw_top_info_text     => $self->render('requirement_spec/report_top',    { output => 0 }, is_template => $is_template),
-    raw_bottom_info_text  => $self->render('requirement_spec/report_bottom', { output => 0 }, models => $self->models),
-    title                 => $is_template ? t8('Requirement Spec Templates') : t8('Requirement Specs'),
+    title                 => $title,
     allow_pdf_export      => 1,
     allow_csv_export      => 1,
   );
   $report->set_columns(%column_defs);
   $report->set_column_order(@columns);
-  $report->set_export_options(qw(list filter));
+  $report->set_export_options(qw(list filter is_template), @cvar_column_form_names);
   $report->set_options_from_form;
+  $self->models->add_additional_url_params(%cvar_column_url_params);
+  $self->models->disable_plugin('paginated') if $report->{options}{output_format} =~ /^(pdf|csv)$/i;
   $self->models->set_report_generator_sort_options(report => $report, sortable_columns => \@sortable);
+  $report->set_options(
+    raw_top_info_text     => $self->render('requirement_spec/report_top',    { output => 0 }, is_template => $is_template),
+    raw_bottom_info_text  => $self->render('requirement_spec/report_bottom', { output => 0 }),
+  );
 }
 
 sub invalidate_version {
@@ -555,7 +579,7 @@ sub render_pasted_text_block {
       ->hide('#text-block-list-empty');
   }
 
-  my $node       = $self->presenter->requirement_spec_text_block_jstree_data($text_block);
+  my $node       = $text_block->presenter->jstree_data;
   my $front_back = $text_block->output_position == 0 ? 'front' : 'back';
   $self->js
     ->jstree->create_node('#tree', "#tb-${front_back}", 'last', $node)
@@ -577,7 +601,7 @@ sub set_default_filter_args {
 sub render_pasted_section {
   my ($self, $item, $parent_id) = @_;
 
-  my $node = $self->presenter->requirement_spec_item_jstree_data($item);
+  my $node = $item->presenter->jstree_data;
   $self->js
     ->jstree->create_node('#tree', $parent_id ? "#fb-${parent_id}" : '#sections', 'last', $node)
     ->jstree->open_node(  '#tree', $parent_id ? "#fb-${parent_id}" : '#sections');
@@ -597,11 +621,11 @@ sub render_first_pasted_section_as_list {
 }
 
 sub prepare_pictures_for_printing {
-  my ($self) = @_;
+  my ($self, $userspath) = @_;
 
   my @files;
-  my $userspath = File::Spec->rel2abs($::lx_office_conf{paths}->{userspath});
-  my $target    =  "${userspath}/kivitendo-print-requirement-spec-picture-" . Common::unique_id() . '-';
+  $userspath ||= SL::System::Process::exe_dir() . "/" . $::lx_office_conf{paths}->{userspath};
+  my $target   = "${userspath}/kivitendo-print-requirement-spec-picture-" . Common::unique_id() . '-';
 
   foreach my $picture (map { @{ $_->pictures } } @{ $self->requirement_spec->text_blocks }) {
     my $output_file_name        = $target . $picture->id . '.' . $picture->get_default_file_name_extension;

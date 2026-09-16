@@ -1,0 +1,117 @@
+[% USE T8 %]
+[% USE L %]
+
+<form method="post" action="[% script %]" id="form">
+<div class="wrapper">
+
+<table class="tbl-horizontal col">
+  <caption>[% 'Zeitraum' | $T8 %]</caption>
+  <tbody>
+    <tr>
+      <th>[% 'Monat' | $T8 %]</th>
+      <th>[% 'Quartal' | $T8 %]</th>
+      <th>[% 'Period' | $T8 %]</th>
+    </tr>
+    <tr>
+      <td><input checked name="zeitraum" type="radio" value="monat"></td>
+      <td><input name="zeitraum" type="radio" value="quartal"></td>
+      <td><input name="zeitraum" type="radio" value="zeit"></td>
+    </tr>
+    <tr>
+      <td>
+        <select name="monat">
+          <option value="1">[% 'January' | $T8 %]</option>
+          <option value="2">[% 'February' | $T8 %]</option>
+          <option value="3">[% 'March' | $T8 %]</option>
+          <option value="4">[% 'April' | $T8 %]</option>
+          <option value="5">[% 'May' | $T8 %]</option>
+          <option value="6">[% 'June' | $T8 %]</option>
+          <option value="7">[% 'July' | $T8 %]</option>
+          <option value="8">[% 'August' | $T8 %]</option>
+          <option value="9">[% 'September' | $T8 %]</option>
+          <option value="10">[% 'October' | $T8 %]</option>
+          <option value="11">[% 'November' | $T8 %]</option>
+          <option value="12">[% 'December last year period' | $T8 %]</option>
+        </select>
+      </td>
+      <td>
+        <select name="quartal">
+          <option selected value="1">[% 'I' | $T8 %]</option>
+          <option value="2">[% 'II' | $T8 %]</option>
+          <option value="3">[% 'III' | $T8 %]</option>
+          <option value="4">[% 'IV' | $T8 %]</option>
+        </select>
+      </td>
+      <td>[% L.date_tag('transdatefrom') %][% 'bis' | $T8 %][% L.date_tag('transdateto') %]</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="col">
+
+  <table class="tbl-horizontal">
+    <caption>[% 'Gldate' | $T8 %]</caption>
+    <tbody>
+      <tr>
+        <th>[% 'From' | $T8 %]</th>
+        <td>[% L.date_tag('gldatefrom') %]</td>
+      </tr>
+    </tbody>
+  </table>
+
+  [% IF ALL_DEPARTMENTS.as_list.size %]
+    <table class="tbl-horizontal">
+      <caption>[% 'Department' | $T8 %]</caption>
+      <tbody>
+        <tr>
+          <td>[% 'Department' | $T8 %]</td>
+          <td>[% L.select_tag('department_id', ALL_DEPARTMENTS, title_key = 'description', with_empty = 1) %]</td>
+        </tr>
+      </tbody>
+    </table>
+  [% END %]
+
+  <table class="tbl-horizontal">
+    <caption>[% 'Options' | $T8 %]</caption>
+    <tbody>
+      <tr>
+        [% IF show_pk_option %]
+          <td>[% 'Export with CV Charts' | $T8 %]</td>
+          <td>[% L.checkbox_tag('use_pk', value => 1, checked => 0) %]</td>
+        [% ELSE %]
+          <td>[% 'Export with CV Charts' | $T8 %]</td>
+          <td>[% L.checkbox_tag('use_pk', value => 1, checked => 0, disabled => 1) %]<br>[% 'Hint: Not all VC Numbers are personal accounts compliant' | $T8 %]</td>
+        [% END %]
+      </tr>
+      <tr>
+        <td>[% 'Lock bookings' | $T8 %]</td>
+        <td>[% L.yes_no_tag('locked', 0) %]</td>
+      </tr>
+      <tr>
+        <td>[% 'Export imported bookings' | $T8 %]</td>
+        <td>[% L.yes_no_tag('imported', 0) %]</td>
+      </tr>
+      <tr>
+        <td>[% 'Export Documents' | $T8 %]</td>
+        [% IF show_documents_option %]
+         <td>[% L.yes_no_tag('documents', 0, disabled => 0) %]</td>
+        [% ELSE %]
+         <td>[% L.yes_no_tag('documents', 0, disabled => 1) %] <font color="gray">[% 'Hint: DMS Feature has to be activated' | $T8 %]</font></td>
+        [% END %]
+      </tr>
+    </tbody>
+  </table>
+
+</div><!-- /.col -->
+</div><!-- /.wrapper -->
+<input type=hidden name=beraternr value="[% beraternr | html %]">
+<input type=hidden name=dfvkz value="[% dfvkz | html %]">
+<input type=hidden name=beratername value="[% beratername | html %]">
+<input type=hidden name=passwort value="[% passwort | html %]">
+<input type=hidden name=mandantennr value="[% mandantennr | html %]">
+<input type=hidden name=datentraegernr value="[% datentraegernr | html %]">
+<input type=hidden name=exportformat value="[% exportformat | html %]">
+<input type=hidden name=abrechnungsnr value="[% abrechnungsnr | html %]">
+<input type=hidden name=exporttype value="[% exporttype | html %]">
+
+</form>

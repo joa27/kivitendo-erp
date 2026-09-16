@@ -9,20 +9,26 @@ use POSIX qw(strftime);
 use SL::Controller::Helper::GetModels;
 use SL::Controller::Helper::ReportGenerator;
 use SL::CT;
+use SL::DB::Default;
 use SL::DB::Employee;
 use SL::DB::Language;
 use SL::DB::Letter;
 use SL::DB::LetterDraft;
 use SL::DB::Printer;
+use SL::File;
 use SL::Helper::Flash qw(flash flash_later);
 use SL::Helper::CreatePDF;
 use SL::Helper::PrintOptions;
 use SL::Locale::String qw(t8);
 use SL::Mailer;
 use SL::IS;
+use SL::Presenter::Tag qw(select_tag);
+use SL::Presenter::EscapedText;
 use SL::ReportGenerator;
 use SL::Webdav;
 use SL::Webdav::File;
+use List::Util qw(first);
+use List::MoreUtils qw(any none);
 
 use Rose::Object::MakeMethods::Generic (
   'scalar --get_set_init' => [ qw(letter all_employees models webdav_objects is_sales) ],
@@ -105,26 +111,19 @@ sub action_update_contacts {
     return $self->js
       ->replaceWith(
         '#letter_cp_id',
-        SL::Presenter->get->select_tag('letter.cp_id', [], value_key => 'cp_id', title_key => 'full_name')
+        select_tag('letter.cp_id', [], value_key => 'cp_id', title_key => 'full_name')
       )
       ->render;
   }
 
   my $contacts = $letter->customer_vendor->contacts;
 
-  my $default;
-  if (   $letter->contact
-      && $letter->contact->cp_cv_id
-      && $letter->contact->cp_cv_id == $letter->customer_vendor_id) {
-    $default = $letter->contact->cp_id;
-  } else {
-    $default = '';
-  }
+  my $default = ($letter->contact && any { $_->cp_id == $letter->contact->cp_id } @{$contacts // []}) ? $letter->contact->cp_id : '';
 
   $self->js
     ->replaceWith(
       '#letter_cp_id',
-      SL::Presenter->get->select_tag('letter.cp_id', $contacts, default => $default, value_key => 'cp_id', title_key => 'full_name')
+      select_tag('letter.cp_id', $contacts, default => $default, with_empty => 1, value_key => 'cp_id', title_key => 'full_name')
     )
     ->render;
 }
@@ -150,22 +149,12 @@ sub action_delete {
   my ($self, %params) = @_;
 
   if (!$self->letter->delete) {
-    flash('error', t8('An error occured. Letter could not be deleted.'));
+    flash('error', t8('An error occurred. Letter could not be deleted.'));
     return $self->action_update;
   }
 
   flash_later('info', t8('Letter deleted'));
   $self->redirect_to(action => 'list');
-}
-
-sub action_delete_letter_drafts {
-  my ($self, %params) = @_;
-
-  my @ids =  grep { /^checked_(.*)/ && $::form->{$_} } keys %$::form;
-
-  SL::DB::Manager::LetterDraft->delete_all(query => [ ids => \@ids ]) if @ids;
-
-  $self->redirect_to(action => 'add');
 }
 
 sub action_list {
@@ -183,8 +172,12 @@ sub action_list {
 sub action_print_letter {
   my ($self, %params) = @_;
 
-  my $display_form = $::form->{display_form} || "display_form";
-  my $letter       = $self->_update;
+  my $letter = $self->_update;
+
+  my %print_form                 = %$::form;
+  my $language_code              = SL::DB::Manager::Language->find_by_or_create(id => $::form->{language_id}*1)->template_code;
+  $print_form{customer}          = $self->letter->customer_vendor;
+  $print_form{customer}{country} = $self->letter->customer_vendor->country->description_localized($language_code) if $self->letter->customer_vendor;
 
   my ($template_file, @template_files) = SL::Helper::CreatePDF->find_template(
     name        => 'letter',
@@ -203,11 +196,11 @@ sub action_print_letter {
     %result = SL::Template::LaTeX->parse_and_create_pdf(
       $template_file,
       SELF          => $self,
-      FORM          => $::form,
+      FORM          => \%print_form,
       letter        => $letter,
       template_meta => {
         formname  => 'letter',
-        language  => SL::DB::Language->new,
+        language  => SL::DB::Manager::Language->find_by_or_create(id => $::form->{language_id}*1),
         extension => 'pdf',
         format    => $::form->{format},
         media     => $::form->{media},
@@ -235,17 +228,30 @@ sub action_print_letter {
       $webdav_file->store(file => $result{file_name});
     }
 
+    if ($::instance_conf->get_doc_storage) {
+      my %save_params = (object_id    => $letter->id,
+                         object_type  => 'letter',
+                         mime_type    => 'application/pdf',
+                         source       => 'created',
+                         file_type    => 'document',
+                         file_name    => $attachment_name,
+                         file_path    => $result{file_name});
+      SL::File->save(%save_params);
+    }
+
     # set some form defaults for printing webdav copy variables
     if ( $::form->{media} eq 'email') {
-      my $mail             = Mailer->new;
-      my $signature        = $::myconfig{signature};
-      $mail->{$_}          = $params{email}->{$_} for qw(to cc subject message bcc);
-      $mail->{from}        = qq|"$::myconfig{name}" <$::myconfig{email}>|;
-      $mail->{attachments} = [{ path => $result{file_name},
-                                name => $params{email}->{attachment_filename} }];
-      $mail->{message}    .=  "\n-- \n$signature";
-      $mail->{message}     =~ s/\r//g;
-
+      my $mail              = Mailer->new;
+      $mail->{$_}           = $params{email}->{$_} for qw(to cc subject message bcc);
+      $mail->{from}         = qq|"$::myconfig{name}" <$::myconfig{email}>|;
+      $mail->{attachments}  = [{ path => $result{file_name},
+                                 name => $params{email}->{attachment_filename} }];
+      $mail->{message}      =~ s/\r//g;
+      my $style             =  SL::Presenter::EscapedText::escape(SL::DB::Default->get->email_paragraph_style_body);
+      $mail->{message}      =~ s{<p>}{<p style="$style">}g if $style;
+      $mail->{message}     .=  $::form->create_email_signature();
+      $mail->{record_id}    =  $letter->id;
+      $mail->{content_type} = 'text/html';
       $mail->send;
       unlink $result{file_name};
 
@@ -298,6 +304,7 @@ sub action_delete_drafts {
   my @ids = @{ $::form->{ids} || [] };
   SL::DB::Manager::LetterDraft->delete_all(where => [ id => \@ids ]) if @ids;
 
+  flash('info', t8('Draft deleted'));
   $self->action_add(skip_drafts => 1);
 }
 
@@ -313,7 +320,7 @@ sub action_send_email {
 sub _display {
   my ($self, %params) = @_;
 
-  $::request->{layout}->use_javascript("${_}.js") for qw(ckeditor/ckeditor ckeditor/adapters/jquery kivi.Letter);
+  $::request->{layout}->use_javascript("${_}.js") for qw(kivi.Letter kivi.SalesPurchase kivi.File);
 
   my $letter = $self->letter;
 
@@ -321,9 +328,6 @@ sub _display {
 
   $::form->{type}             = 'letter';   # needed for print_options
   $::form->{vc}               = $letter->is_sales ? 'customer' : 'vendor'; # needs to be for _get_contacts...
-
-  $::request->layout->add_javascripts('customer_or_vendor_selection.js');
-  $::request->layout->add_javascripts('edit_part_window.js');
 
   $::form->{language_id} ||= $params{language_id};
   $::form->{languages}   ||= SL::DB::Manager::Language->get_all_sorted;
@@ -361,8 +365,9 @@ sub _update {
 sub prepare_report {
   my ($self) = @_;
 
-  my $report      = SL::ReportGenerator->new(\%::myconfig, $::form);
-  $self->{report} = $report;
+  my $report       = SL::ReportGenerator->new(\%::myconfig, $::form);
+  $report->{title} = t8('Letters');
+  $self->{report}  = $report;
 
   my @columns  = qw(date subject letternumber customer_id vendor_id contact date);
   my @sortable = qw(date subject letternumber customer_id vendor_id contact date);
@@ -454,7 +459,7 @@ sub load_letter_draft {
 
   $self->setup_load_letter_draft_action_bar;
   $self->render('letter/load_drafts',
-    title         => t8('Letter Draft'),
+    title         => t8('Load letter draft'),
     LETTER_DRAFTS => $letter_drafts,
   );
 
@@ -512,21 +517,6 @@ sub set_greetings {
   return if $letter->greeting;
 
   $letter->greeting(t8('Dear Sir or Madam,'));
-}
-
-sub export_letter_to_form {
-  my ($self, $letter) = @_;
-  # nope, not pretty.
-
-  $letter ||= $self->letter;
-
-  for ($letter->meta->columns) {
-    if ((ref $_) =~ /Date/i) {
-      $::form->{$_->name} = $letter->$_->to_kivitendo;
-    } else {
-      $::form->{$_->name} = $letter->$_;
-    }
-  }
 }
 
 sub init_letter {
@@ -594,11 +584,24 @@ sub init_is_sales {
 }
 
 sub check_auth_edit {
-  $::auth->assert('sales_letter_edit');
+  $::form->{is_sales} ? $::auth->assert('sales_letter_edit')
+                      : $::auth->assert('purchase_letter_edit');
 }
 
 sub check_auth_report {
-  $::auth->assert('sales_letter_report');
+  $::form->{is_sales} ? $::auth->assert('sales_letter_report')
+                      : $::auth->assert('purchase_letter_report');
+}
+
+sub cv_assigned_contacts {
+  my ($self) = @_;
+
+  my $contacts = $self->letter->customer_vendor ? $self->letter->customer_vendor->contacts() : [];
+  if ($self->letter->cp_id && none { $_->cp_id == $self->letter->cp_id } @$contacts) {
+    push @$contacts, $self->letter->contact;
+  }
+
+  $contacts;
 }
 
 sub setup_load_letter_draft_action_bar {
@@ -613,7 +616,7 @@ sub setup_load_letter_draft_action_bar {
       ],
       action => [
         t8('Delete'),
-        submit  => [ '#form', { action => 'delete_drafts' } ],
+        submit  => [ '#form', { action => 'Letter/delete_drafts' } ],
         checks  => [ [ 'kivi.check_if_entries_selected', '[name="ids[+]"]' ] ],
         confirm => t8('Do you really want to delete this draft?'),
       ],
@@ -623,6 +626,8 @@ sub setup_load_letter_draft_action_bar {
 
 sub setup_display_action_bar {
   my ($self, %params) = @_;
+
+  my $vc = $self->is_sales ? 'customer' : 'vendor'; # needed for show_email_dialog
 
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
@@ -659,7 +664,7 @@ sub setup_display_action_bar {
         ],
         action => [
           t8('E-mail'),
-          call     => [ 'kivi.SalesPurchase.show_email_dialog', 'Letter/send_email' ],
+          call     => [ 'kivi.SalesPurchase.show_email_dialog', 'Letter/send_email', $vc, '#letter_' . $vc . '_id' ],
           disabled => !$self->letter->id ? t8('The object has not been saved yet.') : undef,
         ],
       ],

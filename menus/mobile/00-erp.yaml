@@ -1,0 +1,36 @@
+# This is the main menu config file for mobile user space menu entries.
+#
+# Th structure is the same as in user/, but currently infinite nesting is not supported.
+#
+---
+- id: image_upload
+  name: Image Upload
+  order: 100
+  access: sales_delivery_order_edit
+  params:
+    action: ImageUpload/upload_image
+    object_type: sales_delivery_order
+- id: scan_qrbill
+  name: Scan swiss QR bill
+  order: 200
+  access: ap_transactions
+  params:
+    action: ScanQRBill/scan_view
+- id: stock_counting
+  name: Stock Counting
+  order: 250
+  access: warehouse_management
+  params:
+    action: StockCounting/select_counting
+- id: component_test
+  name: Component Test
+  order: 300
+  access: developer
+  params:
+    action: MaterializeTest/components
+- id: modal_test
+  name: Modal Test
+  order: 400
+  access: developer
+  params:
+    action: MaterializeTest/modal

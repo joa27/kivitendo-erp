@@ -1,8 +1,6 @@
 package SL::DB::SepaExportItem;
 
 use strict;
-use SL::DB::SepaExport;
-
 use SL::DB::MetaSetup::SepaExportItem;
 
 __PACKAGE__->meta->initialize;
@@ -44,5 +42,53 @@ sub arap_id {
     return $self->ap_id;
   };
 };
+
+sub invoice_open_amount {
+  my ($self) = @_;
+
+  my $invoice;
+
+  if ( $self->ar_id ) {
+    $invoice = SL::DB::Manager::Invoice->find_by( id => $self->ar_id);
+    return $invoice->open_amount;
+  } elsif ( $self->ap_id ) {
+    $invoice = SL::DB::Manager::PurchaseInvoice->find_by( id => $self->ap_id);
+    return $invoice->open_amount * -1;
+  } else {
+    return undef;
+  }
+}
+
+sub invoice_open_amount_less_skonto {
+  my ($self) = @_;
+
+  my $invoice;
+
+  if ( $self->ar_id ) {
+    $invoice = SL::DB::Manager::Invoice->find_by( id => $self->ar_id);
+    return $invoice->open_amount_less_skonto;
+  } elsif ( $self->ap_id ) {
+    $invoice = SL::DB::Manager::PurchaseInvoice->find_by( id => $self->ap_id);
+    return $invoice->open_amount_less_skonto * -1;
+  } else {
+    return undef;
+  }
+}
+
+sub invoice_booked_skonto_amount {
+  my ($self) = @_;
+
+  my $invoice;
+
+  if ( $self->ar_id ) {
+    $invoice = SL::DB::Manager::Invoice->find_by( id => $self->ar_id);
+    return $invoice->booked_skonto_amount;
+  } elsif ( $self->ap_id ) {
+    $invoice = SL::DB::Manager::PurchaseInvoice->find_by( id => $self->ap_id);
+    return $invoice->booked_skonto_amount * -1;
+  } else {
+    return undef;
+  }
+}
 
 1;

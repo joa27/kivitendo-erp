@@ -37,7 +37,6 @@ package IC;
 
 use Data::Dumper;
 use List::MoreUtils qw(all any uniq);
-use YAML;
 
 use SL::CVar;
 use SL::DBUtils;
@@ -45,6 +44,7 @@ use SL::HTML::Restrict;
 use SL::TransNumber;
 use SL::Util qw(trim);
 use SL::DB;
+use SL::Presenter::Part qw(type_abbreviation classification_abbreviation separate_abbreviation);
 use Carp;
 
 use strict;
@@ -131,7 +131,7 @@ sub assembly_item {
 #   l_warehouse  l_bin
 #
 # exclusives:
-#   itemstatus  = active | onhand | short | obsolete | orphaned
+#   itemstatus  = active | onhand | short | order_locked | obsolete | orphaned
 #   searchitems = part | assembly | service
 #
 # joining filters:
@@ -178,15 +178,16 @@ sub all_parts {
   $form->{parts}     = +{ };
   $form->{soldtotal} = undef if $form->{l_soldtotal}; # security fix. top100 insists on putting strings in there...
 
-  my @simple_filters       = qw(partnumber ean description partsgroup microfiche drawing onhand);
+  my @simple_filters       = qw(partnumber ean description partsgroup microfiche drawing onhand notes intnotes);
   my @project_filters      = qw(projectnumber projectdescription);
   my @makemodel_filters    = qw(make model);
+  my @pcp_filters          = qw(customer customer_partnumber);
   my @invoice_oi_filters   = qw(serialnumber soldtotal);
   my @apoe_filters         = qw(transdate);
   my @like_filters         = (@simple_filters, @invoice_oi_filters);
-  my @all_columns          = (@simple_filters, @makemodel_filters, @apoe_filters, @project_filters, qw(serialnumber));
+  my @all_columns          = (@simple_filters, @makemodel_filters, @pcp_filters, @apoe_filters, @project_filters, qw(serialnumber));
   my @simple_l_switches    = (@all_columns, qw(notes listprice sellprice lastcost priceupdate weight unit rop image shop insertdate));
-  my %no_simple_l_switches = (warehouse => 'wh.description as warehouse', bin => 'bin.description as bin');
+  my %no_simple_l_switches = (warehouse => 'wh.description as warehouse', bin => 'bin.description as bin',  price_factor_description => 'pfac.description as price_factor_description', bookinggroup => 'bg.description as bookinggroup');
   my @oe_flags             = qw(bought sold onorder ordered rfq quoted);
   my @qsooqr_flags         = qw(invnumber ordnumber quonumber trans_id name module qty);
   my @deliverydate_flags   = qw(deliverydate);
@@ -200,31 +201,44 @@ sub all_parts {
   my %joins_needed  = ();
 
   my %joins = (
-    partsgroup => 'LEFT JOIN partsgroup pg      ON (pg.id       = p.partsgroup_id)',
-    makemodel  => 'LEFT JOIN makemodel mm       ON (mm.parts_id = p.id)',
-    pfac       => 'LEFT JOIN price_factors pfac ON (pfac.id     = p.price_factor_id)',
-    invoice_oi =>
+    bookinggroup => 'LEFT JOIN buchungsgruppen bg ON (p.buchungsgruppen_id = bg.id)',
+    partsgroup   => 'LEFT JOIN partsgroup pg      ON (pg.id       = p.partsgroup_id)',
+    makemodel    => "LEFT JOIN LATERAL (
+                        SELECT string_agg(mv.vendornumber || ' ' || mv.name, ', ') AS make,
+                               string_agg(mm.model, ', ')                          AS model
+                          FROM makemodel mm
+                               LEFT JOIN vendor mv ON (mv.id = mm.make)
+                        WHERE  mm.parts_id = p.id
+                     ) mm ON TRUE",
+    pcp         => "LEFT JOIN LATERAL (
+                      SELECT string_agg(customer.customernumber || ' ' || customer.name, ', ') AS customer,
+                             string_agg(part_customer_prices.customer_partnumber, ', ')        AS customer_partnumber
+                        FROM part_customer_prices
+                        LEFT JOIN customer ON (customer.id = part_customer_prices.customer_id)
+                        WHERE part_customer_prices.parts_id = p.id
+                    ) pcp ON TRUE",
+    pfac         => 'LEFT JOIN price_factors pfac ON (pfac.id     = p.price_factor_id)',
+    invoice_oi   =>
       q|LEFT JOIN (
          SELECT parts_id, description, serialnumber, trans_id, unit, sellprice, qty,          assemblyitem,         deliverydate, 'invoice'    AS ioi, project_id, id FROM invoice UNION
          SELECT parts_id, description, serialnumber, trans_id, unit, sellprice, qty, FALSE AS assemblyitem, NULL AS deliverydate, 'orderitems' AS ioi, project_id, id FROM orderitems
        ) AS ioi ON ioi.parts_id = p.id|,
-    apoe       =>
+    apoe         =>
       q|LEFT JOIN (
-         SELECT id, transdate, 'ir' AS module, ordnumber, quonumber,         invnumber, FALSE AS quotation, NULL AS customer_id,         vendor_id,    NULL AS deliverydate, globalproject_id, 'invoice'    AS ioi FROM ap UNION
-         SELECT id, transdate, 'is' AS module, ordnumber, quonumber,         invnumber, FALSE AS quotation,         customer_id, NULL AS vendor_id,            deliverydate, globalproject_id, 'invoice'    AS ioi FROM ar UNION
-         SELECT id, transdate, 'oe' AS module, ordnumber, quonumber, NULL AS invnumber,          quotation,         customer_id,         vendor_id, reqdate AS deliverydate, globalproject_id, 'orderitems' AS ioi FROM oe
+         SELECT id, transdate, 'ir' AS module, ordnumber, quonumber,         invnumber, 'purchase_invoice' AS record_type, NULL AS customer_id,         vendor_id,    NULL AS deliverydate, globalproject_id, 'invoice'    AS ioi FROM ap UNION
+         SELECT id, transdate, 'is' AS module, ordnumber, quonumber,         invnumber, 'sales_invoice'    AS record_type,         customer_id, NULL AS vendor_id,            deliverydate, globalproject_id, 'invoice'    AS ioi FROM ar UNION
+         SELECT id, transdate, 'oe' AS module, ordnumber, quonumber, NULL AS invnumber,                       record_type::text,   customer_id,         vendor_id, reqdate AS deliverydate, globalproject_id, 'orderitems' AS ioi FROM oe
        ) AS apoe ON ((ioi.trans_id = apoe.id) AND (ioi.ioi = apoe.ioi))|,
-    cv         =>
+    cv           =>
       q|LEFT JOIN (
            SELECT id, name, 'customer' AS cv FROM customer UNION
            SELECT id, name, 'vendor'   AS cv FROM vendor
          ) AS cv ON cv.id = apoe.customer_id OR cv.id = apoe.vendor_id|,
-    mv         => 'LEFT JOIN vendor AS mv ON mv.id = mm.make',
-    project    => 'LEFT JOIN project AS pj ON pj.id = COALESCE(ioi.project_id, apoe.globalproject_id)',
-    warehouse  => 'LEFT JOIN warehouse AS wh ON wh.id = p.warehouse_id',
-    bin        => 'LEFT JOIN bin ON bin.id = p.bin_id',
+    project      => 'LEFT JOIN project AS pj ON pj.id = COALESCE(ioi.project_id, apoe.globalproject_id)',
+    warehouse    => 'LEFT JOIN warehouse AS wh ON wh.id = p.warehouse_id',
+    bin          => 'LEFT JOIN bin ON bin.id = p.bin_id',
   );
-  my @join_order = qw(partsgroup makemodel mv invoice_oi apoe cv pfac project warehouse bin);
+  my @join_order = qw(bookinggroup partsgroup makemodel pcp invoice_oi apoe cv pfac project warehouse bin);
 
   my %table_prefix = (
      deliverydate => 'apoe.', serialnumber => 'ioi.',
@@ -233,13 +247,13 @@ sub all_parts {
      ordnumber    => 'apoe.', make         => 'mm.',
      quonumber    => 'apoe.', model        => 'mm.',
      invnumber    => 'apoe.', partsgroup   => 'pg.',
-     lastcost     => 'p.',  , soldtotal    => ' ',
+     lastcost     => 'p.',    soldtotal    => ' ',
      factor       => 'pfac.', projectnumber => 'pj.',
      'SUM(ioi.qty)' => ' ',   projectdescription => 'pj.',
-     description  => 'p.',
-     qty          => 'ioi.',
+     description  => 'p.',    customer     => 'pcp.',
+     qty          => 'ioi.',  customer_partnumber => 'pcp.',
      serialnumber => 'ioi.',
-     quotation    => 'apoe.',
+     record_type  => 'apoe.',
      cv           => 'cv.',
      "ioi.id"     => ' ',
      "ioi.ioi"    => ' ',
@@ -271,10 +285,6 @@ sub all_parts {
     projectdescription => 'description',
     insertdate         => 'itime::DATE',
   );
-
-  if ($form->{l_assembly} && $form->{l_lastcost}) {
-    @simple_l_switches = grep { $_ ne 'lastcost' } @simple_l_switches;
-  }
 
   my $make_token_builder = sub {
     my $joins_needed = shift;
@@ -313,7 +323,11 @@ sub all_parts {
 
   # special case smart search
   if ($form->{all}) {
-    $form->{"l_$_"} = 1 for qw(partnumber description unit sellprice lastcost cvar_packaging linetotal);
+    $form->{"l_$_"}       = 1 for qw(partnumber description unit sellprice lastcost linetotal);
+    $form->{l_service}    = 1 if $form->{searchitems} eq 'service'    || $form->{searchitems} eq '';
+    $form->{l_assembly}   = 1 if $form->{searchitems} eq 'assembly'   || $form->{searchitems} eq '';
+    $form->{l_part}       = 1 if $form->{searchitems} eq 'part'       || $form->{searchitems} eq '';
+    $form->{l_assortment} = 1 if $form->{searchitems} eq 'assortment' || $form->{searchitems} eq '';
     push @where_tokens, "p.partnumber ILIKE ? OR p.description ILIKE ?";
     push @bind_vars,    (like($form->{all})) x 2;
   }
@@ -391,6 +405,7 @@ sub all_parts {
     push @where_tokens, '    p.obsolete',              if /obsolete/;
     push @where_tokens, 'p.onhand > 0',                if /onhand/;
     push @where_tokens, 'p.onhand < p.rop',            if /short/;
+    push @where_tokens, 'p.order_locked',              if /order_locked/;
   }
 
   my $q_assembly_lastcost =
@@ -398,20 +413,30 @@ sub all_parts {
         FROM assembly a_lc
         LEFT JOIN parts p_lc            ON (a_lc.parts_id        = p_lc.id)
         LEFT JOIN price_factors pfac_lc ON (p_lc.price_factor_id = pfac_lc.id)
-        WHERE (a_lc.id = p.id)) AS lastcost|;
+        WHERE (a_lc.id = p.id)) AS assembly_lastcost|;
   $table_prefix{$q_assembly_lastcost} = ' ';
 
-  # special case makemodel search
+  # special case makemodel and part_customer_prices search
   # all_parts is based upon the assumption that every parameter is named like the column it represents
   # unfortunately make would have to match vendor.name which is already taken for vendor.name in bsooqr mode.
   # fortunately makemodel doesn't need to be displayed later, so adding a special clause to where_token is sufficient.
+  # the lateral join mm already creates a string consisting of vendornumbers and vendornames in mm.make
+  # and the models in mm.model
   if ($form->{make}) {
-    push @where_tokens, 'mv.name ILIKE ?';
+    push @where_tokens, 'mm.make ILIKE ?';
     push @bind_vars, like($form->{make});
   }
   if ($form->{model}) {
     push @where_tokens, 'mm.model ILIKE ?';
     push @bind_vars, like($form->{model});
+  }
+  if ($form->{customer}) {
+    push @where_tokens, 'pcp.customer ILIKE ?';
+    push @bind_vars, like($form->{customer});
+  }
+  if ($form->{customer_partnumber}) {
+    push @where_tokens, 'pcp.customer_partnumber ILIKE ?';
+    push @bind_vars, like($form->{customer_partnumber});
   }
 
   # special case: sorting by partnumber
@@ -434,27 +459,28 @@ sub all_parts {
   my $bsooqr        = any { $form->{$_} } @oe_flags;
   my @bsooqr_tokens = ();
 
-  push @select_tokens, @qsooqr_flags, 'quotation', 'cv', 'ioi.id', 'ioi.ioi'  if $bsooqr;
+  push @select_tokens, @qsooqr_flags, 'record_type', 'cv', 'ioi.id', 'ioi.ioi'  if $bsooqr;
   push @select_tokens, @deliverydate_flags                                    if $bsooqr && $form->{l_deliverydate};
   push @select_tokens, $q_assembly_lastcost                                   if $form->{l_assembly} && $form->{l_lastcost};
   push @bsooqr_tokens, q|module = 'ir' AND NOT ioi.assemblyitem|              if $form->{bought};
   push @bsooqr_tokens, q|module = 'is' AND NOT ioi.assemblyitem|              if $form->{sold};
-  push @bsooqr_tokens, q|module = 'oe' AND NOT quotation AND cv = 'customer'| if $form->{ordered};
-  push @bsooqr_tokens, q|module = 'oe' AND NOT quotation AND cv = 'vendor'|   if $form->{onorder};
-  push @bsooqr_tokens, q|module = 'oe' AND     quotation AND cv = 'customer'| if $form->{quoted};
-  push @bsooqr_tokens, q|module = 'oe' AND     quotation AND cv = 'vendor'|   if $form->{rfq};
+  push @bsooqr_tokens, q|module = 'oe' AND record_type = 'sales_order'|       if $form->{ordered};
+  push @bsooqr_tokens, q|module = 'oe' AND record_type = 'purchase_order'|    if $form->{onorder};
+  push @bsooqr_tokens, q|module = 'oe' AND record_type = 'sales_quotation'|   if $form->{quoted};
+  push @bsooqr_tokens, q|module = 'oe' AND record_type = 'request_quotation'| if $form->{rfq};
   push @where_tokens, join ' OR ', map { "($_)" } @bsooqr_tokens              if $bsooqr;
 
-  $joins_needed{partsgroup}  = 1;
-  $joins_needed{pfac}        = 1;
-  $joins_needed{project}     = 1 if grep { $form->{$_} || $form->{"l_$_"} } @project_filters;
-  $joins_needed{makemodel}   = 1 if grep { $form->{$_} || $form->{"l_$_"} } @makemodel_filters;
-  $joins_needed{mv}          = 1 if $joins_needed{makemodel};
-  $joins_needed{cv}          = 1 if $bsooqr;
-  $joins_needed{apoe}        = 1 if $joins_needed{project} || $joins_needed{cv}   || grep { $form->{$_} || $form->{"l_$_"} } @apoe_filters;
-  $joins_needed{invoice_oi}  = 1 if $joins_needed{project} || $joins_needed{apoe} || grep { $form->{$_} || $form->{"l_$_"} } @invoice_oi_filters;
-  $joins_needed{bin}         = 1 if $form->{l_bin};
-  $joins_needed{warehouse}   = 1 if $form->{l_warehouse};
+  $joins_needed{bookinggroup} = 1 if $form->{l_bookinggroup};
+  $joins_needed{partsgroup}   = 1;
+  $joins_needed{pfac}         = 1;
+  $joins_needed{project}      = 1 if grep { $form->{$_} || $form->{"l_$_"} } @project_filters;
+  $joins_needed{makemodel}    = 1 if grep { $form->{$_} || $form->{"l_$_"} } @makemodel_filters;
+  $joins_needed{pcp}          = 1 if grep { $form->{$_} || $form->{"l_$_"} } @pcp_filters;
+  $joins_needed{cv}           = 1 if $bsooqr;
+  $joins_needed{apoe}         = 1 if $joins_needed{project} || $joins_needed{cv}   || grep { $form->{$_} || $form->{"l_$_"} } @apoe_filters;
+  $joins_needed{invoice_oi}   = 1 if $joins_needed{project} || $joins_needed{apoe} || grep { $form->{$_} || $form->{"l_$_"} } @invoice_oi_filters;
+  $joins_needed{bin}          = 1 if $form->{l_bin};
+  $joins_needed{warehouse}    = 1 if $form->{l_warehouse};
 
   # special case for description search.
   # up in the simple filter section the description filter got interpreted as something like: WHERE description ILIKE '%$form->{description}%'
@@ -481,7 +507,7 @@ sub all_parts {
 
   my $token_builder = $make_token_builder->(\%joins_needed);
 
-  my @sort_cols    = (@simple_filters, qw(id priceupdate onhand invnumber ordnumber quonumber name serialnumber soldtotal deliverydate insertdate shop));
+  my @sort_cols    = (@simple_filters, qw(id onhand invnumber ordnumber quonumber name serialnumber soldtotal deliverydate insertdate shop));
      $form->{sort} = 'id' unless grep { $form->{"l_$_"} } grep { $form->{sort} eq $_ } @sort_cols; # sort by id if unknown or invisible column
   my $sort_order   = ($form->{revers} ? ' DESC' : ' ASC');
   my $order_clause = " ORDER BY " . $token_builder->($form->{sort}) . ($form->{revers} ? ' DESC' : ' ASC');
@@ -522,6 +548,24 @@ sub all_parts {
     push @bind_vars, @cvar_values;
   }
 
+  # simple search for assemblies by items used in assemblies
+  if ($form->{bom} eq '2' && $form->{l_assembly}) {
+    # assembly_qty is the column name
+    $form->{l_assembly_qty} = 1;
+    # nuke where clause and bind vars
+    $where_clause = ' 1=1 AND p.id in (SELECT id from assembly where parts_id IN ' .
+                    ' (select id from parts where 1=1';
+    @bind_vars    = ();
+    # use only like filter for items used in assemblies
+    foreach (@like_filters) {
+      next unless $form->{$_};
+      $form->{"l_$_"} = '1'; # show the column
+      $where_clause .= " AND $_ ILIKE ? ";
+      push @bind_vars,    like($form->{$_});
+    }
+    $where_clause .='))';
+  }
+
   my $query = <<"  SQL";
     SELECT DISTINCT $select_clause
     FROM parts p
@@ -531,7 +575,6 @@ sub all_parts {
     $order_clause
     $limit_clause
   SQL
-
   $form->{parts} = selectall_hashref_query($form, $dbh, $query, @bind_vars);
 
   map { $_->{onhand} *= 1 } @{ $form->{parts} };
@@ -548,10 +591,10 @@ sub all_parts {
   my @assemblies;
   if ($form->{l_assembly} && $form->{bom}) {
     $query =
-      qq|SELECT p.id, p.partnumber, p.description, a.qty AS onhand,
-           p.unit, p.notes, p.itime::DATE as insertdate,
+      qq|SELECT p.id, p.partnumber, p.description, a.qty AS assembly_qty,
+           p.unit, p.notes, p.intnotes, p.itime::DATE as insertdate,
            p.sellprice, p.listprice, p.lastcost,
-           p.rop, p.weight, p.priceupdate,
+           p.rop, p.weight,
            p.image, p.drawing, p.microfiche,
            pfac.factor
          FROM parts p
@@ -640,8 +683,8 @@ sub get_parts {
     }
 
     $j++;
-    $form->{"type_and_classific_$j"} = $::request->presenter->type_abbreviation($ref->{part_type}).
-                                       $::request->presenter->classification_abbreviation($ref->{classification_id});
+    $form->{"type_and_classific_$j"} = type_abbreviation($ref->{part_type}).
+                                       classification_abbreviation($ref->{classification_id});
     $form->{"id_$j"}          = $ref->{id};
     $form->{"partnumber_$j"}  = $ref->{partnumber};
     $form->{"description_$j"} = $ref->{description};
@@ -719,37 +762,14 @@ sub retrieve_accounts {
 
   # transdate madness.
   my $transdate = "";
-  if ($form->{type} eq "invoice" or $form->{type} eq "credit_note") {
+  if ( (any {$form->{type} eq $_} qw(invoice credit_note invoice_for_advance_payment final_invoice)) or ($form->{script} eq 'ir.pl') ) {
     # use deliverydate for sales and purchase invoice, if it exists
     # also use deliverydate for credit notes
-    if (!$form->{deliverydate}) {
-      $transdate = $form->{invdate};
-    } else {
-      $transdate = $form->{deliverydate};
-    }
-  } elsif ($form->{script} eq 'ir.pl') {
-    # when a purchase invoice is opened from the report of purchase invoices
-    # $form->{type} isn't set, but $form->{script} is, not sure why this is or
-    # whether this distinction matters in some other scenario. Otherwise one
-    # could probably take out this elsif and add a
-    # " or $form->{script} eq 'ir.pl' "
-    # to the above if-statement
-    if (!$form->{deliverydate}) {
-      $transdate = $form->{invdate};
-    } else {
-      $transdate = $form->{deliverydate};
-    }
-  } elsif (($form->{type} eq "credit_note") and $form->{deliverydate}) {
-    # if credit_note has a deliverydate, use this instead of invdate
-    # useful for credit_notes of invoices from an old period with different tax
-    # if there is no deliverydate then invdate is used, old default (see next elsif)
-    # Falls hier der Stichtag für Steuern anders bestimmt wird,
-    # entsprechend auch bei Taxkeys.pm anpassen
-    $transdate = $form->{deliverydate};
-  } elsif (($form->{type} eq "credit_note") || ($form->{script} eq 'ir.pl')) {
-    $transdate = $form->{invdate};
+    $transdate = $form->{tax_point} || $form->{deliverydate} || $form->{invdate};
   } else {
-    $transdate = $form->{transdate};
+    my $deliverydate;
+    $deliverydate = $form->{reqdate} if any { $_ eq $form->{type} } qw(sales_order request_quotation purchase_order);
+    $transdate = $form->{tax_point} || $deliverydate || $form->{transdate};
   }
 
   if ($transdate eq "") {
@@ -786,7 +806,8 @@ sub retrieve_accounts {
 SQL
 
   my $query_tax = <<SQL;
-    SELECT c.accno, t.taxdescription AS description, t.rate, t.taxnumber
+    SELECT c.accno, t.taxdescription AS description, t.id as tax_id, t.rate,
+           c.accno as taxnumber
     FROM tax t
     LEFT JOIN chart c ON c.id = t.chart_id
     WHERE t.id IN
@@ -810,14 +831,18 @@ SQL
     }
 
     $form->{"${_}_accno_$index"} = $accounts{"${_}_accno"} for qw(inventory income expense);
+    $form->{"${_}_accno_id_$index"} = $accounts{"${_}_accno_id"} for qw(inventory expense); # only for purchase_invoice
 
     $sth_tax->execute($accounts{$inc_exp}, quote_db_date($transdate)) || $::form->dberror($query_tax);
-    $ref = $sth_tax->fetchrow_hashref or next;
+    my $tax_ref;
+    $tax_ref = $sth_tax->fetchrow_hashref or next;
 
-    $form->{"taxaccounts_$index"} = $ref->{"accno"};
-    $form->{"taxaccounts"} .= "$ref->{accno} "if $form->{"taxaccounts"} !~ /$ref->{accno}/;
+    $form->{"expense_accno_tax_id_$index"} = $tax_ref->{tax_id}; # only for purchase_invoice
 
-    $form->{"$ref->{accno}_${_}"} = $ref->{$_} for qw(rate description taxnumber);
+    $form->{"taxaccounts_$index"} = $tax_ref->{"accno"};
+    $form->{"taxaccounts"} .= "$tax_ref->{accno} "if $form->{"taxaccounts"} !~ /$tax_ref->{accno}/;
+
+    $form->{"$tax_ref->{accno}_${_}"} = $tax_ref->{$_} for qw(rate description taxnumber tax_id);
   }
 
   $sth_tax->finish;
@@ -885,7 +910,10 @@ sub prepare_parts_for_printing {
   }
 
   my $placeholders = join ', ', ('?') x scalar(@part_ids);
-  my $query        = qq|SELECT mm.parts_id, mm.model, mm.lastcost, v.name AS make
+  my $query        = qq|SELECT mm.parts_id, mm.model,
+                        mm.part_description AS mm_part_description,
+                        mm.part_longdescription AS mm_part_longdescription,
+                        mm.lastcost, v.name AS make
                         FROM makemodel mm
                         LEFT JOIN vendor v ON (mm.make = v.id)
                         WHERE mm.parts_id IN ($placeholders)|;
@@ -901,7 +929,49 @@ sub prepare_parts_for_printing {
 
   $sth->finish();
 
-  my @columns = qw(ean image microfiche drawing);
+
+  $query            = qq|SELECT bm.parts_id,
+                         bm.model                AS business_model,
+                         bm.part_description     AS bm_part_description,
+                         bm.part_longdescription AS bm_part_longdescription,
+                         b.description           AS business_make
+                         FROM business_models bm
+                         LEFT JOIN business b ON (bm.business_id = b.id)
+                         WHERE bm.parts_id IN ($placeholders)|;
+
+  my %businessmodel = ();
+
+  $sth              = prepare_execute_query($form, $dbh, $query, @part_ids);
+
+  while (my $ref = $sth->fetchrow_hashref()) {
+    $businessmodel{$ref->{parts_id}} ||= [];
+    push @{ $businessmodel{$ref->{parts_id}} }, $ref;
+  }
+
+  $sth->finish();
+
+  $query           = qq|SELECT
+                        cp.parts_id,
+                        cp.customer_partnumber  AS customer_model,
+                        cp.part_description     AS cm_part_description,
+                        cp.part_longdescription AS cm_part_longdescription,
+                        c.name                  AS customer_make
+                        FROM part_customer_prices cp
+                        LEFT JOIN customer c ON (cp.customer_id = c.id)
+                        WHERE cp.parts_id IN ($placeholders)|;
+
+  my %customermodel = ();
+
+  $sth              = prepare_execute_query($form, $dbh, $query, @part_ids);
+
+  while (my $ref = $sth->fetchrow_hashref()) {
+    $customermodel{$ref->{parts_id}} ||= [];
+    push @{ $customermodel{$ref->{parts_id}} }, $ref;
+  }
+
+  $sth->finish();
+
+  my @columns = qw(ean image microfiche drawing tariff_code);
 
   $query      = qq|SELECT id, | . join(', ', @columns) . qq|
                    FROM parts
@@ -910,7 +980,7 @@ sub prepare_parts_for_printing {
   my %data    = selectall_as_map($form, $dbh, $query, 'id', \@columns, @part_ids);
 
   my %template_arrays;
-  map { $template_arrays{$_} = [] } (qw(make model), @columns);
+  map { $template_arrays{$_} = [] } (qw(make model mm_part_description mm_part_longdescription business_make business_model bm_part_description bm_part_longdescription customer_make customer_model cm_part_description cm_part_longdescription), @columns);
 
   foreach my $i (1 .. $rowcount) {
     my $id = $form->{"${prefix}${i}"};
@@ -923,12 +993,37 @@ sub prepare_parts_for_printing {
 
     push @{ $template_arrays{make} },  [];
     push @{ $template_arrays{model} }, [];
+    push @{ $template_arrays{mm_part_description} },     [];
+    push @{ $template_arrays{mm_part_longdescription} }, [];
 
-    next if (!$makemodel{$id});
-
-    foreach my $ref (@{ $makemodel{$id} }) {
-      map { push @{ $template_arrays{$_}->[-1] }, $ref->{$_} } qw(make model);
+    if ($makemodel{$id}) {
+      foreach my $ref (@{ $makemodel{$id} }) {
+        map { push @{ $template_arrays{$_}->[-1] }, $ref->{$_} } qw(make model mm_part_description mm_part_longdescription);
+      }
     }
+
+    push @{ $template_arrays{business_make} },           [];
+    push @{ $template_arrays{business_model} },          [];
+    push @{ $template_arrays{bm_part_description} },     [];
+    push @{ $template_arrays{bm_part_longdescription} }, [];
+
+    if ($businessmodel{$id}) {
+      foreach my $ref (@{ $businessmodel{$id} }) {
+        map { push @{ $template_arrays{$_}->[-1] }, $ref->{$_} } qw(business_make business_model bm_part_description bm_part_longdescription);
+      }
+    }
+
+    push @{ $template_arrays{customer_make} },  [];
+    push @{ $template_arrays{customer_model} }, [];
+    push @{ $template_arrays{cm_part_description} },     [];
+    push @{ $template_arrays{cm_part_longdescription} }, [];
+
+    if ($customermodel{$id}) {
+      foreach my $ref (@{ $customermodel{$id} }) {
+        push @{ $template_arrays{$_}->[-1] }, $ref->{$_} for qw(customer_make customer_model cm_part_description cm_part_longdescription);
+      }
+    }
+
   }
 
   my $parts = SL::DB::Manager::Part->get_all(query => [ id => \@part_ids ]);
@@ -938,35 +1033,15 @@ sub prepare_parts_for_printing {
     my $id = $form->{"${prefix}${i}"};
     next unless $id;
     my $prt = $parts_by_id{$id};
-    my $type_abbr = $::request->presenter->type_abbreviation($prt->part_type);
+    my $type_abbr = type_abbreviation($prt->part_type);
     push @{ $template_arrays{part_type}         }, $prt->part_type;
     push @{ $template_arrays{part_abbreviation} }, $type_abbr;
-    push @{ $template_arrays{type_and_classific}}, $type_abbr.$::request->presenter->classification_abbreviation($prt->classification_id);
-    push @{ $template_arrays{separate}  },  $::request->presenter->separate_abbreviation($prt->classification_id);
+    push @{ $template_arrays{type_and_classific}}, $type_abbr . classification_abbreviation($prt->classification_id);
+    push @{ $template_arrays{separate}  }, separate_abbreviation($prt->classification_id);
   }
 
   $main::lxdebug->leave_sub();
   return %template_arrays;
 }
-
-sub normalize_text_blocks {
-  $main::lxdebug->enter_sub();
-
-  my $self     = shift;
-  my %params   = @_;
-
-  my $form     = $params{form}     || $main::form;
-
-  # check if feature is enabled (select normalize_part_descriptions from defaults)
-  return unless ($::instance_conf->get_normalize_part_descriptions);
-
-  foreach (qw(description notes)) {
-    $form->{$_} =~ s/\s+$//s;
-    $form->{$_} =~ s/^\s+//s;
-    $form->{$_} =~ s/ {2,}/ /g;
-  }
-   $main::lxdebug->leave_sub();
-}
-
 
 1;

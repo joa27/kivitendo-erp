@@ -33,10 +33,12 @@ sub action_list {
       $chartlist{ $gruppe->id } = SL::DB::TaxzoneChart->get_all_accounts_by_buchungsgruppen_id($gruppe->id);
   }
 
+  my $title = t8('Booking groups');
   $self->setup_list_action_bar;
+  $::form->{title} = $title;
   $::form->header;
   $self->render('buchungsgruppen/list',
-                title           => t8('Booking groups'),
+                title           => $title,
                 BUCHUNGSGRUPPEN => $buchungsgruppen,
                 CHARTLIST       => \%chartlist,
                 TAXZONES        => $taxzones);
@@ -142,9 +144,7 @@ sub create_or_update {
 
     @errors = $self->config->validate; # check for description and inventory_accno_id
 
-    if (@errors) {
-      die "foo" . @errors . "\n";
-    };
+    return 0 if @errors;
 
     $self->config->save;
 
@@ -175,7 +175,8 @@ sub create_or_update {
 
     1;
   })) {
-    die @errors ? join("\n", @errors) . "\n" : $db->error . "\n";
+    my $error = @errors ? join("\n", @errors) . "\n" : $db->error . "\n";
+    $::form->show_generic_error($error);
     # die with rollback of taxzone save if saving of any of the taxzone_charts fails
     # only show the $db->error if we haven't already identified the likely error ourselves
   }

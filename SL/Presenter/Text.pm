@@ -2,21 +2,26 @@ package SL::Presenter::Text;
 
 use strict;
 
-use parent qw(Exporter);
+use SL::Presenter::EscapedText qw(escape);
+use SL::HTML::Restrict;
+use SL::HTML::Util;
 
 use Exporter qw(import);
-our @EXPORT = qw(format_man_days simple_format truncate);
+our @EXPORT_OK = qw(format_man_days simple_format truncate restricted_html);
+our %EXPORT_TAGS = (ALL => \@EXPORT_OK);
 
 use Carp;
 
-sub truncate {
-  my ($self, $text, %params) = @_;
+my $html_cleaner;
 
-  return Common::truncate($text, %params);
+sub truncate {
+  my ($text, %params) = @_;
+
+  escape(Common::truncate($text, %params));
 }
 
 sub simple_format {
-  my ($self, $text, %params) = @_;
+  my ($text, %params) = @_;
 
   $text =  $::locale->quote_special_chars('HTML', $text || '');
 
@@ -28,18 +33,29 @@ sub simple_format {
 }
 
 sub format_man_days {
-  my ($self, $value, %params) = @_;
+  my ($value, %params) = @_;
 
   return '---' if $params{skip_zero} && !$value;
 
-  return $self->escape($::locale->text('#1 h', $::form->format_amount(\%::myconfig, $value, 2))) if 8.0 > $value;
+  return escape($::locale->text('#1 h', $::form->format_amount(\%::myconfig, $value, 2))) if 8.0 > $value;
 
   $value     /= 8.0;
   my $output  = $::locale->text('#1 MD', int($value));
   my $rest    = ($value - int($value)) * 8.0;
   $output    .= ' ' . $::locale->text('#1 h', $::form->format_amount(\%::myconfig, $rest)) if $rest > 0.0;
 
-  return $self->escape($output);
+  escape($output);
+}
+
+sub restricted_html {
+  my ($value) = @_;
+  $html_cleaner //= SL::HTML::Restrict->create;
+  return $html_cleaner->process($value);
+}
+
+sub stripped_html {
+  my ($value) = @_;
+  return SL::HTML::Util::strip($value);
 }
 
 1;
@@ -55,8 +71,10 @@ SL::Presenter::Text - Presenter module for assorted text helpers
 
 =head1 SYNOPSIS
 
+  use  SL::Presenter::Text qw(truncate);
+
   my $long_text = "This is very, very long. Need shorter, surely.";
-  my $truncated = $::request->presenter->truncate($long_text, at => 10);
+  my $truncated = truncate($long_text, at => 10);
   # Result: "This is..."
 
 =head1 FUNCTIONS
@@ -85,6 +103,16 @@ paragraph HTML tags. Two consecutive newlines are interpreted as a
 paragraph change: they close the current paragraph tag and start a new
 one. Single newlines are converted to line breaks. Carriage returns
 are removed.
+
+=item C<restricted_html $unsafe_html>
+
+Returns HTML code stripped from unwanted/unsupported content. This is
+done via the module L<SL::HTML::Restrict>.
+
+=item C<stripped_html $html>
+
+Returns the raw text with all HTML tags and comments stripped. This is
+done via L<SL::HTML::Util/strip>.
 
 =back
 

@@ -1,0 +1,52 @@
+[%- USE T8 %]
+[%- USE HTML %]
+[%- USE L %]
+[%- USE LxERP %]
+[%- USE P %]
+
+<div id="phone-notes" class="wrapper">
+ [% IF ( SELF.order.phone_notes && SELF.order.phone_notes.size ) %]
+  <table class="tbl-list">
+   <thead>
+    <tr>
+      <th class="listheading">[% 'Subject' | $T8 %]</th>
+      <th class="listheading">[% 'Created on' | $T8 %]</th>
+      <th class="listheading">[% 'Created by' | $T8 %]</th>
+    </tr>
+   </thead>
+   <tbody>
+    [%- FOREACH row = SELF.order.phone_notes %]
+     <tr class="listrow">
+       <td>[% P.link_tag('#', row.subject, onclick="kivi.Order.load_phone_note(" _ HTML.url(row.id) _ ", '" _ HTML.escape(row.subject) _ "', '" _ row.body _ "')") %]</td>
+       <td>[% row.itime.to_kivitendo | html %]</td>
+       <td>[% row.employee.safe_name | html %]</td>
+     </tr>
+    [% END %]
+   </tbody>
+  </table>
+ [% END %]
+
+  [% L.hidden_tag('phone_note.id') %]
+
+  <table tbl-horizontal>
+    <caption id='phone_note_edit_text'>[% 'Add note' | $T8 %]</caption>
+    <colgroup><col class="wi-verysmall"><col class="wi-wider"></colgroup>
+    <tbody>
+     <tr>
+      <th>[% 'Subject' | $T8 %]</th>
+      <td>[% L.input_tag('phone_note.subject', '', class="wi-wider") %]</td>
+     </tr>
+     <tr>
+      <th>[% 'Body' | $T8 %]</th>
+      <td>[% L.textarea_tag('phone_note.body', '', style="height: 350px", class="texteditor wi-wider") %]</td>
+     </tr>
+    </tbody>
+  </table>
+
+ <p>
+   [% P.button_tag("kivi.Order.save_phone_note()",   LxERP.t8('Save')) %]
+   [% P.button_tag("kivi.Order.delete_phone_note()", LxERP.t8('Delete'), id = 'phone_note_delete_button', style='display:none') %]
+   [% P.button_tag("kivi.Order.cancel_phone_note()", LxERP.t8('Cancel'), class="neutral") %]
+ </p>
+
+</div>

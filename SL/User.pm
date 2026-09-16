@@ -179,9 +179,8 @@ sub login {
   $form->{$_} = $::auth->client->{$_} for qw(dbname dbhost dbport dbuser dbpasswd);
   $form->{$_} = $myconfig{$_}         for qw(datestyle);
 
-  $form->{"title"} = $main::locale->text("Dataset upgrade");
+  $form->{"title"} = $main::locale->text("Dataset upgrade") . " (" . $::auth->client->{dbname} . ")";
   $form->header(no_layout => $form->{no_layout});
-  print $form->parse_html_template("dbupgrade/header");
 
   $form->{dbupdate} = "db" . $::auth->client->{dbname};
 
@@ -541,7 +540,7 @@ sub get_default_myconfig {
     css_path     => 'css',      # Needed for menunew, see SL::Layout::Base::get_stylesheet_for_user
     dateformat   => $defaults->dateformat('dd.mm.yy'),
     numberformat => $defaults->numberformat('1.000,00'),
-    stylesheet   => $defaults->stylesheet('kivitendo.css'),
+    stylesheet   => $defaults->stylesheet($::lx_office_conf{system}{stylesheet}),
     timeformat   => $defaults->timeformat('hh:mm'),
     %user_config,
   );

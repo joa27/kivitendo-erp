@@ -3,6 +3,8 @@ use POSIX qw(strftime);
 use SL::FU;
 use SL::Locale::String qw(t8);
 use SL::ReportGenerator;
+use SL::DB::AuthGroup;
+use SL::DB::Employee;
 
 require "bin/mozilla/reportgenerator.pl";
 
@@ -40,12 +42,16 @@ sub add {
   _collect_links($form);
 
   $form->get_employee($form->get_standard_dbh(\%myconfig));
-  $form->{created_for_user} = $form->{employee_id};
+
+  push @{$form->{created_for_employees}}, SL::DB::Manager::Employee->current;
+
+  $form->{subject} = $form->{trans_subject_1} if $form->{trans_subject_1};
 
   my $link_details;
 
   if (0 < scalar @{ $form->{LINKS} }) {
     $link_details = FU->link_details(%{ $form->{LINKS}->[0] });
+    $form->{LINKS}->[0]{$_} = $link_details->{$_} for keys %$link_details;
   }
 
   if ($link_details && $link_details->{title}) {
@@ -81,6 +87,8 @@ sub edit {
     $form->{title} = $locale->text('Edit Follow-Up');
   }
 
+  $form->{created_for_employees} = SL::DB::FollowUp->new(id => $form->{id})->load->created_for_employees;
+
   display_form();
 
   $main::lxdebug->leave_sub();
@@ -93,16 +101,22 @@ sub display_form {
 
   my $form     = $main::form;
 
-  $form->get_lists("employees" => "EMPLOYEES");
+  $form->{all_employees}   = SL::DB::Manager::Employee->get_all_sorted(query => [ deleted => 0 ]);
+  $form->{all_auth_groups} = SL::DB::Manager::AuthGroup->get_all_sorted;
 
   my %params;
   $params{not_id}     = $form->{id} if ($form->{id});
   $params{trans_id}   = $form->{LINKS}->[0]->{trans_id} if (@{ $form->{LINKS} });
-  $form->{FOLLOW_UPS} = FU->follow_ups(%params);
+
+  $form->{sort}               = 'follow_up_date';
+  $form->{FOLLOW_UPS_DONE}    = FU->follow_ups(%params,     done => 1) if $::form->{POPUP_MODE};
+  $form->{FOLLOW_UPS_PENDING} = FU->follow_ups(%params, not_done => 1) if $::form->{POPUP_MODE};
 
   setup_fu_display_form_action_bar() unless $::form->{POPUP_MODE};
 
-  $form->header(no_layout => $::form->{POPUP_MODE});
+  $form->header(no_layout       => $::form->{POPUP_MODE},
+                use_javascripts => [ qw(follow_up) ],
+  );
   print $form->parse_html_template('fu/add_edit');
 
   $main::lxdebug->leave_sub();
@@ -116,11 +130,11 @@ sub save_follow_up {
   my $form     = $main::form;
   my $locale   = $main::locale;
 
-  $form->isblank('created_for_user', $locale->text('You must chose a user.'));
+  $form->error(                      $locale->text('You must chose a user.'))          if !$form->{created_for_employees};
   $form->isblank('follow_up_date',   $locale->text('The follow-up date is missing.'));
   $form->isblank('subject',          $locale->text('The subject is missing.'));
 
-  my %params = (map({ $_ => $form->{$_} } qw(id subject body note_id created_for_user follow_up_date)), 'done' => 0);
+  my %params = (map({ $_ => $form->{$_} } qw(id subject body note_id created_for_employees follow_up_date)), 'done' => 0);
 
   _collect_links(\%params);
 
@@ -138,7 +152,7 @@ sub save_follow_up {
     $form->redirect();
   }
 
-  delete @{$form}{qw(id subject body created_for_user follow_up_date)};
+  delete @{$form}{qw(id subject body created_for_employees follow_up_date)};
 
   map { $form->{$_} = 1 } qw(due_only all_users not_done);
 
@@ -163,6 +177,8 @@ sub finish {
     }
 
     FU->finish('id' => $form->{id});
+
+    return edit() unless ($form->{POPUP_MODE});
 
   } else {
     foreach my $i (1..$form->{rowcount}) {
@@ -509,13 +525,19 @@ sub setup_fu_display_form_action_bar {
       action => [
         t8('Finish'),
         submit   => [ '#form', { action => "finish" } ],
-        disabled => !$::form->{id} ? t8('The object has not been saved yet.') : undef,
+        disabled => !$::form->{id} ? t8('The object has not been saved yet.') :
+                    $::form->{done_at} ? t8('Done') : undef,
       ],
       action => [
         t8('Delete'),
         submit   => [ '#form', { action => "delete" } ],
         disabled => !$::form->{id} ? t8('The object has not been saved yet.') : undef,
         confirm  => t8('Do you really want to delete this object?'),
+      ],
+      'separator',
+      action => [
+        t8('Back'),
+        link => $::form->{callback} || 'fu.pl?action=search',
       ],
     );
   }

@@ -1,9 +1,6 @@
 #!/usr/bin/perl
 
-# -n do not include custom_ scripts
-# -v verbose mode, shows progress stuff
-
-# this version of locles processes not only all required .pl files
+# this version of locales processes not only all required .pl files
 # but also all parse_html_templated files.
 
 use utf8;
@@ -14,7 +11,6 @@ BEGIN {
 
   unshift(@INC, $FindBin::Bin . '/../modules/override'); # Use our own versions of various modules (e.g. YAML).
   push   (@INC, $FindBin::Bin . '/..');
-  push   (@INC, $FindBin::Bin . '/../modules/fallback'); # Only use our own versions of modules if there's no system version.
 }
 
 use Carp;
@@ -25,21 +21,21 @@ use File::Slurp qw(slurp);
 use FileHandle;
 use Getopt::Long;
 use IO::Dir;
+use IPC::Run qw();
 use List::MoreUtils qw(apply);
 use List::Util qw(first);
 use Pod::Usage;
-use YAML ();
-use YAML::Loader (); # YAML tries to load Y:L at runtime, but can't find it after we chdir'ed
 use SL::DBUpgrade2;
 use SL::System::Process;
+use SL::YAML;
 
 $OUTPUT_AUTOFLUSH = 1;
 
 my $opt_v  = 0;
-my $opt_n  = 0;
 my $opt_c  = 0;
 my $opt_f  = 0;
 my $debug  = 0;
+my $run_for_test = 0;
 
 parse_args();
 
@@ -49,8 +45,9 @@ my $locales_dir  = ".";
 my $bindir       = "$basedir/bin/mozilla";
 my @progdirs     = ( "$basedir/SL" );
 my @menufiles    = glob("${basedir}/menus/*/*");
-my @javascript_dirs = ($basedir .'/js', $basedir .'/templates/webpages');
-my $javascript_output_dir = $basedir .'/js';
+my @webpages     = qw(webpages mobile_webpages design40_webpages);
+my @javascript_dirs = ($basedir .'/public/js', map { $basedir .'/templates/' . $_ } @webpages);
+my $javascript_output_dir = $basedir .'/public/js';
 my $submitsearch = qr/type\s*=\s*[\"\']?submit/i;
 our $self        = {};
 our $missing     = {};
@@ -58,8 +55,15 @@ our @lost        = ();
 
 my %ignore_unused_templates = (
   map { $_ => 1 } qw(ct/testpage.html oe/periodic_invoices_email.txt part/testpage.html t/render.html t/render.js task_server/failure_notification_email.txt
-                     failed_background_jobs_report/email.txt)
+                     failed_background_jobs_report/email.txt presenter/items_list/items_list.txt)
 );
+
+my %outfiles_normal       = map {$_ => "${locales_dir}/${_}"} qw(all missing lost);
+$outfiles_normal{js}      = $javascript_output_dir .'/locale/'. $locale . '.js';
+my %outfiles_for_test     = map {$_ => "${locales_dir}/${_}_for_test"} qw(all missing lost);
+$outfiles_for_test{js}    = $javascript_output_dir .'/locale/'. $locale . '_for_test' . '.js';
+my $outfiles              = $run_for_test ? \%outfiles_for_test
+                                          : \%outfiles_normal;
 
 my (%referenced_html_files, %locale, %htmllocale, %alllocales, %cached, %submit, %jslocale);
 my ($ALL_HEADER, $MISSING_HEADER, $LOST_HEADER);
@@ -102,7 +106,6 @@ my @customfiles  = grep /_custom/, @bindir_files;
 
 push @progfiles, map { m:^(.+)/([^/]+)$:; [ $2, $1 ] } grep { /\.pm$/ } map { find_files($_) } @progdirs;
 
-# put customized files into @customfiles
 my %dir_h;
 
 my @dbplfiles;
@@ -151,19 +154,26 @@ for my $file_name (grep { /\.(?:js|html)$/i } map({find_files($_)} @javascript_d
 # merge entries to translate with entries from files 'missing' and 'lost'
 merge_texts();
 
-# generate all
+# Generate "all" without translations in more_texts.
+# But keep the ones which are in both old_texts (texts) and more_texts,
+# because this are ones which are overwritten in more_texts for custom usage.
+my %to_keep;
+$to_keep{$_} = 1 for grep { !!$self->{more_texts}{$_} } keys %old_texts;
+my @new_all  = grep { $to_keep{$_} || !$self->{more_texts}{$_} } sort keys %alllocales;
+
 generate_file(
-  file      => "$locales_dir/all",
+  file      => $outfiles->{all},
   header    => $ALL_HEADER,
   data_name => '$self->{texts}',
-  data_sub  => sub { _print_line($_, $self->{texts}{$_}, @_) for sort keys %alllocales },
+  data_sub  => sub { _print_line($_, $self->{texts}{$_}, @_) for @new_all },
 );
 
-open(my $js_file, '>:encoding(utf8)', $javascript_output_dir .'/locale/'. $locale .'.js') || die;
+open(my $js_file, '>:encoding(utf8)', $outfiles->{js}) || die;
 print $js_file 'namespace("kivi").setupLocale({';
 my $first_entry = 1;
 for my $key (sort(keys(%jslocale))) {
-  print $js_file ((!$first_entry ? ',' : '') ."\n". _double_quote($key) .':'. _double_quote($self->{texts}{$key}));
+  my $trans = $self->{more_texts}{$key} // $self->{texts}{$key};
+  print $js_file ((!$first_entry ? ',' : '') ."\n". _double_quote($key) .':'. _double_quote($trans));
   $first_entry = 0;
 }
 print $js_file ("\n");
@@ -204,7 +214,7 @@ if (@new_missing) {
   }
 
   generate_file(
-    file      => "$locales_dir/missing",
+    file      => $outfiles->{missing},
     header    => $MISSING_HEADER,
     data_name => '$missing',
     data_sub  => sub { _print_line($_, '', @_) for @new_missing },
@@ -220,7 +230,7 @@ while (my ($text, $translation) = each %old_texts) {
 if (scalar @lost) {
   splice @lost, 0, (scalar @lost - 50) if (scalar @lost > 50);
   generate_file(
-    file      => "$locales_dir/lost",
+    file      => $outfiles->{lost},
     header    => $LOST_HEADER,
     delim     => '()',
     data_name => '@lost',
@@ -241,6 +251,39 @@ my $per    = sprintf("%.1f", ($count - $notext) / $count * 100);
 print "\n$trlanguage - ${per}%";
 print " - $notext/$count missing" if $notext;
 print "\n";
+
+if ($run_for_test) {
+  print "\nrun for unit test:\n";
+
+  my $not_up_to_date = 0;
+
+  for my $type (qw(all js)) {
+    my ($out, $err);
+    my   @cmd = qw(diff -q);
+    push @cmd,  $outfiles_normal{$type};
+    push @cmd,  $outfiles_for_test{$type};
+    IPC::Run::run \@cmd, \undef, \$out, \$err;
+    my $err_code = $? >> 8;
+
+    if ($err_code > 1) {
+      unlink for values %outfiles_for_test;
+      die "diff failed: " . ($err_code) . ": " . $err;
+    }
+
+    if ($err_code == 1) {
+      print "not up to date: " . $outfiles_normal{$type} . " \n";
+      $not_up_to_date = 1;
+    }
+  }
+  unlink for values %outfiles_for_test;
+
+  if ($not_up_to_date) {
+    exit 1;
+  } else {
+    print "up to date.\n";
+    exit 0;
+  }
+}
 
 exit;
 
@@ -268,7 +311,6 @@ sub parse_args {
   my ($opt_no_c, $ignore_for_compatiblity);
 
   GetOptions(
-    'no-custom-files' => \$opt_n,
     'check-files'     => \$ignore_for_compatiblity,
     'no-check-files'  => \$opt_no_c,
     'verbose'         => \$opt_v,
@@ -276,6 +318,7 @@ sub parse_args {
     'help'            => \$help,
     'man'             => \$man,
     'debug'           => \$debug,
+    'run-for-test'    => \$run_for_test
   );
 
   $opt_c = !$opt_no_c;
@@ -435,23 +478,25 @@ sub scanfile {
 
       # is this a template call?
       if (/(?:parse_html_template2?|render)\s*\(\s*[\"\']([\w\/]+)\s*[\"\']/) {
-        my $new_file_base = "$basedir/templates/webpages/$1.";
+        my $new_file_name = $1;
         if (/parse_html_template2/) {
-          print "E: " . strip_base($file) . " is still using 'parse_html_template2' for " . strip_base("${new_file_base}html") . ".\n";
+          print "E: " . strip_base($file) . " is still using 'parse_html_template2' for $new_file_name.html.\n";
         }
 
         my $found_one = 0;
-        foreach my $ext (qw(html js json)) {
-          my $new_file = "${new_file_base}${ext}";
-          if (-f $new_file) {
-            $cached{$file}{scanh}{$new_file} = 1;
-            print "." if $opt_v;
-            $found_one = 1;
+        for my $space (@webpages) {
+          for my $ext (qw(html js json)) {
+            my $new_file = "$basedir/templates/$space/$new_file_name.$ext";
+            if (-f $new_file) {
+              $cached{$file}{scanh}{$new_file} = 1;
+              print "." if $opt_v;
+              $found_one = 1;
+            }
           }
         }
 
         if ($opt_c && !$found_one) {
-          print "W: missing HTML template: " . strip_base($new_file_base) . "{html,json,js} (referenced from " . strip_base($file) . ")\n";
+          print "W: missing HTML template: $new_file_name.{html,json,js} (referenced from " . strip_base($file) . ")\n";
         }
       }
 
@@ -534,7 +579,7 @@ sub scanfile {
 sub scanmenu {
   my $file = shift;
 
-  my $menu = YAML::LoadFile($file);
+  my $menu = SL::YAML::LoadFile($file);
 
   for my $node (@$menu) {
     # possible for override files
@@ -568,15 +613,16 @@ sub unescape_template_string {
 }
 
 sub scanhtmlfile {
-  local *IN;
-
-  my $file = shift;
+  my ($file) = @_;
 
   return if defined $cached{$file};
 
+  my $template_space = $file =~ m{templates/(\w+)/} ? $1 : 'webpages';
+
   my %plugins = ( 'loaded' => { }, 'needed' => { } );
 
-  if (!open(IN, '<:encoding(utf8)', $file)) {
+  my $fh;
+  if (!open($fh, '<:encoding(utf8)', $file)) {
     print "E: template file '$file' not found\n";
     return;
   }
@@ -584,14 +630,14 @@ sub scanhtmlfile {
   my $copying  = 0;
   my $issubmit = 0;
   my $text     = "";
-  while (my $line = <IN>) {
+  while (my $line = <$fh>) {
     chomp($line);
 
     while ($line =~ m/\[\%[^\w]*use[^\w]+(\w+)[^\w]*?\%\]/gi) {
       $plugins{loaded}->{$1} = 1;
     }
 
-    while ($line =~ m/\[\%[^\w]*(\w+)\.\w+\(/g) {
+    while ($line =~ m/\[\%[^\w]*(\w+)(?:\.\w+)+\(/g) {
       my $plugin = $1;
       $plugins{needed}->{$plugin} = 1 if (first { $_ eq $plugin } qw(HTML LxERP JavaScript JSON L P));
     }
@@ -644,13 +690,13 @@ sub scanhtmlfile {
                       ([^\s]+)      # Beliebig viele Nicht-Whitespaces -- Dateiname
                       \.(html|js)   # Endung ".html" oder ".js", ansonsten kann es der Name eines Blocks sein
                      /ix) {
-      my $new_file_name = "$basedir/templates/webpages/$1.$2";
+      my $new_file_name = "$basedir/templates/$template_space/$1.$2";
       $cached{$file}{scanh}{$new_file_name} = 1;
       substr $line, $LAST_MATCH_START[1], $LAST_MATCH_END[0] - $LAST_MATCH_START[0], '';
     }
   }
 
-  close(IN);
+  close($fh);
 
   foreach my $plugin (keys %{ $plugins{needed} }) {
     next if ($plugins{loaded}->{$plugin});
@@ -693,7 +739,7 @@ sub scan_javascript_file {
   close($fh);
 }
 sub search_unused_htmlfiles {
-  my @unscanned_dirs = ('../../templates/webpages');
+  my @unscanned_dirs = map {  '../../templates/' . $_ } @webpages;
 
   while (scalar @unscanned_dirs) {
     my $dir = shift @unscanned_dirs;
@@ -714,7 +760,7 @@ sub strip_base {
   my $s =  "$_[0]";             # Create a copy of the string.
 
   $s    =~ s|^../../||;
-  $s    =~ s|templates/webpages/||;
+  $s    =~ s|templates/\w+/||;
 
   return $s;
 }
@@ -773,8 +819,9 @@ locales.pl - Collect strings for translation in kivitendo
 locales.pl [options] lang_code
 
  Options:
-  -n, --no-custom-files  Do not process files whose name contains "_"
-  -c, --check-files      Run extended checks on HTML files
+  -c, --check-files      Run extended checks on HTML files (default)
+  -n, --no-check-files   Do not run extended checks on HTML files
+  -r, --run-for-test     Do (almost) nothing but return a state if all files are up to date
   -f, --filenames        Show the filenames where new strings where found
   -v, --verbose          Be more verbose
   -h, --help             Show this help
@@ -783,15 +830,24 @@ locales.pl [options] lang_code
 
 =over 8
 
-=item B<-n>, B<--no-custom-files>
-
-Do not process files whose name contains "_", e.g. "custom_io.pl".
-
 =item B<-c>, B<--check-files>
 
 Run extended checks on the usage of templates. This can be used to
 discover HTML templates that are never used as well as the usage of
-non-existing HTML templates.
+non-existing HTML templates. This is enabled by default.
+
+=item B<-n>, B<--no-check-files>
+
+Do not run extended checks on the usage of templates. See
+C<--no-check-files>.
+
+=item B<-r>, B<--run-for-test>
+
+Do (almost) nothing but return a state if all files are up to date.
+Locales files will be generated with different names and compared to
+the original files.
+If the files differ an exit status of '1' is returned, '0' otherwise.
+The generated files will be deleted afterwards.
 
 =item B<-v>, B<--verbose>
 

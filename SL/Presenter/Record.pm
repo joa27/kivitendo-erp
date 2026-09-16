@@ -2,15 +2,552 @@ package SL::Presenter::Record;
 
 use strict;
 
-use parent qw(Exporter);
+use SL::Presenter;
+use SL::Presenter::EscapedText qw(escape is_escaped);
+use SL::Presenter::Tag qw(html_tag button_tag);
 
 use Exporter qw(import);
-our @EXPORT = qw(grouped_record_list empty_record_list record_list record);
+our @EXPORT_OK = qw(grouped_record_list empty_record_list record_list record);
 
 use SL::Util;
 
 use Carp;
 use List::Util qw(first);
+
+my @ORDERED_TYPES = qw(
+  requirement_spec
+  shop_order
+  sales_quotation
+  sales_order_intake
+  sales_order
+  sales_delivery_order
+  rma_delivery_order
+  sales_reclamation
+  sales_invoice
+  ar_transaction
+  request_quotation
+  purchase_quotation_intake
+  purchase_order
+  purchase_order_confirmation
+  purchase_delivery_order
+  supplier_delivery_order
+  purchase_reclamation
+  purchase_invoice
+  ap_transaction
+  gl_transaction
+  bank_transaction
+  sepa_collection
+  sepa_transfer
+  letter
+  email_journal
+  dunning
+  ar_transaction_template
+  ap_transaction_template
+  gl_transaction_template
+  );
+
+my %TYPE_TO_PARAMS = (
+  # sub gets other params as arguments to override if needed
+  # has to encoupsulated in a sub for evaluation of locale translations
+  requirement_spec => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Requirement specs'),
+      type    => 'requirement_spec',
+      columns => [
+        [ $::locale->text('Requirement spec number'), sub { $_[0]->presenter->requirement_spec(display => 'table-cell') } ],
+        [ $::locale->text('Customer'),                'customer'                                                      ],
+        [ $::locale->text('Title'),                   'title'                                                         ],
+        [ $::locale->text('Project'),                 'project',                                                      ],
+        [ $::locale->text('Status'),                  sub { $_[0]->status->description }                              ],
+      ],
+      %params,
+    }
+  },
+  shop_order => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Shop Orders'),
+      type    => 'shop_order',
+      columns => [
+        [ $::locale->text('Shop Order Date'),         sub { $_[0]->order_date->to_kivitendo }                         ],
+        [ $::locale->text('Shop Order Number'),       sub { $_[0]->presenter->shop_order(display => 'table-cell') }   ],
+        [ $::locale->text('Transfer Date'),           'transfer_date'                                                 ],
+        [ $::locale->text('Amount'),                  'amount'                                                        ],
+      ],
+      %params,
+    }
+  },
+  sales_quotation => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Sales Quotations'),
+      type    => 'sales_quotation',
+      columns => [
+        [ $::locale->text('Quotation Date'),          'transdate'                                                                ],
+        [ $::locale->text('Quotation Number'),        sub { $_[0]->presenter->sales_quotation(display => 'table-cell') }         ],
+        [ $::locale->text('Customer'),                'customer'                                                                 ],
+        [ $::locale->text('Net amount'),              'netamount'                                                                ],
+        [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
+        [ $::locale->text('Project'),                 'globalproject', ],
+        [ $::locale->text('Closed'),                  'closed'                                                                   ],
+      ],
+      %params,
+    }
+  },
+  request_quotation => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Request Quotations'),
+      type    => 'request_quotation',
+      columns => [
+        [ $::locale->text('RFQ Date'),                'transdate'                                                                ],
+        [ $::locale->text('RFQ Number'),              sub { $_[0]->presenter->request_quotation(display => 'table-cell') }       ],
+        [ $::locale->text('Vendor'),                  'vendor'                                                                   ],
+        [ $::locale->text('Net amount'),              'netamount'                                                                ],
+        [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
+        [ $::locale->text('Project'),                 'globalproject', ],
+        [ $::locale->text('Closed'),                  'closed'                                                                   ],
+      ],
+      %params,
+    }
+  },
+  purchase_quotation_intake => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Purchase Quotation Intakes'),
+      type    => 'purchase_quotation_intake',
+      columns => [
+        [ $::locale->text('Quotation Date'),          'transdate'                                                                ],
+        [ $::locale->text('Quotation Number'),        sub { $_[0]->presenter->purchase_quotation_intake(display => 'table-cell') } ],
+        [ $::locale->text('Vendor'),                  'vendor'                                                                   ],
+        [ $::locale->text('Net amount'),              'netamount'                                                                ],
+        [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
+        [ $::locale->text('Project'),                 'globalproject', ],
+        [ $::locale->text('Closed'),                  'closed'                                                                   ],
+      ],
+      %params,
+    }
+  },
+  sales_order_intake => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Sales Order Intakes'),
+      type    => 'sales_order_intake',
+      columns => [
+        [ $::locale->text('Order Date'),              'transdate'                                                                ],
+        [ $::locale->text('Order Number'),            sub { $_[0]->presenter->sales_order_intake(display => 'table-cell') }      ],
+        [ $::locale->text('Quotation'),               'quonumber' ],
+        [ $::locale->text('Customer'),                'customer'                                                                 ],
+        [ $::locale->text('Net amount'),              'netamount'                                                                ],
+        [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
+        [ $::locale->text('Project'),                 'globalproject', ],
+        [ $::locale->text('Closed'),                  'closed'                                                                   ],
+      ],
+      %params,
+    }
+  },
+  sales_order => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Sales Order Confirmations'),
+      type    => 'sales_order',
+      columns => [
+        [ $::locale->text('Confirmation Date'),       'transdate'                                                                ],
+        [ $::locale->text('Confirmation Number'),     sub { $_[0]->presenter->sales_order(display => 'table-cell') }             ],
+        [ $::locale->text('Order Number'),            sub { my $order = $_[0]; join ', ', map { $_->ordnumber } @{$order->preceding_sales_order_intakes()} } ],
+        [ $::locale->text('Quotation'),               'quonumber' ],
+        [ $::locale->text('Customer'),                'customer'                                                                 ],
+        [ $::locale->text('Net amount'),              'netamount'                                                                ],
+        [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
+        [ $::locale->text('Project'),                 'globalproject', ],
+        [ $::locale->text('Closed'),                  'closed'                                                                   ],
+      ],
+      %params,
+    }
+  },
+  purchase_order => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Purchase Orders'),
+      type    => 'purchase_order',
+      columns => [
+        [ $::locale->text('Order Date'),                'transdate'                                                                                                   ],
+        [ $::locale->text('Order Number'),              sub { $_[0]->presenter->purchase_order(display => 'table-cell') }                                             ],
+        [ $::locale->text('Purchase Quotation Intake'), 'quonumber'                                                                                                   ],
+        [ $::locale->text('Request for Quotation'),     sub { my $order = $_[0]; join ', ', map { $_->quonumber } @{$order->preceding_request_quotations()} }         ],
+        [ $::locale->text('Vendor'),                    'vendor'                                                                                                      ],
+        [ $::locale->text('Net amount'),                'netamount'                                                                                                   ],
+        [ $::locale->text('Transaction description'),   'transaction_description'                                                                                     ],
+        [ $::locale->text('Project'),                   'globalproject',                                                                                              ],
+        [ $::locale->text('Closed'),                    'closed'                                                                                                      ],
+      ],
+      %params,
+    }
+  },
+  purchase_order_confirmation => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Purchase Order Confirmations'),
+      type    => 'purchase_order_confirmation',
+      columns => [
+        [ $::locale->text('Confirmation Date'),       'transdate'                                                                    ],
+        [ $::locale->text('Confirmation Number'),     sub { $_[0]->presenter->purchase_order_confirmation(display => 'table-cell') } ],
+        [ $::locale->text('Purchase Order'),          sub { my $order = $_[0]; join ', ', map { $_->ordnumber } @{$order->preceding_purchase_orders()} } ],
+        [ $::locale->text('Purchase Quotation Intake'), 'quonumber'                                                                  ],
+        [ $::locale->text('Vendor'),                  'vendor'                                                                       ],
+        [ $::locale->text('Net amount'),              'netamount'                                                                    ],
+        [ $::locale->text('Transaction description'), 'transaction_description'                                                      ],
+        [ $::locale->text('Project'),                 'globalproject',                                                               ],
+        [ $::locale->text('Closed'),                  'closed'                                                                       ],
+      ],
+      %params,
+    }
+  },
+  sales_delivery_order => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Sales Delivery Orders'),
+      type    => 'sales_delivery_order',
+      columns => [
+        [ $::locale->text('Delivery Order Date'),     'transdate'                                                                ],
+        [ $::locale->text('Delivery Order Number'),   sub { $_[0]->presenter->sales_delivery_order(display => 'table-cell') }    ],
+        [ $::locale->text('Confirmation Number'),     'ordnumber' ],
+        [ $::locale->text('Customer'),                'customer'                                                                 ],
+        [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
+        [ $::locale->text('Project'),                 'globalproject', ],
+        [ $::locale->text('Delivered'),               'delivered'                                                                ],
+        [ $::locale->text('Closed'),                  'closed'                                                                   ],
+      ],
+      %params,
+    }
+  },
+  rma_delivery_order => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('RMA Delivery Orders'),
+      type    => 'rma_delivery_order',
+      columns => [
+        [ $::locale->text('Delivery Order Date'),     'transdate'                                                                ],
+        [ $::locale->text('Delivery Order Number'),   sub { $_[0]->presenter->rma_delivery_order(display => 'table-cell') }    ],
+        [ $::locale->text('Order Number'),            'ordnumber' ],
+        [ $::locale->text('Customer'),                'customer'                                                                 ],
+        [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
+        [ $::locale->text('Project'),                 'globalproject', ],
+        [ $::locale->text('Delivered'),               'delivered'                                                                ],
+        [ $::locale->text('Closed'),                  'closed'                                                                   ],
+      ],
+      %params,
+    }
+  },
+  purchase_delivery_order => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Purchase Delivery Orders'),
+      type    => 'purchase_delivery_order',
+      columns => [
+        [ $::locale->text('Delivery Order Date'),     'transdate'                                                                ],
+        [ $::locale->text('Delivery Order Number'),   sub { $_[0]->presenter->purchase_delivery_order(display => 'table-cell') } ],
+        [ $::locale->text('Order Number'),            'ordnumber' ],
+        [ $::locale->text('Vendor'),                  'vendor'                                                                 ],
+        [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
+        [ $::locale->text('Project'),                 'globalproject', ],
+        [ $::locale->text('Delivered'),               'delivered'                                                                ],
+        [ $::locale->text('Closed'),                  'closed'                                                                   ],
+      ],
+      %params,
+    }
+  },
+  supplier_delivery_order => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Supplier Delivery Orders'),
+      type    => 'supplier_delivery_order',
+      columns => [
+        [ $::locale->text('Delivery Order Date'),     'transdate'                                                                ],
+        [ $::locale->text('Delivery Order Number'),   sub { $_[0]->presenter->supplier_delivery_order(display => 'table-cell') } ],
+        [ $::locale->text('Order Number'),            'ordnumber' ],
+        [ $::locale->text('Vendor'),                  'vendor'                                                                 ],
+        [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
+        [ $::locale->text('Project'),                 'globalproject', ],
+        [ $::locale->text('Delivered'),               'delivered'                                                                ],
+        [ $::locale->text('Closed'),                  'closed'                                                                   ],
+      ],
+      %params,
+    }
+  },
+  sales_reclamation => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Sales Reclamations'),
+      type    => 'sales_reclamation',
+      columns => [
+        [ $::locale->text('Reclamation Date'),        'transdate'                                                          ],
+        [ $::locale->text('Reclamation Number'),      sub { $_[0]->presenter->sales_reclamation(display => 'table-cell') } ],
+        [ $::locale->text('Customer'),                'customer'                                                           ],
+        [ $::locale->text('Transaction description'), 'transaction_description'                                            ],
+        [ $::locale->text('Project'),                 'globalproject',                                                     ],
+        [ $::locale->text('Delivered'),               'delivered'                                                          ],
+        [ $::locale->text('Closed'),                  'closed'                                                             ],
+      ],
+      %params,
+    }
+  },
+  purchase_reclamation => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Purchase Reclamations'),
+      type    => 'purchase_reclamation',
+      columns => [
+        [ $::locale->text('Reclamation Date'),        'transdate'                                                          ],
+        [ $::locale->text('Reclamation Number'),      sub { $_[0]->presenter->purchase_reclamation(display => 'table-cell') } ],
+        [ $::locale->text('Vendor'),                'vendor'                                                           ],
+        [ $::locale->text('Transaction description'), 'transaction_description'                                            ],
+        [ $::locale->text('Project'),                 'globalproject',                                                     ],
+        [ $::locale->text('Delivered'),               'delivered'                                                          ],
+        [ $::locale->text('Closed'),                  'closed'                                                             ],
+      ],
+      %params,
+    }
+  },
+  sales_invoice => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Sales Invoices'),
+      type    => 'sales_invoice',
+      columns => [
+        [ $::locale->text('Invoice Date'),            'transdate'               ],
+        [ $::locale->text('Type'),                    sub { $_[0]->displayable_type } ],
+        [ $::locale->text('Invoice Number'),          sub { $_[0]->presenter->sales_invoice(display => 'table-cell') } ],
+        [ $::locale->text('Quotation Number'),        'quonumber' ],
+        [ $::locale->text('Order Number'),            'ordnumber' ],
+        [ $::locale->text('Customer'),                'customer'                ],
+        [ $::locale->text('Net amount'),              'netamount'               ],
+        [ $::locale->text('Paid'),                    'paid'                    ],
+        [ $::locale->text('Transaction description'), 'transaction_description' ],
+      ],
+      %params,
+    }
+  },
+  purchase_invoice => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Purchase Invoices'),
+      type    => 'purchase_invoice',
+      columns => [
+        [ $::locale->text('Invoice Date'),                 'transdate'               ],
+        [ $::locale->text('Invoice Number'),               sub { $_[0]->presenter->purchase_invoice(display => 'table-cell') } ],
+        [ $::locale->text('Request for Quotation Number'), 'quonumber' ],
+        [ $::locale->text('Order Number'),                 'ordnumber' ],
+        [ $::locale->text('Vendor'),                       'vendor'                 ],
+        [ $::locale->text('Net amount'),                   'netamount'               ],
+        [ $::locale->text('Paid'),                         'paid'                    ],
+        [ $::locale->text('Transaction description'),      'transaction_description' ],
+      ],
+      %params,
+    }
+  },
+  ar_transaction => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('AR Transactions'),
+      type    => 'ar_transaction',
+      columns => [
+        [ $::locale->text('Invoice Date'),            'transdate'               ],
+        [ $::locale->text('Type'),                    sub { $_[0]->displayable_type } ],
+        [ $::locale->text('Invoice Number'),          sub { $_[0]->presenter->ar_transaction(display => 'table-cell') } ],
+        [ $::locale->text('Customer'),                'customer'                ],
+        [ $::locale->text('Net amount'),              'netamount'               ],
+        [ $::locale->text('Paid'),                    'paid'                    ],
+        [ $::locale->text('Transaction description'), 'transaction_description' ],
+      ],
+      %params,
+    }
+  },
+  ap_transaction => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('AP Transactions'),
+      type    => 'ap_transaction',
+      columns => [
+        [ $::locale->text('Invoice Date'),            'transdate'                      ],
+        [ $::locale->text('Invoice Number'),          sub { $_[0]->presenter->ap_transaction(display => 'table-cell') } ],
+        [ $::locale->text('Vendor'),                  'vendor'                         ],
+        [ $::locale->text('Net amount'),              'netamount'                      ],
+        [ $::locale->text('Paid'),                    'paid'                           ],
+        [ $::locale->text('Transaction description'), 'transaction_description'        ],
+      ],
+      %params,
+    }
+  },
+  gl_transaction => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('GL Transactions'),
+      type    => 'gl_transaction',
+      columns => [
+        [ $::locale->text('Transdate'),        'transdate'                                                    ],
+        [ $::locale->text('Reference'),   'reference'                                                    ],
+        [ $::locale->text('Description'), sub { $_[0]->presenter->gl_transaction(display => 'table-cell') } ],
+      ],
+      %params,
+    }
+  },
+  bank_transaction => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Bank transactions'),
+      type    => 'bank_transactions',
+      columns => [
+        [ $::locale->text('Transdate'),            'transdate'                      ],
+        [ $::locale->text('Local Bank Code'),      sub { $_[0]->local_bank_account->presenter->bank_code }  ],
+        [ $::locale->text('Local account number'), sub { $_[0]->local_bank_account->presenter->account_number }  ],
+        [ $::locale->text('Remote Bank Code'),     'remote_bank_code' ],
+        [ $::locale->text('Remote account number'),'remote_account_number' ],
+        [ $::locale->text('Valutadate'),           'valutadate' ],
+        [ $::locale->text('Amount'),               'amount' ],
+        [ $::locale->text('Currency'),             sub { $_[0]->currency->name } ],
+        [ $::locale->text('Remote name'),          'remote_name' ],
+        [ $::locale->text('Purpose'),              'purpose' ],
+      ],
+      %params,
+    }
+  },
+  # sepa_export gets called from sepa_transfer and sepa_collection
+  sepa_export => sub {
+    my (%params) = @_;
+
+    my ($source, $destination) = $params{type} eq 'sepa_transfer' ? qw(our vc)                                 : qw(vc our);
+    $params{title}             = $params{type} eq 'sepa_transfer' ? $::locale->text('Bank transfers via SEPA') : $::locale->text('Bank collections via SEPA');
+    $params{with_columns}      = [ grep { $_ ne 'record_link_direction' } @{ $params{with_columns} || [] } ];
+
+    delete $params{edit_record_links};
+
+    {
+      columns => [
+        [ $::locale->text('Export Number'),    'sepa_export',                                  ],
+        [ $::locale->text('Execution date'),   'execution_date'                                ],
+        [ $::locale->text('Export date'),      sub { $_[0]->sepa_export->itime->to_kivitendo } ],
+        [ $::locale->text('Source BIC'),       "${source}_bic"                                 ],
+        [ $::locale->text('Source IBAN'),      "${source}_iban"                                ],
+        [ $::locale->text('Destination BIC'),  "${destination}_bic"                            ],
+        [ $::locale->text('Destination IBAN'), "${destination}_iban"                           ],
+        [ $::locale->text('Amount'),           'amount'                                        ],
+      ],
+      %params,
+    }
+  },
+  sepa_transfer => sub {
+    my (%params) = @_;
+    my %type_params = _get_type_params('sepa_export', %params, type => 'sepa_transfer');
+    return \%type_params;
+  },
+  sepa_collection => sub {
+    my (%params) = @_;
+    my %type_params = _get_type_params('sepa_export', %params, type => 'sepa_collection');
+    return \%type_params;
+  },
+  letter => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Letters'),
+      type    => 'letter',
+      columns => [
+        [ $::locale->text('Date'),         'date'                                                ],
+        [ $::locale->text('Letternumber'), sub { $_[0]->presenter->letter(display => 'table-cell') } ],
+        [ $::locale->text('Customer'),     'customer'                                            ],
+        [ $::locale->text('Reference'),    'reference'                                           ],
+        [ $::locale->text('Subject'),      'subject'                                             ],
+      ],
+      %params,
+    }
+  },
+  email_journal => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Email'),
+      type    => 'email_journal',
+      columns => [
+        [ $::locale->text('Sent on'), sub { $_[0]->sent_on->to_kivitendo(precision => 'seconds') } ],
+        [ $::locale->text('Subject'), sub { $_[0]->presenter->email_journal(display => 'table-cell') } ],
+        [ $::locale->text('Status'),  'status'                                                     ],
+        [ $::locale->text('From'),    'from'                                                       ],
+        [ $::locale->text('To'),      'recipients'                                                 ],
+      ],
+      %params,
+    }
+  },
+  dunning => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('Dunnings'),
+      type    => 'dunning',
+      columns => [
+        [ $::locale->text('Dunning Level'),   sub { $_[0]->presenter->dunning(display => 'table-cell') } ],
+        [ $::locale->text('Dunning Date'),    'transdate'                                                ],
+        [ $::locale->text('Dunning Duedate'), 'duedate'                                                  ],
+        [ $::locale->text('Total Fees'),      'fee'                                                      ],
+        [ $::locale->text('Interest'),        'interest'                                                 ],
+      ],
+      %params,
+    }
+  },
+  gl_transaction_template => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('GL Transaction Template'),
+      type    => 'gl_transaction_template',
+      columns => [
+        [ $::locale->text('Name'),                    'template_name_to_use'              ],
+        [ $::locale->text('Transaction description'), 'transaction_description',          ],
+        [ $::locale->text('Create Date'),              sub { $_[0]->itime->to_kivitendo } ],
+        [ $::locale->text('Modification date'),        sub { $_[0]->mtime->to_kivitendo } ],
+      ],
+      %params,
+    }
+  },
+  ar_transaction_template => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('AR Transaction Template'),
+      type    => 'ar_transaction_template',
+      columns => [
+        [ $::locale->text('Name'),                    'template_name_to_use'             ],
+        [ $::locale->text('Customer'),                'customer'                         ],
+        [ $::locale->text('Project'),                 'project',                         ],
+        [ $::locale->text('Transaction description'), 'transaction_description',         ],
+        [ $::locale->text('Create Date'),             sub { $_[0]->itime->to_kivitendo } ],
+        [ $::locale->text('Modification date'),       sub { $_[0]->mtime->to_kivitendo } ],
+      ],
+      %params,
+    }
+  },
+  ap_transaction_template => sub {
+    my (%params) = @_;
+    {
+      title   => $::locale->text('AP Transaction Template'),
+      type    => 'ap_transaction_template',
+      columns => [
+        [ $::locale->text('Name'),                    'template_name_to_use'             ],
+        [ $::locale->text('Vendor'),                  'vendor'                           ],
+        [ $::locale->text('Project'),                 'project',                         ],
+        [ $::locale->text('Transaction description'), 'transaction_description',         ],
+        [ $::locale->text('Create Date'),             sub { $_[0]->itime->to_kivitendo } ],
+        [ $::locale->text('Modification date'),       sub { $_[0]->mtime->to_kivitendo } ],
+      ],
+      %params,
+    }
+  },
+);
+
+sub _get_type_params {
+  my ($type, %params) = @_;
+
+  my $type_params = $TYPE_TO_PARAMS{$type};
+  croak "Unknown type '$type'" unless $type_params;
+
+  return %{$type_params->(%params)};
+}
 
 sub _arrayify {
   my ($array) = @_;
@@ -20,63 +557,69 @@ sub _arrayify {
 }
 
 sub record {
-  my ($self, $record, %params) = @_;
+  my ($record, %params) = @_;
 
   my %grouped = _group_records( [ $record ] ); # pass $record as arrayref
   my $type    = (keys %grouped)[0];
 
-  return $self->sales_invoice(   $record, %params) if $type eq 'sales_invoices';
-  return $self->purchase_invoice($record, %params) if $type eq 'purchase_invoices';
-  return $self->ar_transaction(  $record, %params) if $type eq 'ar_transactions';
-  return $self->ap_transaction(  $record, %params) if $type eq 'ap_transactions';
-  return $self->gl_transaction(  $record, %params) if $type eq 'gl_transactions';
+  $record->presenter->sales_invoice(   $record, %params) if $type eq 'sales_invoice';
+  $record->presenter->purchase_invoice($record, %params) if $type eq 'purchase_invoice';
+  $record->presenter->ar_transaction(  $record, %params) if $type eq 'ar_transaction';
+  $record->presenter->ap_transaction(  $record, %params) if $type eq 'ap_transaction';
+  $record->presenter->gl_transaction(  $record, %params) if $type eq 'gl_transaction';
 
   return '';
 }
 
 sub grouped_record_list {
-  my ($self, $list, %params) = @_;
+  my ($list, %params) = @_;
 
   %params    = map { exists $params{$_} ? ($_ => $params{$_}) : () } qw(edit_record_links with_columns object_id object_model);
 
   my %groups = _sort_grouped_lists(_group_records($list));
   my $output = '';
 
-  $output .= _requirement_spec_list(       $self, $groups{requirement_specs},        %params) if $groups{requirement_specs};
-  $output .= _shop_order_list(             $self, $groups{shop_orders},              %params) if $groups{shop_orders};
-  $output .= _sales_quotation_list(        $self, $groups{sales_quotations},         %params) if $groups{sales_quotations};
-  $output .= _sales_order_list(            $self, $groups{sales_orders},             %params) if $groups{sales_orders};
-  $output .= _sales_delivery_order_list(   $self, $groups{sales_delivery_orders},    %params) if $groups{sales_delivery_orders};
-  $output .= _sales_invoice_list(          $self, $groups{sales_invoices},           %params) if $groups{sales_invoices};
-  $output .= _ar_transaction_list(         $self, $groups{ar_transactions},          %params) if $groups{ar_transactions};
+  foreach my $type (@ORDERED_TYPES) {
+    $output .= record_list($groups{$type}, _get_type_params($type, %params)) if $groups{$type};
+  }
 
-  $output .= _request_quotation_list(      $self, $groups{purchase_quotations},      %params) if $groups{purchase_quotations};
-  $output .= _purchase_order_list(         $self, $groups{purchase_orders},          %params) if $groups{purchase_orders};
-  $output .= _purchase_delivery_order_list($self, $groups{purchase_delivery_orders}, %params) if $groups{purchase_delivery_orders};
-  $output .= _purchase_invoice_list(       $self, $groups{purchase_invoices},        %params) if $groups{purchase_invoices};
-  $output .= _ap_transaction_list(         $self, $groups{ap_transactions},          %params) if $groups{ap_transactions};
+  $output  = SL::Presenter->get->render('presenter/record/grouped_record_list', %params, output => $output);
 
-  $output .= _gl_transaction_list(         $self, $groups{gl_transactions},          %params) if $groups{gl_transactions};
+  return $output;
+}
 
-  $output .= _bank_transactions(           $self, $groups{bank_transactions},        %params) if $groups{bank_transactions};
+sub grouped_list { goto &grouped_record_list }
 
-  $output .= _sepa_collection_list(        $self, $groups{sepa_collections},         %params) if $groups{sepa_collections};
-  $output .= _sepa_transfer_list(          $self, $groups{sepa_transfers},           %params) if $groups{sepa_transfers};
+sub simple_grouped_record_list {
+  my ($list, %params) = @_;
 
-  $output .= _letter_list(                 $self, $groups{letters},                  %params) if $groups{letters};
+  my %groups = _sort_grouped_lists(_group_records($list));
+  my $output = '';
 
-  $output  = $self->render('presenter/record/grouped_record_list', %params, output => $output);
+  foreach my $type (@ORDERED_TYPES) {
+    my $ordered_records = $groups{$type};
+    next unless $ordered_records;
+    my %type_params = _get_type_params($type, %params);
+    my $type_output = html_tag('b', $type_params{title} . ": ");
+    $type_output .= join (', ',
+      map { $_->presenter->show(%params) }
+      @{ $ordered_records }
+    );
+    $output .= html_tag('div', $type_output);
+  }
 
   return $output;
 }
 
 sub empty_record_list {
-  my ($self, %params) = @_;
-  return $self->grouped_record_list([], %params);
+  my (%params) = @_;
+  return grouped_record_list([], %params);
 }
 
+sub empty_list { goto &empty_record_list }
+
 sub record_list {
-  my ($self, $list, %params) = @_;
+  my ($list, %params) = @_;
 
   my @columns;
 
@@ -98,11 +641,37 @@ sub record_list {
     push @columns, {
       title => $::locale->text('Link direction'),
       data  => sub {
-          $_[0]->{_record_link_depth} > 1
+          $_[0]->{_record_link_to_myself}
+        ? $::locale->text('Row is the record itself')
+        : $_[0]->{_record_link_depth} > 1
         ? $::locale->text('Row was linked to another record')
         : $_[0]->{_record_link_direction} eq 'from'
         ? $::locale->text('Row was source for current record')
         : $::locale->text('Row was created from current record') },
+    };
+  }
+  if ($with_columns{email_journal_action}) {
+    push @columns, {
+      title => $::locale->text('Action'),
+      data  => sub {
+        my $id = $_[0]->id;
+        my $record_type = $_[0]->record_type;
+        if ($record_type eq 'ap_transaction' && ref $_[0] eq 'SL::DB::RecordTemplate') {
+          return is_escaped(
+            button_tag(
+              "kivi.EmailJournal.ap_transaction_template_with_zugferd_import(
+              '$id', '$record_type');",
+              $::locale->text('Select (with Factur-X/ZUGFeRD import)'),
+            )
+          );
+        } else {
+          return is_escaped(button_tag(
+              "kivi.EmailJournal.apply_action_with_attachment(
+              '$id', '$record_type');",
+              $::locale->text('Select'),
+            ));
+        }
+      },
     };
   }
 
@@ -133,7 +702,7 @@ sub record_list {
         $cell{value} = $spec->{data}->($obj);
 
       } else {
-        $cell{value} = $rel_type && $self->can($rel_type)                                       ? $self->$rel_type($obj->$method, display => 'table-cell')
+        $cell{value} = ref $obj->$method && $obj->$method->isa('SL::DB::Object') && $obj->$method->presenter->can($rel_type) ? $obj->$method->presenter->$rel_type(display => 'table-cell')
                      : $type eq 'Rose::DB::Object::Metadata::Column::Date'                      ? $call->($obj, $method . '_as_date')
                      : $type =~ m/^Rose::DB::Object::Metadata::Column::(?:Float|Numeric|Real)$/ ? $::form->format_amount(\%::myconfig, $call->($obj, $method), 2)
                      : $type eq 'Rose::DB::Object::Metadata::Column::Boolean'                   ? $call->($obj, $method . '_as_bool_yn')
@@ -154,13 +723,15 @@ sub record_list {
            alignment => $data[0]->{columns}->[$_]->{alignment},
          }, (0..scalar(@columns) - 1);
 
-  return $self->render(
+  return SL::Presenter->get->render(
     'presenter/record/record_list',
     %params,
     TABLE_HEADER => \@header,
     TABLE_ROWS   => \@data,
   );
 }
+
+sub list { goto &record_list }
 
 #
 # private methods
@@ -169,23 +740,35 @@ sub record_list {
 sub _group_records {
   my ($list) = @_;
   my %matchers = (
-    requirement_specs        => sub { (ref($_[0]) eq 'SL::DB::RequirementSpec')                                         },
-    shop_orders              => sub { (ref($_[0]) eq 'SL::DB::ShopOrder')       &&  $_[0]->id                           },
-    sales_quotations         => sub { (ref($_[0]) eq 'SL::DB::Order')           &&  $_[0]->is_type('sales_quotation')   },
-    sales_orders             => sub { (ref($_[0]) eq 'SL::DB::Order')           &&  $_[0]->is_type('sales_order')       },
-    sales_delivery_orders    => sub { (ref($_[0]) eq 'SL::DB::DeliveryOrder')   &&  $_[0]->is_sales                     },
-    sales_invoices           => sub { (ref($_[0]) eq 'SL::DB::Invoice')         &&  $_[0]->invoice                      },
-    ar_transactions          => sub { (ref($_[0]) eq 'SL::DB::Invoice')         && !$_[0]->invoice                      },
-    purchase_quotations      => sub { (ref($_[0]) eq 'SL::DB::Order')           &&  $_[0]->is_type('request_quotation') },
-    purchase_orders          => sub { (ref($_[0]) eq 'SL::DB::Order')           &&  $_[0]->is_type('purchase_order')    },
-    purchase_delivery_orders => sub { (ref($_[0]) eq 'SL::DB::DeliveryOrder')   && !$_[0]->is_sales                     },
-    purchase_invoices        => sub { (ref($_[0]) eq 'SL::DB::PurchaseInvoice') &&  $_[0]->invoice                      },
-    ap_transactions          => sub { (ref($_[0]) eq 'SL::DB::PurchaseInvoice') && !$_[0]->invoice                      },
-    sepa_collections         => sub { (ref($_[0]) eq 'SL::DB::SepaExportItem')  &&  $_[0]->ar_id                        },
-    sepa_transfers           => sub { (ref($_[0]) eq 'SL::DB::SepaExportItem')  &&  $_[0]->ap_id                        },
-    gl_transactions          => sub { (ref($_[0]) eq 'SL::DB::GLTransaction')                                           },
-    bank_transactions        => sub { (ref($_[0]) eq 'SL::DB::BankTransaction') &&  $_[0]->id                           },
-    letters                  => sub { (ref($_[0]) eq 'SL::DB::Letter')          &&  $_[0]->id                           },
+    requirement_spec            => sub { (ref($_[0]) eq 'SL::DB::RequirementSpec')                                         },
+    shop_order                  => sub { (ref($_[0]) eq 'SL::DB::ShopOrder')       &&  $_[0]->id                           },
+    sales_quotation             => sub { (ref($_[0]) eq 'SL::DB::Order')           &&  $_[0]->is_type('sales_quotation')   },
+    sales_order_intake          => sub { (ref($_[0]) eq 'SL::DB::Order')           &&  $_[0]->is_type('sales_order_intake') },
+    sales_order                 => sub { (ref($_[0]) eq 'SL::DB::Order')           &&  $_[0]->is_type('sales_order')       },
+    sales_delivery_order        => sub { (ref($_[0]) eq 'SL::DB::DeliveryOrder')   &&  $_[0]->is_type('sales_delivery_order') },
+    rma_delivery_order          => sub { (ref($_[0]) eq 'SL::DB::DeliveryOrder')   &&  $_[0]->is_type('rma_delivery_order')   },
+    sales_reclamation           => sub { (ref($_[0]) eq 'SL::DB::Reclamation')     &&  $_[0]->is_type('sales_reclamation') },
+    sales_invoice               => sub { (ref($_[0]) eq 'SL::DB::Invoice')         &&  $_[0]->invoice                      },
+    ar_transaction              => sub { (ref($_[0]) eq 'SL::DB::Invoice')         && !$_[0]->invoice                      },
+    request_quotation           => sub { (ref($_[0]) eq 'SL::DB::Order')           &&  $_[0]->is_type('request_quotation') },
+    purchase_quotation_intake   => sub { (ref($_[0]) eq 'SL::DB::Order')           &&  $_[0]->is_type('purchase_quotation_intake') },
+    purchase_order              => sub { (ref($_[0]) eq 'SL::DB::Order')           &&  $_[0]->is_type('purchase_order')    },
+    purchase_order_confirmation => sub { (ref($_[0]) eq 'SL::DB::Order')           &&  $_[0]->is_type('purchase_order_confirmation')   },
+    purchase_delivery_order     => sub { (ref($_[0]) eq 'SL::DB::DeliveryOrder')   &&  $_[0]->is_type('purchase_delivery_order') },
+    supplier_delivery_order     => sub { (ref($_[0]) eq 'SL::DB::DeliveryOrder')   &&  $_[0]->is_type('supplier_delivery_order') },
+    purchase_reclamation        => sub { (ref($_[0]) eq 'SL::DB::Reclamation')     &&  $_[0]->is_type('purchase_reclamation')},
+    purchase_invoice            => sub { (ref($_[0]) eq 'SL::DB::PurchaseInvoice') &&  $_[0]->invoice                      },
+    ap_transaction              => sub { (ref($_[0]) eq 'SL::DB::PurchaseInvoice') && !$_[0]->invoice                      },
+    sepa_collection             => sub { (ref($_[0]) eq 'SL::DB::SepaExportItem')  &&  $_[0]->ar_id                        },
+    sepa_transfer               => sub { (ref($_[0]) eq 'SL::DB::SepaExportItem')  &&  $_[0]->ap_id                        },
+    gl_transaction              => sub { (ref($_[0]) eq 'SL::DB::GLTransaction')                                           },
+    bank_transaction            => sub { (ref($_[0]) eq 'SL::DB::BankTransaction') &&  $_[0]->id                           },
+    letter                      => sub { (ref($_[0]) eq 'SL::DB::Letter')          &&  $_[0]->id                           },
+    email_journal               => sub { (ref($_[0]) eq 'SL::DB::EmailJournal')    &&  $_[0]->id                           },
+    dunning                     => sub { (ref($_[0]) eq 'SL::DB::Dunning')                                                 },
+    gl_transaction_template     => sub { (ref($_[0]) eq 'SL::DB::RecordTemplate')  &&  $_[0]->template_type eq 'gl_transaction' },
+    ar_transaction_template     => sub { (ref($_[0]) eq 'SL::DB::RecordTemplate')  &&  $_[0]->template_type eq 'ar_transaction' },
+    ap_transaction_template     => sub { (ref($_[0]) eq 'SL::DB::RecordTemplate')  &&  $_[0]->template_type eq 'ap_transaction' },
   );
 
   my %groups;
@@ -214,339 +797,6 @@ sub _sort_grouped_lists {
   return %groups;
 }
 
-sub _requirement_spec_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('Requirement specs'),
-    type    => 'requirement_spec',
-    columns => [
-      [ $::locale->text('Requirement spec number'), sub { $self->requirement_spec($_[0], display => 'table-cell') } ],
-      [ $::locale->text('Customer'),                'customer'                                                      ],
-      [ $::locale->text('Title'),                   'title'                                                         ],
-      [ $::locale->text('Project'),                 'project',                                                      ],
-      [ $::locale->text('Status'),                  sub { $_[0]->status->description }                              ],
-    ],
-    %params,
-  );
-}
-
-sub _shop_order_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('Shop Orders'),
-    type    => 'shop_order',
-    columns => [
-      [ $::locale->text('Shop Order Date'),         sub { $_[0]->order_date->to_kivitendo }                         ],
-      [ $::locale->text('Shop Order Number'),       sub { $self->shop_order($_[0], display => 'table-cell') }       ],
-      [ $::locale->text('Transfer Date'),           'transfer_date'                                                 ],
-      [ $::locale->text('Amount'),                  'amount'                                                        ],
-    ],
-    %params,
-  );
-}
-
-sub _sales_quotation_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('Sales Quotations'),
-    type    => 'sales_quotation',
-    columns => [
-      [ $::locale->text('Quotation Date'),          'transdate'                                                                ],
-      [ $::locale->text('Quotation Number'),        sub { $self->sales_quotation($_[0], display => 'table-cell') }   ],
-      [ $::locale->text('Customer'),                'customer'                                                                 ],
-      [ $::locale->text('Net amount'),              'netamount'                                                                ],
-      [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
-      [ $::locale->text('Project'),                 'globalproject', ],
-      [ $::locale->text('Closed'),                  'closed'                                                                   ],
-    ],
-    %params,
-  );
-}
-
-sub _request_quotation_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('Request Quotations'),
-    type    => 'request_quotation',
-    columns => [
-      [ $::locale->text('Quotation Date'),          'transdate'                                                                ],
-      [ $::locale->text('Quotation Number'),        sub { $self->request_quotation($_[0], display => 'table-cell') }   ],
-      [ $::locale->text('Vendor'),                  'vendor'                                                                   ],
-      [ $::locale->text('Net amount'),              'netamount'                                                                ],
-      [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
-      [ $::locale->text('Project'),                 'globalproject', ],
-      [ $::locale->text('Closed'),                  'closed'                                                                   ],
-    ],
-    %params,
-  );
-}
-
-sub _sales_order_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('Sales Orders'),
-    type    => 'sales_order',
-    columns => [
-      [ $::locale->text('Order Date'),              'transdate'                                                                ],
-      [ $::locale->text('Order Number'),            sub { $self->sales_order($_[0], display => 'table-cell') }   ],
-      [ $::locale->text('Quotation'),               'quonumber' ],
-      [ $::locale->text('Customer'),                'customer'                                                                 ],
-      [ $::locale->text('Net amount'),              'netamount'                                                                ],
-      [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
-      [ $::locale->text('Project'),                 'globalproject', ],
-      [ $::locale->text('Closed'),                  'closed'                                                                   ],
-    ],
-    %params,
-  );
-}
-
-sub _purchase_order_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('Purchase Orders'),
-    type    => 'purchase_order',
-    columns => [
-      [ $::locale->text('Order Date'),              'transdate'                                                                ],
-      [ $::locale->text('Order Number'),            sub { $self->purchase_order($_[0], display => 'table-cell') }   ],
-      [ $::locale->text('Request for Quotation'),   'quonumber' ],
-      [ $::locale->text('Vendor'),                  'vendor'                                                                 ],
-      [ $::locale->text('Net amount'),              'netamount'                                                                ],
-      [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
-      [ $::locale->text('Project'),                 'globalproject', ],
-      [ $::locale->text('Closed'),                  'closed'                                                                   ],
-    ],
-    %params,
-  );
-}
-
-sub _sales_delivery_order_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('Sales Delivery Orders'),
-    type    => 'sales_delivery_order',
-    columns => [
-      [ $::locale->text('Delivery Order Date'),     'transdate'                                                                ],
-      [ $::locale->text('Delivery Order Number'),   sub { $self->sales_delivery_order($_[0], display => 'table-cell') } ],
-      [ $::locale->text('Order Number'),            'ordnumber' ],
-      [ $::locale->text('Customer'),                'customer'                                                                 ],
-      [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
-      [ $::locale->text('Project'),                 'globalproject', ],
-      [ $::locale->text('Delivered'),               'delivered'                                                                ],
-      [ $::locale->text('Closed'),                  'closed'                                                                   ],
-    ],
-    %params,
-  );
-}
-
-sub _purchase_delivery_order_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('Purchase Delivery Orders'),
-    type    => 'purchase_delivery_order',
-    columns => [
-      [ $::locale->text('Delivery Order Date'),     'transdate'                                                                ],
-      [ $::locale->text('Delivery Order Number'),   sub { $self->purchase_delivery_order($_[0], display => 'table-cell') } ],
-      [ $::locale->text('Order Number'),            'ordnumber' ],
-      [ $::locale->text('Vendor'),                  'vendor'                                                                 ],
-      [ $::locale->text('Transaction description'), 'transaction_description'                                                  ],
-      [ $::locale->text('Project'),                 'globalproject', ],
-      [ $::locale->text('Delivered'),               'delivered'                                                                ],
-      [ $::locale->text('Closed'),                  'closed'                                                                   ],
-    ],
-    %params,
-  );
-}
-
-sub _sales_invoice_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('Sales Invoices'),
-    type    => 'sales_invoice',
-    columns => [
-      [ $::locale->text('Invoice Date'),            'transdate'               ],
-      [ $::locale->text('Type'),                    sub { $_[0]->displayable_type } ],
-      [ $::locale->text('Invoice Number'),          sub { $self->sales_invoice($_[0], display => 'table-cell') } ],
-      [ $::locale->text('Quotation Number'),        'quonumber' ],
-      [ $::locale->text('Order Number'),            'ordnumber' ],
-      [ $::locale->text('Customer'),                'customer'                ],
-      [ $::locale->text('Net amount'),              'netamount'               ],
-      [ $::locale->text('Paid'),                    'paid'                    ],
-      [ $::locale->text('Transaction description'), 'transaction_description' ],
-    ],
-    %params,
-  );
-}
-
-sub _purchase_invoice_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('Purchase Invoices'),
-    type    => 'purchase_invoice',
-    columns => [
-      [ $::locale->text('Invoice Date'),                 'transdate'               ],
-      [ $::locale->text('Invoice Number'),               sub { $self->purchase_invoice($_[0], display => 'table-cell') } ],
-      [ $::locale->text('Request for Quotation Number'), 'quonumber' ],
-      [ $::locale->text('Order Number'),                 'ordnumber' ],
-      [ $::locale->text('Vendor'),                       'vendor'                 ],
-      [ $::locale->text('Net amount'),                   'netamount'               ],
-      [ $::locale->text('Paid'),                         'paid'                    ],
-      [ $::locale->text('Transaction description'),      'transaction_description' ],
-    ],
-    %params,
-  );
-}
-
-sub _ar_transaction_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('AR Transactions'),
-    type    => 'ar_transaction',
-    columns => [
-      [ $::locale->text('Invoice Date'),            'transdate'               ],
-      [ $::locale->text('Type'),                    sub { $_[0]->displayable_type } ],
-      [ $::locale->text('Invoice Number'),          sub { $self->ar_transaction($_[0], display => 'table-cell') } ],
-      [ $::locale->text('Customer'),                'customer'                ],
-      [ $::locale->text('Net amount'),              'netamount'               ],
-      [ $::locale->text('Paid'),                    'paid'                    ],
-      [ $::locale->text('Transaction description'), 'transaction_description' ],
-    ],
-    %params,
-  );
-}
-
-sub _ap_transaction_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('AP Transactions'),
-    type    => 'ap_transaction',
-    columns => [
-      [ $::locale->text('Invoice Date'),            'transdate'                      ],
-      [ $::locale->text('Invoice Number'),          sub { $self->ap_transaction($_[0 ], display => 'table-cell') } ],
-      [ $::locale->text('Vendor'),                  'vendor'                         ],
-      [ $::locale->text('Net amount'),              'netamount'                      ],
-      [ $::locale->text('Paid'),                    'paid'                           ],
-      [ $::locale->text('Transaction description'), 'transaction_description'        ],
-    ],
-    %params,
-  );
-}
-
-sub _gl_transaction_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('GL Transactions'),
-    type    => 'gl_transaction',
-    columns => [
-      [ $::locale->text('Transdate'),        'transdate'                                                    ],
-      [ $::locale->text('Reference'),   'reference'                                                    ],
-      [ $::locale->text('Description'), sub { $self->gl_transaction($_[0 ], display => 'table-cell') } ],
-    ],
-    %params,
-  );
-}
-
-sub _bank_transactions {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('Bank transactions'),
-    type    => 'bank_transactions',
-    columns => [
-      [ $::locale->text('Transdate'),            'transdate'                      ],
-      [ $::locale->text('Local Bank Code'),      sub { $self->bank_code($_[0]->local_bank_account) }  ],
-      [ $::locale->text('Local account number'), sub { $self->account_number($_[0]->local_bank_account) }  ],
-      [ $::locale->text('Remote Bank Code'),     'remote_bank_code' ],
-      [ $::locale->text('Remote account number'),'remote_account_number' ],
-      [ $::locale->text('Valutadate'),           'valutadate' ],
-      [ $::locale->text('Amount'),               'amount' ],
-      [ $::locale->text('Currency'),             sub { $_[0]->currency->name } ],
-      [ $::locale->text('Remote name'),          'remote_name' ],
-      [ $::locale->text('Purpose'),              'purpose' ],
-    ],
-    %params,
-  );
-}
-
-sub _sepa_export_list {
-  my ($self, $list, %params) = @_;
-
-  my ($source, $destination) = $params{type} eq 'sepa_transfer' ? qw(our vc)                                 : qw(vc our);
-  $params{title}             = $params{type} eq 'sepa_transfer' ? $::locale->text('Bank transfers via SEPA') : $::locale->text('Bank collections via SEPA');
-  $params{with_columns}      = [ grep { $_ ne 'record_link_direction' } @{ $params{with_columns} || [] } ];
-
-  delete $params{edit_record_links};
-
-  return $self->record_list(
-    $list,
-    columns => [
-      [ $::locale->text('Export Number'),    'sepa_export',                                  ],
-      [ $::locale->text('Execution date'),   'execution_date'                                ],
-      [ $::locale->text('Export date'),      sub { $_[0]->sepa_export->itime->to_kivitendo } ],
-      [ $::locale->text('Source BIC'),       "${source}_bic"                                 ],
-      [ $::locale->text('Source IBAN'),      "${source}_iban"                                ],
-      [ $::locale->text('Destination BIC'),  "${destination}_bic"                            ],
-      [ $::locale->text('Destination IBAN'), "${destination}_iban"                           ],
-      [ $::locale->text('Amount'),           'amount'                                        ],
-    ],
-    %params,
-  );
-}
-
-sub _sepa_transfer_list {
-  my ($self, $list, %params) = @_;
-  _sepa_export_list($self, $list, %params, type => 'sepa_transfer');
-}
-
-sub _sepa_collection_list {
-  my ($self, $list, %params) = @_;
-  _sepa_export_list($self, $list, %params, type => 'sepa_collection');
-}
-
-sub _letter_list {
-  my ($self, $list, %params) = @_;
-
-  return $self->record_list(
-    $list,
-    title   => $::locale->text('Letters'),
-    type    => 'letter',
-    columns => [
-      [ $::locale->text('Date'),         'date'                                                ],
-      [ $::locale->text('Letternumber'), sub { $self->letter($_[0], display => 'table-cell') } ],
-      [ $::locale->text('Customer'),     'customer'                                            ],
-      [ $::locale->text('Reference'),    'reference'                                           ],
-      [ $::locale->text('Subject'),      'subject'                                             ],
-    ],
-    %params,
-  );
-}
-
 1;
 
 __END__
@@ -568,6 +818,8 @@ sales/purchase/general ledger record Rose::DB objects
 
   # Give HTML representation:
   my $html = SL::Presenter->get->grouped_record_list($records);
+  # simple html version:
+  my $html = SL::Presenter->get->simple_grouped_record_list($records);
 
 =head1 OVERVIEW
 
@@ -587,13 +839,16 @@ Example:
   my $record = SL::DB::Manager::AccTransaction->get_first()->record;
   my $html   = SL::Presenter->get->record($record, display => 'inline');
 
-=item C<grouped_record_list $list, %params>
-
 =item C<empty_record_list>
 
 Returns a rendered version (actually an instance of
 L<SL::Presenter::EscapedText>) of an empty list of records. Is usually
 only called by L<grouped_record_list> if its list is empty.
+
+=item C<simple_grouped_record_list $list, %params>
+
+Generates a simple list of records. The order of the records is the
+same as in L<grouped_record_list>.
 
 =item C<grouped_record_list $list, %params>
 
@@ -615,6 +870,10 @@ The order in which the records are grouped is:
 
 =item * sales delivery orders
 
+=item * rma delivery orders
+
+=item * sales reclamation
+
 =item * sales invoices
 
 =item * AR transactions
@@ -624,6 +883,10 @@ The order in which the records are grouped is:
 =item * purchase orders
 
 =item * purchase delivery orders
+
+=item * supplier delivery orders
+
+=item * purchase reclamation
 
 =item * purchase invoices
 

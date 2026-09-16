@@ -63,10 +63,11 @@ sub action_confirm_price_update {
     return $self->action_search_update_prices;
   } else {
 
-    my $key = $::auth->create_unique_sesion_value(SL::JSON::to_json($self->filter));
+    my $key = $::auth->create_unique_session_value(SL::JSON::to_json($self->filter));
 
     $self->setup_confirm_price_update_action_bar;
     $self->render('ic/confirm_price_update',
+      title       => t8('Update Prices'),
       num_matches => $num_matches,
       filter_key  => $key,
     );
@@ -92,7 +93,7 @@ sub _create_filter_for_priceupdate {
   my @where_values;
   my $where = '1 = 1';
 
-  for my $item (qw(partnumber drawing microfiche make model pg.partsgroup description serialnumber)) {
+  for my $item (qw(partnumber drawing microfiche pg.partsgroup description serialnumber)) {
     my $column = $item;
     $column =~ s/.*\.//;
     next unless $filter->{$column};
@@ -130,10 +131,14 @@ sub _create_filter_for_priceupdate {
 
   }
 
-  for my $column (qw(make model)) {
-    next unless ($filter->{$column});
-    $where .= qq| AND p.id IN (SELECT DISTINCT parts_id FROM makemodel WHERE $column ILIKE ?|;
-    push @where_values, "%$filter->{$column}%";
+  if ($filter->{make}) {
+    $where .= qq| AND p.id IN (SELECT DISTINCT parts_id FROM makemodel WHERE make = ?) |;
+    push @where_values, $filter->{make};
+  }
+
+  if ($filter->{model}) {
+    $where .= qq| AND p.id IN (SELECT DISTINCT parts_id FROM makemodel WHERE model ILIKE ?) |;
+    push @where_values, "%$filter->{model}%";
   }
 
   return ($where, @where_values);
@@ -273,7 +278,7 @@ sub init_pricegroups_by_id {
 }
 
 sub check_rights {
-  $::auth->assert('part_service_assembly_edit');
+  $::auth->assert('part_service_assembly_edit & part_service_assembly_edit_prices');
 }
 
 sub init_filter {

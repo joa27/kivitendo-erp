@@ -88,13 +88,17 @@ sub calculate_invoice_dates {
 
   my $period_len = $self->get_billing_period_length;
   my $cur_date   = ($self->first_billing_date || $self->start_date)->clone;
-  my $end_date   = $self->terminated ? $self->end_date : undef;
+  my $end_date   = $self->terminated || !$self->extend_automatically_by ? $self->end_date : undef;
   $end_date    //= DateTime->today_local->add(years => 100);
   my $start_date = $params{past_dates} ? undef                              : $self->get_previous_billed_period_start_date;
   $start_date    = $start_date         ? $start_date->clone->add(days => 1) : $cur_date->clone;
 
   $start_date    = max($start_date, $params{start_date}) if $params{start_date};
   $end_date      = min($end_date,   $params{end_date})   if $params{end_date};
+
+  if ($self->periodicity eq 'o') {
+    return ($cur_date >= $start_date) && ($cur_date <= $end_date) ? ($cur_date) : ();
+  }
 
   my @dates;
 
@@ -136,8 +140,16 @@ sub disable_one_time_config {
   # A periodicity of one time was set. Deactivate this config now.
   if ($self->periodicity eq 'o') {
     _log_msg("setting inactive\n");
-    $self->active(0);
-    $self->save;
+    if (!$self->db->with_transaction(sub {
+      1;                          # make Emacs happy
+      $self->active(0);
+      $self->order->update_attributes(closed => 1);
+      $self->save;
+      1;
+    })) {
+      $::lxdebug->message(LXDebug->WARN(), "disalbe_one_time config failed: " . join("\n", (split(/\n/, $self->{db_obj}->db->error))[0..2]));
+      return undef;
+    }
     return $self->order->ordnumber;
   }
   return undef;
@@ -252,7 +264,9 @@ the last invoice in that particular order value cycle.
 =item C<sub disable_one_time_config>
 
 Sets the state of the periodic_invoices_configs to inactive
-(active => false) if the periodicity is <Co> (one time).
+(active => false) and closes the source order (closed => true)
+if the periodicity is <Co> (one time).
+
 Returns undef if the periodicity is not 'one time' otherwise the
 order number of the deactivated periodic order.
 

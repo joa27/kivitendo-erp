@@ -1,0 +1,181 @@
+namespace('kivi.CustomerVendorTurnover', function(ns) {
+
+  ns.show_dun_stat = function(period) {
+    if (period === 'y') {
+      var url = 'controller.pl?action=CustomerVendorTurnover/count_open_items_by_year&id=' + $('#cv_id').val();
+      $('#duns').load(url);
+    } else {
+      var url = 'controller.pl?action=CustomerVendorTurnover/count_open_items_by_month&id=' + $('#cv_id').val();
+      $('#duns').load(url);
+    }
+  };
+
+  ns.get_invoices = function() {
+    var url = 'controller.pl?action=CustomerVendorTurnover/get_invoices&id=' + $('#cv_id').val() + '&db=' + $('#db').val();
+    $('#invoices').load(url);
+  };
+
+  ns.get_sales_quotations = function() {
+    var url = 'controller.pl?action=CustomerVendorTurnover/get_orders&id=' + $('#cv_id').val() + '&db=' + $('#db').val() + '&type=quotation';
+    $('#quotations').load(url);
+  };
+
+  ns.get_orders = function() {
+    var url = 'controller.pl?action=CustomerVendorTurnover/get_orders&id=' + $('#cv_id').val() + '&db=' + $('#db').val() + '&type=order';
+    $('#orders').load(url);
+  };
+
+  ns.get_letters = function() {
+    var url = 'controller.pl?action=CustomerVendorTurnover/get_letters&id=' + $('#cv_id').val() + '&db=' + $('#db').val();;
+    $('#letters').load(url);
+  };
+
+  ns.get_mails = function() {
+    var url = 'controller.pl?action=CustomerVendorTurnover/get_mails&id=' + $('#cv_id').val() + '&db=' + $('#db').val();;
+    $('#mails').load(url);
+  };
+
+  ns.show_turnover = function(period, year_for_month) {
+    ns.show_turnover_chart(period, year_for_month);
+    ns.show_turnover_stat(period);
+  };
+
+  ns.show_turnover_stat = function(period) {
+    let mode = 'year';
+    if (period === 'm') mode = 'month';
+    const url = 'controller.pl?action=CustomerVendorTurnover/turnover&id=' + $('#cv_id').val() + '&db=' + $('#db').val() + '&mode=' + mode;
+    $('#turnovers').load(url);
+  };
+
+  ns.show_turnover_chart = function(period, year_for_month) {
+    let mode = "month";
+    if (period === 'y') {
+      mode    = "year";
+      year_for_month = undefined;
+    } else if (period === 'm') {
+      mode    = "month";
+    }
+
+    const data = { action: 'CustomerVendorTurnover/turnover.json',
+                   id:   $('#cv_id').val(),
+                   db:   $('#db').val(),
+                   mode: mode,
+                   year: year_for_month
+                 };
+    $.getJSON('controller.pl', data, function( returned_data ) {
+      const html = '<canvas id="turnovers_chart" height="70vH"></canvas>';
+      $('#turnovers_chart_container').html(html);
+      ns.draw_chart(returned_data);
+    });
+  };
+
+  ns.draw_chart = function(data) {
+    $(data).each(function(idx, elt) {
+      elt.date_part = '' + elt.date_part;
+    });
+
+    ns.chart(data);
+  };
+
+  ns.background_colors = function() { return [
+    'rgba(255, 0, 0, 0.2)',
+    'rgba(191, 0, 0, 0.2)',
+    'rgba(127, 0, 0, 0.2)',
+    'rgba(63, 0, 0, 0.2)',
+    'rgba(0, 255, 0, 0.2)',
+    'rgba(0, 191, 0, 0.2)',
+    'rgba(0, 127, 0, 0.2)',
+    'rgba(0, 63, 0, 0.2)',
+    'rgba(0, 0, 255, 0.2)',
+    'rgba(0, 0, 191, 0.2)',
+    'rgba(0, 0, 127, 0.2)',
+    'rgba(0, 0, 63, 0.2)'
+  ]};
+
+  ns.border_colors = function() { return [
+    'rgba(255, 0, 0, 1)',
+    'rgba(191, 0, 0, 1)',
+    'rgba(127, 0, 0, 1)',
+    'rgba(63, 0, 0, 1)',
+    'rgba(0, 255, 0, 1)',
+    'rgba(0, 191, 0, 1)',
+    'rgba(0, 127, 0, 1)',
+    'rgba(0, 63, 0, 1)',
+    'rgba(0, 0, 255, 1)',
+    'rgba(0, 0, 191, 1)',
+    'rgba(0, 0, 127, 1)',
+    'rgba(0, 0, 63, 1)'
+  ]};
+
+  ns.chart = function(data) {
+    const ctx = 'turnovers_chart';
+    const chart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        datasets: [{
+          label: kivi.t8('Net.Turnover'),
+          data: data,
+          backgroundColor: ns.background_colors,
+          borderColor: ns.border_colors,
+          borderWidth: 1
+        },
+        {
+          label: kivi.t8('Overall Net.Turnover'),
+          data: data,
+          type: 'line',
+          backgroundColor: 'black',
+        }]
+      },
+      options: {
+        scales: {
+          y: {
+            beginAtZero: true
+          }
+        },
+        parsing: {
+          xAxisKey: 'date_part',
+          yAxisKey: ['netamount', 'overall_netamount']
+        },
+        onClick: (e) => {
+          const canvasPosition = Chart.helpers.getRelativePosition(e, chart);
+
+          // Substitute the appropriate scale IDs
+          const dataX = chart.scales.x.getValueForPixel(canvasPosition.x);
+          const dataY = chart.scales.y.getValueForPixel(canvasPosition.y);
+
+          if ((data[dataX].date_part || "").match(/^\d{1,4}$/)) {
+            ns.show_turnover('m', data[dataX].date_part);
+          } else {
+            ns.show_turnover('y');
+          }
+        }
+      }
+    });
+  };
+
+  ns.cv_tabs_init = function () {
+    $("#customer_vendor_tabs").on('tabsbeforeactivate', function(event, ui){
+      if (ui.newPanel.attr('id') == 'quotations') {
+        ns.get_sales_quotations();
+      }
+      if (ui.newPanel.attr('id') == 'turnover_stat') {
+        ns.show_turnover("y");
+      }
+      return 1;
+    });
+
+    $("#customer_vendor_tabs").on('tabscreate', function(event, ui){
+      if (ui.panel.attr('id') == 'quotations') {
+        ns.get_sales_quotations();
+      }
+      if (ui.panel.attr('id') == 'turnover_stat') {
+        ns.show_turnover("y");
+      }
+      return 1;
+    });
+  };
+
+  $(function(){
+    ns.cv_tabs_init();
+  });
+});

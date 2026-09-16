@@ -65,10 +65,9 @@ sub redirect_to_search {
 
 sub redirect_to_object {
   SL::Controller::Base->new->url_for(
-    controller => 'oe.pl',
+    controller => 'Order',
     action     => 'edit',
     type       => $_[0]->type,
-    vc         => $_[0]->vc,
     id         => $_[1],
   );
 }

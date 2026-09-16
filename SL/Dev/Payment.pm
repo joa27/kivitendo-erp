@@ -70,7 +70,9 @@ sub create_bank_transaction {
  my $record = delete $params{record};
  die "bank_transactions can only be created for invoices" unless ref($record) eq 'SL::DB::Invoice' or ref($record) eq 'SL::DB::PurchaseInvoice';
 
- my $multiplier = $record->is_sales ? 1 : -1;
+ my $multiplier = $record->invoice_type =~ m/^purchase_invoice$|^ap_transaction$|^credit_note$/   ? -1
+                : $record->invoice_type =~ m/invoice|ar_transaction|^purchase_credit_note$/       ?  1
+                : die "invalid state";
  my $amount = (delete $params{amount} || $record->amount) * $multiplier;
 
  my $bank_chart;
@@ -82,6 +84,7 @@ sub create_bank_transaction {
    $bank_chart = SL::DB::Manager::Chart->find_by(description => 'Bank') or die "Can't find bank chart";
  }
  my $bank_account = SL::DB::Manager::BankAccount->find_by( chart_id => $bank_chart->id );
+ die "bank account missing" unless $bank_account;
 
  my $bt = SL::DB::BankTransaction->new(
    local_bank_account_id => $bank_account->id,

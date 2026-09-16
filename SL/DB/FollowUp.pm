@@ -13,6 +13,15 @@ __PACKAGE__->meta->add_relationships(
     class        => 'SL::DB::FollowUpLink',
     column_map   => { id => 'follow_up_id' },
   },
+  created_for_employees => {
+    type       => 'many to many',
+    map_class  => 'SL::DB::FollowUpCreatedForEmployee',
+  },
+  done => {
+    type       => 'one to one',
+    class      => 'SL::DB::FollowUpDone',
+    column_map => { id => 'follow_up_id' },
+  },
 );
 
 __PACKAGE__->meta->initialize;

@@ -1,0 +1,454 @@
+[%- USE T8 %]
+[%- USE HTML %]
+[%- USE LxERP %]
+[%- USE L %]
+[%- USE P %]
+
+[%- INCLUDE 'generic/set_longdescription.html' %]
+
+<div id="ui-tabs-basic-data">
+
+[% IF FORM.email_attachment_id || FORM.workflow_email_attachment_id%]
+  <div class="wrapper" id="email_attachment_wrapper">
+    [%
+      BLOCK panel_1;
+        P.email_journal.attachment_preview(
+             FORM.email_attachment_id || FORM.workflow_email_attachment_id,
+             style="height:600px"
+             );
+      END;
+      INCLUDE 'common/toggle_panel.html'
+        block_name='panel_1'
+        button_closed  = LxERP.t8('Show Attachment')
+        button_open    = LxERP.t8('Hide Attachment')
+        ;
+    %]
+  </div>
+[% END %]
+
+<div class="wrapper" id="wrapper-1">
+[% INCLUDE 'generic/toggle_wrapper.html' %]
+
+<div class="col">
+
+  <table class="tbl-horizontal col">
+    <caption>[% 'Customer & Order Information' | $T8 %]</caption>
+    <colgroup><col class="wi-mediumsmall"><col class="wi-lightwide"></colgroup>
+    <tbody>
+      <tr>
+        <th>[%- SELF.cv == "customer" ? LxERP.t8('Customer') : LxERP.t8('Vendor') -%]</th>
+        [% SET cv_id = SELF.cv _ '_id' %]
+        <td class="wi-lightwide">
+          [% P.customer_vendor.picker("reclamation.${SELF.cv}" _ '_id', SELF.reclamation.$cv_id, type=SELF.cv, show_details="1") %]
+        </td>
+      </tr>
+
+      <tr id='cp_row' [%- IF !SELF.cv_assigned_contacts.size %]style='display:none'[%- END %]>
+        <th>[% 'Contact Person' | $T8 %]</th>
+        <td>[% L.select_tag('reclamation.contact_id',
+                            SELF.cv_assigned_contacts,
+                            default=SELF.reclamation.contact_id,
+                            title_key='full_name_dep',
+                            value_key='cp_id',
+                            with_empty=1,
+                            class='wi-lightwide') %]</td>
+      </tr>
+
+      <tr>
+        <th>[% 'Shipping Address' | $T8 %]</th>
+        <td>
+          <span id='shipto_selection' [%- IF !SELF.reclamation.${SELF.cv}.shipto.size %] style='display:none'[%- END %] >
+            [% shiptos = [ { shipto_id => "", displayable_id => LxERP.t8("No/individual shipping address") } ] ;
+               FOREACH s = SELF.reclamation.${SELF.cv}.shipto ;
+                 shiptos.push(s) ;
+               END ;
+               L.select_tag('reclamation.shipto_id',
+                             shiptos,
+                             default=SELF.reclamation.shipto_id,
+                             title_key='displayable_id',
+                             value_key='shipto_id',
+                             with_empty=0,
+                             class='wi-lightwide') %]
+          </span>
+          [% L.button_tag("kivi.Reclamation.edit_custom_shipto()",
+                          LxERP.t8("Custom shipto"),
+                          class='button neutral below wi-lightwide') %]
+        </td>
+      </tr>
+
+      [%- IF SELF.cv == "customer" %]
+      <tr id="billing_address_row"[% IF !SELF.reclamation.customer.additional_billing_addresses.as_list.size %] style="display:none"[% END %]>
+        <th>[% 'Custom Billing Address' | $T8 %]</th>
+        <td>
+          [% L.select_tag('reclamation.billing_address_id',
+                           SELF.reclamation.customer.additional_billing_addresses,
+                           default=SELF.reclamation.billing_address_id,
+                           title_key='displayable_id',
+                           value_key='id',
+                           with_empty=1,
+                           class='wi-lightwide') %]
+        </td>
+      </tr>
+      [%- END %]
+
+      [%- PROCESS reclamation/tabs/basic_data/_business_info_row.html SELF=SELF %]
+
+      <tr>
+        <th>[% 'Tax rate' | $T8 %]</th>
+        <td>[% L.select_tag('reclamation.taxzone_id', SELF.all_taxzones, default=SELF.reclamation.taxzone_id, title_key='description', class='recalc wi-lightwide') %]</td>
+      </tr>
+
+      [% SET currency_id = SELF.reclamation.currency_id || INSTANCE_CONF.get_currency_id  # use default currency for new reclamation %]
+      [% SET show_exchangerate = (SELF.reclamation.currency_id != INSTANCE_CONF.get_currency_id) %]
+      <tr id="currency_settings">
+        <th>[% 'Currency' | $T8 %]</th>
+        <td>[% L.select_tag('reclamation.currency_id', SELF.all_currencies, default=currency_id, value_key='id', title_key='name') %]</td>
+      </tr>
+      <tr id="exchangerate_settings" [%- IF !show_exchangerate %]style='display:none'[%- END %]>
+        <th>[% 'Exchangerate' | $T8 %]</th>
+        <td> 1 <span id="currency_name">[% SELF.reclamation.currency.name %]</span> =
+          [% L.input_tag('reclamation.exchangerate_as_null_number', SELF.reclamation.exchangerate_as_null_number, 'data-validate'=show_exchangerate ? 'required' : '', size="15", class="reformat_number_as_null_number numeric") %]
+          [% INSTANCE_CONF.default_currency %]
+          [% L.hidden_tag('old_currency_id', currency_id) %]
+          [% L.hidden_tag('old_exchangerate', SELF.reclamation.exchangerate_as_null_number) %]
+        </td>
+      </tr>
+
+[%- IF SELF.all_languages.size %]
+      <tr>
+        <th>[% 'Language' | $T8 %]</th>
+        <td>
+          [% L.select_tag('reclamation.language_id', SELF.all_languages, default=SELF.reclamation.language_id, title_key='description', with_empty=1, style='wi-lightwide') %]
+        </td>
+      </tr>
+[%- END %]
+
+[%- IF SELF.all_departments.size %]
+      <tr>
+        <th>[% 'Department' | $T8 %]</th>
+        <td>
+          [% L.select_tag('reclamation.department_id', SELF.all_departments, default=SELF.reclamation.department_id, title_key='description', with_empty=1, class='wi-lightwide') %]
+        </td>
+      </tr>
+[%- END %]
+
+      <tr>
+        <th>[% 'Shipping Point' | $T8 %]</th>
+        <td>[% L.input_tag('reclamation.shippingpoint', SELF.reclamation.shippingpoint, class='wi-lightwide') %]</td>
+      </tr>
+
+      <tr>
+        <th>[% 'Ship via' | $T8 %]</th>
+        <td>[% L.input_tag('reclamation.shipvia', SELF.reclamation.shipvia, class='wi-lightwide') %]</td>
+      </tr>
+
+      <tr>
+        <th>[% 'Transaction description' | $T8 %]</th>
+        <td>[% L.input_tag('reclamation.transaction_description', SELF.reclamation.transaction_description, 'data-validate'=INSTANCE_CONF.get_require_transaction_description_ps ? 'required' : '', class='wi-lightwide') %]</td>
+      </tr>
+
+      <tr>
+        <th>[% 'Project Number' | $T8 %]</th>
+        <td>[% P.project.picker('reclamation.globalproject_id', SELF.reclamation.globalproject_id, class='wi-lightwide') %]</td>
+      </tr>
+
+    </tbody>
+  </table>
+
+  <table class="tbl-horizontal col">
+    <caption>[% 'Terms' | $T8 %]</caption>
+    <colgroup><col class="wi-mediumsmall"><col class="wi-lightwide"></colgroup>
+    <tbody>
+      <tr>
+        <td colspan="2">
+          <span class="label above">[% 'Payment Terms' | $T8 %]</span>
+          [% L.select_tag('reclamation.payment_id',
+                            SELF.all_payment_terms,
+                            default = SELF.reclamation.payment_id,
+                            with_empty = 1,
+                            title_key = 'description',
+                            class = 'wi-mediumsmall-lightwide') %]
+        </td>
+      </tr>
+      <tr>
+        <td colspan="2">
+          <span class="label above">[% 'Delivery Terms' | $T8 %]</span>
+          [% L.select_tag('reclamation.delivery_term_id',
+                            SELF.all_delivery_terms,
+                            default = SELF.reclamation.delivery_term_id,
+                            with_empty = 1,
+                            title_key = 'description',
+                            class = 'wi-mediumsmall-lightwide') %]
+        </td>
+      </tr>
+
+      <tr id="taxincluded_row_id" [%- IF !SELF.taxes.size %]class="hidden"[% END %]>
+        <th><label for="reclamation.taxincluded">[% 'Tax Included' | $T8 %]</label></th>
+        <td>[% L.yes_no_tag('reclamation.taxincluded', SELF.reclamation.taxincluded, class='recalc') %]</td>
+      </tr>
+
+    </tbody>
+  </table>
+
+</div><!-- /.col -->
+
+<table class="tbl-horizontal col">
+  <caption>[% 'Notes' | $T8 %]</caption>
+  <colgroup><col class="wi-wide"></colgroup>
+  <tbody>
+    <tr>
+      <td class="wi-wide">
+        [% L.textarea_tag('reclamation.notes', SELF.reclamation.notes, style="width: 350px; height: 150px", class="texteditor wi-wide") %]
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <span class="label above">[% 'Internal Notes' | $T8 %]</span>
+        [% L.textarea_tag('reclamation.intnotes', SELF.reclamation.intnotes, class="wi-wide") %]
+      </td>
+    </tr>
+
+  </tbody>
+</table>
+
+<table class="tbl-horizontal col">
+  <caption>[% 'Handling, Numbers & Dates' | $T8 %]</caption>
+  <colgroup> <col class="wi-mediumsmall"><col class="wi-normal"> </colgroup>
+  <tbody>
+
+    [%- IF SELF.reclamation.id %]
+    <tr>
+      <th>
+        <label for="reclamation.delivered">[% 'Delivery Order(s) for full qty created' | $T8 %]</label>
+      </th>
+      <td>
+          [% L.yes_no_tag('reclamation.delivered', SELF.reclamation.delivered, class="wi-normal") %]
+      </td>
+    </tr>
+    <tr>
+      <th>
+        <label for="reclamation.closed">[% 'Closed' | $T8 %]</label>
+      </th>
+      <td>
+        [% L.yes_no_tag('reclamation.closed', SELF.reclamation.closed, class="wi-normal") %]
+      </td>
+    </tr>
+    [%- END %]
+
+    <tr>
+      <th>[% 'Employee' | $T8 %]</th>
+      <td>[% L.select_tag('reclamation.employee_id',
+        SELF.all_employees,
+        default=(SELF.reclamation.employee_id ? SELF.reclamation.employee_id : SELF.current_employee_id),
+        title_key='safe_name',
+        class='wi-normal',
+        ) %]</td>
+    </tr>
+
+    [% IF SELF.cv == 'customer' %]
+    <tr>
+      <th>[% 'Salesman' | $T8 %]</th>
+      <td>[% L.select_tag('reclamation.salesman_id',
+        SELF.all_salesmen,
+        default=(SELF.reclamation.salesman_id ? SELF.reclamation.salesman_id : SELF.current_employee_id),
+        title_key='safe_name',
+        class='wi-normal',
+        ) %]</td>
+    </tr>
+    [% END %]
+
+    <tr>
+      <th>[% 'Reclamation Number' | $T8 %]</th>
+      <td>[% L.input_tag('reclamation.record_number', SELF.reclamation.record_number, class='wi-normal') %]</td>
+    </tr>
+
+    <tr>
+      <th>[% 'Customer Record Number' | $T8 %]</th>
+      <td>[% L.input_tag('reclamation.cv_record_number', SELF.reclamation.cv_record_number, class='wi-normal') %]</td>
+    </tr>
+
+    <tr>
+      <th>[% 'Reclamation Date' | $T8 %]</th>
+      <td>[% L.date_tag('reclamation.transdate_as_date', SELF.reclamation.transdate_as_date, class='wi-date') %]</td>
+    </tr>
+
+    <tr>
+      <th>
+        [% 'Invoicing Date or Period' | $T8 %]
+        [% P.context_help_tag(LxERP.t8('To specify an invoicing date, only set the period end date. To specify an invoicing period, set both dates. The date or period is exported to ZUGFeRD invoices.')) %]
+      </th>
+      <td>
+        [% L.date_tag('reclamation.tax_point_start_as_date', SELF.reclamation.tax_point_start_as_date, class='wi-date recalc',
+                      placeholder=LxERP.t8('From'), title=LxERP.t8('Invoicing period start')) %]–
+        [% L.date_tag('reclamation.tax_point_as_date', SELF.reclamation.tax_point_as_date, class='wi-date recalc',
+                      placeholder=LxERP.t8('Until'), title=LxERP.t8('Invoicing period end')) %]
+      </td>
+    </tr>
+
+    <tr>
+      <th>[% 'Deadline' | $T8 %]</th>
+      <td>[% L.date_tag('reclamation.reqdate_as_date', SELF.reclamation.reqdate_as_date, class='recalc wi-date') %]</td>
+    </tr>
+
+    <tr>
+      <th>[% 'Insert Date' | $T8 %]</th>
+      <td><span class="data wi-normal">[% SELF.reclamation.itime_as_date %]</span></td>
+    </tr>
+
+  </tbody>
+</table>
+
+</div><!-- /.wrapper -->
+
+
+  [%- PROCESS reclamation/tabs/basic_data/_item_input.html SELF=SELF %]
+
+[%- IF SELF.positions_scrollbar_height -%]
+  [%- SET scroll_style = 'style="overflow-y: auto; height:' _ SELF.positions_scrollbar_height _ 'vh;"' -%]
+[%- ELSE -%]
+  [%- SET scroll_style = '' -%]
+[%- END -%]
+<div id="row_table_scroll_id" class="wrapper horizontal-scroll-wrapper" [%- scroll_style -%]>
+
+  <table id="row_table_id" class="tbl-list">
+    <caption>[% 'Articles' | $T8 %]</caption>
+    <thead>
+      <tr>
+        <th class="center">
+          [%- IF MYCONFIG.show_form_details %]
+            [%- L.img_tag(src="image/collapse.svg", alt=LxERP.t8('Hide all details'), title=LxERP.t8('Hide all details'), id='expand_all', class='row-icon', "data-expanded"="1") %]
+          [%- ELSE %]
+            [%- L.img_tag(src="image/expand.svg", alt=LxERP.t8('Show all details'), title=LxERP.t8('Show all details'), id='expand_all', class='row-icon') %]
+          [%- END %]
+        </th>
+          <th>
+            [% L.checkbox_tag("select_all_multi_id", checked=0, alt=LxERP.t8('Select/Deselect all'), title=LxERP.t8('Select/Deselect all'), id='select_all') %]
+          </th>
+        <th>[% 'position' | $T8 %] </th>
+        <th style='text-align:center'><img src="image/updown.png" alt="[%- LxERP.t8('reorder item') %]"></th>
+        <th style='text-align:center'><img src="image/close.png" alt="[%- LxERP.t8('delete item') %]" class="close"></th>
+        [%- IF SELF.show_update_button -%]
+        <th style='text-align:center'>
+          [%- L.img_tag(src="image/rotate_cw.svg",
+                        alt=LxERP.t8('Update from master data'),
+                        title= LxERP.t8('Update from master data'),
+                        onclick="if (!confirm('" _ LxERP.t8("Are you sure to update all positions from master data?") _ "')) return false; kivi.Reclamation.update_all_rows_from_master_data();",
+                        id='update_from_master',
+                        class='row-icon') %]
+        </th>
+        [%- END %]
+        <th id="partnumber_header_id"><a href='#' onClick='javascript:kivi.Reclamation.reorder_items("partnumber")'> [%- 'Partnumber'  | $T8 %]</a></th>
+        [%- IF SELF.search_cvpartnumber -%]
+        <th id="cvpartnumber_header_id"><a href='#' onClick='javascript:kivi.Reclamation.reorder_items("cvpartnumber")' > [%- SELF.cv == "customer" ? LxERP.t8('Customer Part Number') : LxERP.t8('Model') %]</a></th>
+        [%- END -%]
+        <th id="partclass_header_id">[%- 'Type'  | $T8 %]</th>
+        <th id="description_header_id"><a href='#' onClick='javascript:kivi.Reclamation.reorder_items("description")'>[%- 'Description' | $T8 %]</a></th>
+        <th id="reason_header_id"><a href='#' onClick='javascript:kivi.Reclamation.reorder_items("reason")'>[%- 'Reason' | $T8 %]</a></th>
+        <th id="reason_description_ext_header_id"><a href='#' onClick='javascript:kivi.Reclamation.reorder_items("reason_description_ext")'>[%- 'Reason Description Extern' | $T8 %]</a></th>
+        <th id="reason_description_int_header_id"><a href='#' onClick='javascript:kivi.Reclamation.reorder_items("reason_description_int")'>[%- 'Reason Description Intern' | $T8 %]</a></th>
+        <th id="qty_header_id"><a href='#' onClick='javascript:kivi.Reclamation.reorder_items("qty")'>        [%- 'Qty' | $T8 %]</a></th>
+        <th class="listheading">[%- 'Price Factor' | $T8 %] </th>
+        <th class="listheading">[%- 'Unit'         | $T8 %] </th>
+        <th class="listheading">[%- 'Price Source' | $T8 %] </th>
+        <th id="sellprice_header_id"><a href='#' onClick='javascript:kivi.Reclamation.reorder_items("sellprice")'> [%- 'Price' | $T8 %]</a></th>
+        <th id="discount_header_id"><a href='#' onClick='javascript:kivi.Reclamation.reorder_items("discount")'>  [%- 'Discount'    | $T8 %]</a></th>
+        <th>[%- 'Extended' | $T8 %] </th>
+      </tr>
+      <tr>
+        <th></th>
+        <th class="center">
+          [%- L.button_tag('kivi.Reclamation.toggle_selected_rows();', "🔄",
+                           title=LxERP.t8("Toggle selection"),
+                           alt=LxERP.t8("Toggle selection"),
+                           ) %]
+        </th>
+        <th colspan="2"></th>
+        <th class="center">
+          [%- L.button_tag('kivi.Reclamation.delete_selected_rows();', LxERP.t8("X"),
+                           title=LxERP.t8("Delete selected rows"),
+                           alt=LxERP.t8("Delete selected rows"),
+                           ) %]
+        </th>
+        [%- IF SELF.show_update_button -%]
+        <th></th>
+        [%- END -%]
+        <th colspan="3"></th>
+        <th>
+          [% L.select_tag("reason_id_for_selected",
+                          SELF.reclamation.valid_reclamation_reasons,
+                          title_key = 'name',
+                          value_key = 'id',
+                          with_empty=1,
+                          class="wi-small",
+                          ) %]
+          [%- L.button_tag(
+                'kivi.Reclamation.set_selected_to_value("reason_id")',
+                "↓",
+                alt=LxERP.t8('Apply to selected rows'),
+                title=LxERP.t8('Apply to selected rows'),
+          ) %]
+        </th>
+        <th>
+          [% L.areainput_tag("reason_description_ext_for_selected",
+                             "",
+                             size='40',
+                             class="wi-mediumsmall",
+                             ) %]
+          [%- L.button_tag(
+                'kivi.Reclamation.set_selected_to_value("reason_description_ext")',
+                "↓",
+                alt=LxERP.t8('Apply to selected rows'),
+                title=LxERP.t8('Apply to selected rows'),
+          ) %]
+        </th>
+        <th>
+          [% L.areainput_tag("reason_description_int_for_selected",
+                             "",
+                             size='40',
+                             class="wi-mediumsmall",
+                             ) %]
+          [%- L.button_tag(
+                'kivi.Reclamation.set_selected_to_value("reason_description_int")',
+                "↓",
+                alt=LxERP.t8('Apply to selected rows'),
+                title=LxERP.t8('Apply to selected rows'),
+          ) %]
+        </th>
+        <th colspan="[% (SELF.search_cvpartnumber ? 8 : 7) %]"></th>
+      </tr>
+    </thead>
+
+    [%- FOREACH item = SELF.reclamation.items_sorted %]
+      [%- PROCESS reclamation/tabs/basic_data/_row.html ITEM=item ID=(item.id||item.new_fake_id) -%]
+    [%- END %]
+
+    <tfoot>
+      <tr id="subtotal_row_id">
+        <td colspan="[% (SELF.search_cvpartnumber ? 15 : 14) %]"></td>
+        [%- IF SELF.show_update_button -%]
+        <td></td>
+        [%- END -%]
+        <th colspan="3">[% IF !SELF.reclamation.taxincluded %][%- 'Subtotal' | $T8 %][% END %]</th>
+        <td class="numeric">[% IF !SELF.reclamation.taxincluded %][%- L.div_tag(SELF.reclamation.netamount_as_number, id='netamount_id') %][% END %]</td>
+      </tr>
+      [%- FOREACH tax = SELF.reclamation.taxes %]
+        [%- PROCESS reclamation/tabs/basic_data/_tax_row.html TAX=tax TAXINCLUDED=SELF.reclamation.taxincluded %]
+      [%- END %]
+      <tr id="amount_row_id">
+        <td colspan="[% (SELF.search_cvpartnumber ? 15 : 14) %]"></td>
+        [%- IF SELF.show_update_button -%]
+        <td></td>
+        [%- END -%]
+        <th colspan="3">[%- 'Total' | $T8 %]</th>
+        <td class="numeric">
+          [%- L.div_tag(SELF.reclamation.amount_as_number, id='amount_id') %]
+        </td>
+      </tr>
+    </tfoot>
+
+  </table>
+</div><!-- /#row_table_scroll_id /.wrapper -->
+
+</div><!-- /#ui-tabs-basic-data -->
+
+[% L.sortable_element('#row_table_id') %]

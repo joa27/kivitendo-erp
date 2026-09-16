@@ -7,6 +7,8 @@ use Clone qw(clone);
 use SL::DB::PartsPriceHistory;
 use SL::Controller::Helper::ParseFilter;
 use SL::Controller::Helper::ReportGenerator;
+use SL::Presenter::CustomerVendor qw();
+use SL::Presenter::Invoice qw();
 
 sub action_list {
   my ($self) = @_;
@@ -51,8 +53,9 @@ sub setup_for_list {
 
   my %args = (
     parse_filter($self->{filter}),
-    sort_by => $self->set_sort_params(%params),
-    page    => $params{page},
+    sort_by      => $self->set_sort_params(%params),
+    page         => $params{page},
+    with_objects => ['vendor', 'ap'],
   );
 
   return \%args;
@@ -70,10 +73,15 @@ sub column_defs {
   my ($self) = @_;
 
   return {
-    valid_from => { text => $::locale->text('Date'),       sub => sub { $_[0]->valid_from_as_timestamp }},
-    lastcost   => { text => $::locale->text('Lastcost'),   sub => sub { $_[0]->lastcost_as_number }},
-    listprice  => { text => $::locale->text('List Price'), sub => sub { $_[0]->listprice_as_number }},
-    sellprice  => { text => $::locale->text('Sell Price'), sub => sub { $_[0]->sellprice_as_number }},
+    valid_from   => { text => $::locale->text('Date'),         sub => sub { $_[0]->valid_from_as_timestamp }},
+    lastcost     => { text => $::locale->text('Lastcost'),     sub => sub { $_[0]->lastcost_as_number }},
+    listprice    => { text => $::locale->text('List Price'),   sub => sub { $_[0]->listprice_as_number }},
+    sellprice    => { text => $::locale->text('Sell Price'),   sub => sub { $_[0]->sellprice_as_number }},
+    price_factor => { text => $::locale->text('Price Factor'), sub => sub { $_[0]->price_factor_as_number }},
+    vendor       => { text => $::locale->text('Vendor'),
+                      raw_data => sub { $_[0]->vendor ? SL::Presenter::CustomerVendor::vendor($_[0]->vendor, display => 'table-cell') : undef }},
+    ap           => { text => $::locale->text('Purchase Invoice'),
+                      raw_data => sub { $_[0]->ap ? SL::Presenter::Invoice::purchase_invoice($_[0]->ap, display => 'table-cell') : undef }},
   };
 }
 
@@ -86,7 +94,7 @@ sub prepare_report {
 
   my $title       = $::locale->text('Price history for master data');
 
-  my @columns     = qw(valid_from lastcost listprice sellprice);
+  my @columns     = qw(valid_from lastcost listprice sellprice price_factor vendor ap);
 
   my $column_defs = $self->column_defs;
 

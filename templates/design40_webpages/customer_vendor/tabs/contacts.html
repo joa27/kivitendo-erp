@@ -1,0 +1,33 @@
+[% USE T8 %]
+[% USE HTML %]
+[% USE LxERP %]
+[% USE L %]
+[% USE P %]
+
+<div id="contacts">
+
+<div class="wrapper">
+
+<table class="tbl-list">
+  <thead>
+    <tr>
+      <th colspan="10">[% 'Linked Contacts' | $T8 %]</th>
+      <th>[% 'Main Contact Person' | $T8 %]</th>
+    </tr>
+  </thead>
+  <tbody>
+    [% FOREACH contact = SELF.cv.contacts %]
+      [% SET main = 0 %][% FOREACH cc = SELF.cv.customer_contacts %][% IF cc.contact_id == contact.cp_id %][% SET main = cc.main %][% END %][% END %]
+      [% PROCESS 'contact/_contact_row.html', cv=customer, callback=SELF.url_for(controller='CustomerVendor', action='edit', id=SELF.cv.id, db=FORM.db), main=main %]
+    [% END %]
+    <tr id="add_contact_row">
+      <td colspan="2">[% 'Insert new' | $T8 %]:</td>
+      <td colspan="9">
+        [% P.contact.picker('add_contact_id', '', action = { commit_one = "kivi.Contact.on_add_contact" }, class="add_contact_input wi-wide") %]
+      </td>
+    </tr>
+</table>
+
+</div><!-- /.wrapper -->
+
+</div><!-- /#contacts -->

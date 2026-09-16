@@ -25,7 +25,7 @@ my @images;
 for my $filename (sort @files) {
    my $image = `$identify_bin $filename`;
    if (!defined $image) {
-     warn "warning: could not identify image '$filename'. skpping...";
+     warn "warning: could not identify image '$filename'. skipping...";
      next;
    }
   $image =~ /^(?<filename>\S+) \s (?<type>\S+) \s (?<width>\d+) x (?<height>\d+)/x;
@@ -102,9 +102,10 @@ image_maps - generates image maps for css sprites from images in a directory
 
 =head1 SYNOPSIS
 
-  scripts/image_maps.pl \
-    --out-css=css/icons_16.css \
-    --out-image= image/maps/icons_16.png \
+  cd public
+  ../scripts/image_maps.pl \
+    --css-out=css/icons_16.css \
+    --image-out=image/maps/icons_16.png \
     image/icons/16x16/*
 
 =head1 DESCRIPTION

@@ -19,23 +19,35 @@ sub do_scoping {
   SL::DB::Manager::DeliveryOrder->type_filter($_[0]);
 }
 
+sub rec_scoping {
+  SL::DB::Manager::Reclamation->type_filter($_[0]);
+}
+
 sub parts_scoping {
  # SL::DB::Manager::Part->type_filter($_[0]);
 }
 
-my %specs = ( ar                      => { number_column => 'invnumber',                                                                           },
-              sales_quotation         => { number_column => 'quonumber',      number_range_column => 'sqnumber',       scoping => \&oe_scoping,    },
-              sales_order             => { number_column => 'ordnumber',      number_range_column => 'sonumber',       scoping => \&oe_scoping,    },
-              request_quotation       => { number_column => 'quonumber',      number_range_column => 'rfqnumber',      scoping => \&oe_scoping,    },
-              purchase_order          => { number_column => 'ordnumber',      number_range_column => 'ponumber',       scoping => \&oe_scoping,    },
-              sales_delivery_order    => { number_column => 'donumber',       number_range_column => 'sdonumber',      scoping => \&do_scoping,    },
-              purchase_delivery_order => { number_column => 'donumber',       number_range_column => 'pdonumber',      scoping => \&do_scoping,    },
-              customer                => { number_column => 'customernumber', number_range_column => 'customernumber',                             },
-              vendor                  => { number_column => 'vendornumber',   number_range_column => 'vendornumber',                               },
-              part                    => { number_column => 'partnumber',     number_range_column => 'articlenumber',  scoping => \&parts_scoping, },
-              service                 => { number_column => 'partnumber',     number_range_column => 'servicenumber',  scoping => \&parts_scoping, },
-              assembly                => { number_column => 'partnumber',     number_range_column => 'assemblynumber', scoping => \&parts_scoping, },
-              assortment              => { number_column => 'partnumber',     number_range_column => 'assortmentnumber', scoping => \&parts_scoping, },
+my %specs = ( ar                          => { number_column => 'invnumber',                                                                           },
+              sales_quotation             => { number_column => 'quonumber',      number_range_column => 'sqnumber',       scoping => \&oe_scoping,    },
+              sales_order_intake          => { number_column => 'ordnumber',      number_range_column => 'soinumber',      scoping => \&oe_scoping,    },
+              sales_order                 => { number_column => 'ordnumber',      number_range_column => 'sonumber',       scoping => \&oe_scoping,    },
+              request_quotation           => { number_column => 'quonumber',      number_range_column => 'rfqnumber',      scoping => \&oe_scoping,    },
+              purchase_quotation_intake   => { number_column => 'quonumber',      number_range_column => 'pqinumber',      scoping => \&oe_scoping,    },
+              purchase_order              => { number_column => 'ordnumber',      number_range_column => 'ponumber',       scoping => \&oe_scoping,    },
+              purchase_order_confirmation => { number_column => 'ordnumber',      number_range_column => 'pocnumber',      scoping => \&oe_scoping,    },
+              sales_delivery_order        => { number_column => 'donumber',       number_range_column => 'sdonumber',      scoping => \&do_scoping,    },
+              purchase_delivery_order     => { number_column => 'donumber',       number_range_column => 'pdonumber',      scoping => \&do_scoping,    },
+              supplier_delivery_order     => { number_column => 'donumber',       number_range_column => 'sudonumber',     scoping => \&do_scoping,    },
+              rma_delivery_order          => { number_column => 'donumber',       number_range_column => 'rdonumber',      scoping => \&do_scoping,    },
+              sales_reclamation           => { number_column => 'record_number',  number_range_column => 's_reclamation_record_number',scoping => \&rec_scoping,   },
+              purchase_reclamation        => { number_column => 'record_number',  number_range_column => 'p_reclamation_record_number',scoping => \&rec_scoping,   },
+              customer                    => { number_column => 'customernumber', number_range_column => 'customernumber',                             },
+              vendor                      => { number_column => 'vendornumber',   number_range_column => 'vendornumber',                               },
+              part                        => { number_column => 'partnumber',     number_range_column => 'articlenumber',                              },
+              service                     => { number_column => 'partnumber',     number_range_column => 'servicenumber',                              },
+              assembly                    => { number_column => 'partnumber',     number_range_column => 'assemblynumber',                             },
+              assortment                  => { number_column => 'partnumber',     number_range_column => 'assortmentnumber',                           },
+              contacts                    => { number_column => 'cp_number',      number_range_column => 'contactnumber',  id_column => 'cp_id'        },
             );
 
 sub get_next_trans_number {
@@ -50,7 +62,9 @@ sub get_next_trans_number {
   my $scoping_conditions  = $spec->{scoping};
   my $fill_holes_in_range = !$spec->{keep_holes_in_range};
 
-  return $number if $self->id && $number;
+  my $id_column           = $spec->{id_column} // 'id';
+
+  return $number if $self->$id_column && $number;
 
   require SL::DB::Default;
   require SL::DB::Business;
@@ -77,11 +91,13 @@ sub get_next_trans_number {
   # prevent deadlocks as the legacy code in SL/TransNumber.pm locks it
   # first, too.
 
-  # For the storage table we have to use a full lock in order to
+  # For the storage table we have to use a RowExclusiveLock in order to
   # prevent insertion of new entries while this routine is still
   # working. For the range table we only need a row-level lock,
   # therefore we're re-loading the row.
-  $self->db->dbh->do("LOCK " . $self->meta->table) || die $self->db->dbh->errstr;
+  # Note that acquiring a full lock on a table collides with pg_dump.
+  # Acquiring a RowExclusiveLock does not pose this problem.
+  $self->db->dbh->do('LOCK ' . $self->meta->table . ' IN ROW EXCLUSIVE MODE') || die $self->db->dbh->errstr;
 
   my ($query_in_use, $bind_vals_in_use) = Rose::DB::Object::QueryBuilder::build_select(
     dbh                  => $self->db->dbh,
@@ -98,7 +114,6 @@ sub get_next_trans_number {
   my $range_table    = ($business ? $business : SL::DB::Default->get)->load(for_update => 1);
 
   my $start_number   = $range_table->$number_range_column;
-  $start_number      = $range_table->articlenumber if ($number_range_column =~ /^(assemblynumber|assortmentnumber)$/) && (length($start_number) < 1);
   my $sequence       = SL::PrefixedNumber->new(number => $start_number // 0);
 
   if (!$fill_holes_in_range) {

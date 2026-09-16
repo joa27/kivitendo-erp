@@ -9,37 +9,42 @@ use parent qw(SL::DB::Object);
 __PACKAGE__->meta->table('delivery_orders');
 
 __PACKAGE__->meta->columns(
-  closed                  => { type => 'boolean', default => 'false' },
-  cp_id                   => { type => 'integer' },
-  currency_id             => { type => 'integer', not_null => 1 },
-  cusordnumber            => { type => 'text' },
-  customer_id             => { type => 'integer' },
-  delivered               => { type => 'boolean', default => 'false' },
-  delivery_term_id        => { type => 'integer' },
-  department_id           => { type => 'integer' },
-  donumber                => { type => 'text', not_null => 1 },
-  employee_id             => { type => 'integer' },
-  globalproject_id        => { type => 'integer' },
-  id                      => { type => 'integer', not_null => 1, sequence => 'id' },
-  intnotes                => { type => 'text' },
-  is_sales                => { type => 'boolean' },
-  itime                   => { type => 'timestamp', default => 'now()' },
-  language_id             => { type => 'integer' },
-  mtime                   => { type => 'timestamp' },
-  notes                   => { type => 'text' },
-  ordnumber               => { type => 'text' },
-  oreqnumber              => { type => 'text' },
-  payment_id              => { type => 'integer' },
-  reqdate                 => { type => 'date' },
-  salesman_id             => { type => 'integer' },
-  shippingpoint           => { type => 'text' },
-  shipto_id               => { type => 'integer' },
-  shipvia                 => { type => 'text' },
-  taxincluded             => { type => 'boolean' },
-  taxzone_id              => { type => 'integer', not_null => 1 },
-  transaction_description => { type => 'text' },
-  transdate               => { type => 'date', default => 'now()' },
-  vendor_id               => { type => 'integer' },
+  billing_address_id         => { type => 'integer' },
+  buyer_id                   => { type => 'integer' },
+  closed                     => { type => 'boolean', default => 'false' },
+  cp_id                      => { type => 'integer' },
+  currency_id                => { type => 'integer', not_null => 1 },
+  cusordnumber               => { type => 'text' },
+  customer_id                => { type => 'integer' },
+  delivered                  => { type => 'boolean', default => 'false' },
+  delivery_term_id           => { type => 'integer' },
+  department_id              => { type => 'integer' },
+  donumber                   => { type => 'text', not_null => 1 },
+  employee_id                => { type => 'integer' },
+  globalproject_id           => { type => 'integer' },
+  id                         => { type => 'integer', not_null => 1, sequence => 'id' },
+  intnotes                   => { type => 'text' },
+  itime                      => { type => 'timestamp', default => 'now()' },
+  language_id                => { type => 'integer' },
+  mtime                      => { type => 'timestamp' },
+  notes                      => { type => 'text' },
+  ordnumber                  => { type => 'text' },
+  oreqnumber                 => { type => 'text' },
+  payment_id                 => { type => 'integer' },
+  record_type                => { type => 'enum', check_in => [ 'sales_delivery_order', 'purchase_delivery_order', 'supplier_delivery_order', 'rma_delivery_order' ], db_type => 'delivery_order_types', not_null => 1 },
+  reqdate                    => { type => 'date' },
+  salesman_id                => { type => 'integer' },
+  shippingpoint              => { type => 'text' },
+  shipto_id                  => { type => 'integer' },
+  shipvia                    => { type => 'text' },
+  tax_point                  => { type => 'date' },
+  tax_point_start            => { type => 'date' },
+  taxincluded                => { type => 'boolean' },
+  taxzone_id                 => { type => 'integer', not_null => 1 },
+  transaction_description    => { type => 'text' },
+  transdate                  => { type => 'date', default => 'now()' },
+  vendor_confirmation_number => { type => 'text' },
+  vendor_id                  => { type => 'integer' },
 );
 
 __PACKAGE__->meta->primary_key_columns([ 'id' ]);
@@ -47,6 +52,16 @@ __PACKAGE__->meta->primary_key_columns([ 'id' ]);
 __PACKAGE__->meta->allow_inline_column_values(1);
 
 __PACKAGE__->meta->foreign_keys(
+  billing_address => {
+    class       => 'SL::DB::AdditionalBillingAddress',
+    key_columns => { billing_address_id => 'id' },
+  },
+
+  buyer => {
+    class       => 'SL::DB::Employee',
+    key_columns => { buyer_id => 'id' },
+  },
+
   contact => {
     class       => 'SL::DB::Contact',
     key_columns => { cp_id => 'cp_id' },
@@ -114,4 +129,4 @@ __PACKAGE__->meta->foreign_keys(
 );
 
 1;
-;
+

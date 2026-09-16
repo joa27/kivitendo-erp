@@ -68,7 +68,7 @@ sub check_objects {
   my %vcs_by_number = map { ( $_->$numbercolumn => $_ ) } @{ $self->existing_objects };
   my $methods       = $self->controller->headers->{methods};
 
-  my $i;
+  my $i = 0;
   my $num_data = scalar @{ $self->controller->data };
   foreach my $entry (@{ $self->controller->data }) {
     $self->controller->track_progress(progress => $i/$num_data * 100) if $i % 100 == 0;
@@ -80,9 +80,10 @@ sub check_objects {
     $self->check_payment($entry);
     $self->check_delivery_term($entry);
     $self->check_taxzone($entry,  take_default => 1);
+    $self->check_country($entry);
     $self->check_currency($entry, take_default => 1);
     $self->check_salesman($entry);
-    $self->handle_cvars($entry);
+    $self->check_pricegroup($entry) if 'customer' eq $self->table;
 
     next if @{ $entry->{errors} };
 
@@ -92,7 +93,7 @@ sub check_objects {
     push @{ $entry->{information} }, $::locale->text('Illegal characters have been removed from the following fields: #1', join(', ', @cleaned_fields))
       if @cleaned_fields;
 
-    my $existing_vc = $vcs_by_number{ $object->$numbercolumn };
+    my $existing_vc = $object->$numbercolumn ? $vcs_by_number{ $object->$numbercolumn } : undef;
     if (!$existing_vc) {
       $vcs_by_number{ $object->$numbercolumn } = $object if $object->$numbercolumn;
 
@@ -105,19 +106,19 @@ sub check_objects {
 
       $existing_vc->$_( $entry->{object}->$_ ) for @{ $methods }, keys %{ $self->clone_methods };
 
-      $self->handle_cvars($entry);
-      $existing_vc->custom_variables($entry->{object}->custom_variables);
-
       push @{ $entry->{information} }, $::locale->text('Updating existing entry in database');
 
     } else {
       $object->$numbercolumn('####');
     }
+
+    $self->handle_cvars($entry);
+
   } continue {
     $i++;
   }
 
-  $self->add_columns(map { "${_}_id" } grep { exists $self->controller->data->[0]->{raw_data}->{$_} } qw(language business payment delivery_term taxzone));
+  $self->add_columns(map { "${_}_id" } grep { exists $self->controller->data->[0]->{raw_data}->{$_} } qw(language business payment delivery_term taxzone pricegroup));
   $self->add_cvar_raw_data_columns;
 }
 
@@ -207,6 +208,22 @@ sub check_business {
   return 1;
 }
 
+sub check_country {
+  my ($self, $entry) = @_;
+
+  if ($entry->{raw_data}{country_id} || $entry->{raw_data}{country}) {
+    return $self->check_country_optional($entry, 'country_id', 'country');
+  } else {
+    my $object = $entry->{object};
+    my $country_id = $self->controller->profile->get('default_country_id');
+
+    $object->country_id($country_id);
+    $self->clone_methods->{country_id} = 1;
+
+    return 1;
+  }
+}
+
 sub check_salesman {
   my ($self, $entry) = @_;
 
@@ -241,21 +258,10 @@ sub save_objects {
   my ($self, %params) = @_;
 
   my $numbercolumn   = $self->table . 'number';
-  my $with_number    = [ grep { $_->{object}->$numbercolumn ne '####' } @{ $self->controller->data } ];
-  my $without_number = [ grep { $_->{object}->$numbercolumn eq '####' } @{ $self->controller->data } ];
+  my $with_number    = [ grep { ($_->{object}->$numbercolumn || '') ne '####' } @{ $self->controller->data } ];
+  my $without_number = [ grep { ($_->{object}->$numbercolumn || '') eq '####' } @{ $self->controller->data } ];
 
-  foreach my $entry (@{$with_number}, @{$without_number}) {
-    my $object = $entry->{object};
-
-    my $number = SL::TransNumber->new(type        => $self->table(),
-                                      number      => $object->$numbercolumn(),
-                                      business_id => $object->business_id(),
-                                      save        => 1);
-
-    if ( $object->$numbercolumn eq '####' || !$number->is_unique() ) {
-      $object->$numbercolumn($number->create_unique());
-    }
-  }
+  $_->{object}->$numbercolumn('') for @{ $without_number };
 
   $self->SUPER::save_objects(data => $with_number);
   $self->SUPER::save_objects(data => $without_number);
@@ -266,7 +272,6 @@ sub init_profile {
 
   my $profile = $self->SUPER::init_profile;
   delete @{$profile}{qw(business datevexport language payment delivery_term taxincluded terms)};
-  delete @{$profile}{qw(salesman salesman_id salesman_login)} if $::instance_conf->get_vertreter;
 
   return $profile;
 }
@@ -289,6 +294,7 @@ sub setup_displayable_columns {
                                  { name => 'city',              description => $::locale->text('City')                            },
                                  { name => 'contact',           description => $::locale->text('Contact')                         },
                                  { name => 'country',           description => $::locale->text('Country')                         },
+                                 { name => 'country_id',        description => $::locale->text('Country (database ID)')           },
                                  { name => 'creditlimit',       description => $::locale->text('Credit Limit')                    },
                                  { name => 'currency',          description => $::locale->text('Currency')                        },
                                  { name => 'currency_id',       description => $::locale->text('Currency (database ID)')          },
@@ -306,6 +312,7 @@ sub setup_displayable_columns {
                                  { name => 'homepage',          description => $::locale->text('Homepage')                        },
                                  { name => 'iban',              description => $::locale->text('IBAN')                            },
                                  { name => 'pricegroup_id',     description => $::locale->text('Price group (database ID)')       },
+                                 { name => 'pricegroup',        description => $::locale->text('Price group (name)')              },
                                  { name => 'language_id',       description => $::locale->text('Language (database ID)')          },
                                  { name => 'language',          description => $::locale->text('Language (name)')                 },
                                  { name => 'name',              description => $::locale->text('Name')                            },
@@ -314,6 +321,10 @@ sub setup_displayable_columns {
                                  { name => 'payment_id',        description => $::locale->text('Payment terms (database ID)')     },
                                  { name => 'payment',           description => $::locale->text('Payment terms (name)')            },
                                  { name => 'phone',             description => $::locale->text('Phone')                           },
+                                 { name => 'reduction_terms',   description => $::locale->text('Reduction Terms')                 },
+                                 { name => 'salesman',          description => $::locale->text('Salesman')                        },
+                                 { name => 'salesman_id',       description => $::locale->text('Salesman (database ID)')          },
+                                 { name => 'salesman_login',    description => $::locale->text('Salesman (login)')                },
                                  { name => 'street',            description => $::locale->text('Street')                          },
                                  { name => 'taxnumber',         description => $::locale->text('Tax Number / SSN')                },
                                  { name => 'taxzone',           description => $::locale->text('Tax zone (description)')          },
@@ -323,12 +334,6 @@ sub setup_displayable_columns {
                                  { name => 'ustid',             description => $::locale->text('sales tax identification number') },
                                  { name => 'zipcode',           description => $::locale->text('Zipcode')                         },
                                 );
-
-  if (!$::instance_conf->get_vertreter) {
-    $self->add_displayable_columns({ name => 'salesman',       description => $::locale->text('Salesman') },
-                                   { name => 'salesman_id',    description => $::locale->text('Salesman (database ID)') },
-                                   { name => 'salesman_login', description => $::locale->text('Salesman (login)') });
-  }
 }
 
 # TODO:

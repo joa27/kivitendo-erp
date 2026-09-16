@@ -30,14 +30,6 @@ use utf8;
 
 require "bin/mozilla/common.pl";
 
-#use strict;
-#no strict 'refs';
-#use diagnostics;
-#use warnings; # FATAL=> 'all';
-#use vars qw($locale $form %myconfig);
-#our ($myconfig);
-#use CGI::Carp "fatalsToBrowser";
-
 use List::Util qw(first);
 
 use SL::DB::Default;
@@ -244,32 +236,6 @@ sub report {
   $::lxdebug->leave_sub();
 }
 
-
-
-sub help {
-  $::lxdebug->enter_sub();
-
-  $::auth->assert('advance_turnover_tax_return');
-
-  # parse help documents under doc
-  $::form->{templates} = 'doc';
-  $::form->{help}      = 'ustva';
-  $::form->{type}      = 'help';
-  $::form->{format}    = 'html';
-  generate_ustva();
-
-  $::lxdebug->leave_sub();
-}
-
-sub show {
-  $::lxdebug->enter_sub();
-
-  $::auth->assert('advance_turnover_tax_return');
-
-  #generate_ustva();
-  $::lxdebug->leave_sub();
-  call_sub($::form->{"nextsub"});
-}
 
 sub ustva_vorauswahl {
   $::lxdebug->enter_sub();
@@ -501,18 +467,6 @@ sub ustva_vorauswahl {
   return $select_vorauswahl;
 }
 
-#sub config {
-#  $::lxdebug->enter_sub();
-#  config_step1();
-#  $::lxdebug->leave_sub();
-#}
-
-sub debug {
-  $::lxdebug->enter_sub();
-  $::form->debug();
-  $::lxdebug->leave_sub();
-}
-
 sub show_options {
   $::lxdebug->enter_sub();
 
@@ -560,9 +514,6 @@ sub generate_ustva {
   $::auth->assert('advance_turnover_tax_return');
 
   my $defaults = SL::DB::Default->get;
-  $form->error($::locale->text('No print templates have been created for this client yet. Please do so in the client configuration.')) if !$defaults->templates;
-  $form->{templates} = $defaults->templates;
-
 
   my $ustva = USTVA->new();
   $ustva->get_config();
@@ -642,42 +593,10 @@ sub generate_ustva {
     $form->{co_city} =~ s/\\n//g;
   }
 
-  ################################
-  #
-  # Nation specific customisations
-  #
-  ################################
-
-  # Germany
-
-  if ( $form->{coa} eq 'Germany-DATEV-SKR03EU' or $form->{coa} eq 'Germany-DATEV-SKR04EU') {
-
    $form->{id} = [];
    $form->{amount} = [];
 
-   if ( $form->{format} eq 'pdf' or $form->{format} eq 'postscript') {
-
-      $form->{IN} = "$form->{type}-$form->{year}.tex";
-      $form->{padding} = "~~";
-      $form->{bold}    = "\textbf{";
-      $form->{endbold} = "}";
-      $form->{br}      = '\\\\';
-
-      # Zahlenformatierung für Latex USTVA Formulare
-
-      foreach my $number (@{$::form->{category_euro}}) {
-        $form->{$number} = $form->format_amount(\%myconfig, $form->{$number}, '0', '');
-      }
-
-      my ${decimal_comma} = ( $myconfig{numberformat} eq '1.000,00'
-           or $myconfig{numberformat} eq '1000,00' ) ? ',':'.';
-
-      foreach my $number (@{$::form->{category_cent}}) {
-        $form->{$number} = $form->format_amount(\%myconfig, $form->{$number}, '2', '');
-        $form->{$number} =~ s/${decimal_comma}/~~/g;
-      }
-
-    } elsif ( $form->{format} eq 'html') { # Formatierungen für HTML Ausgabe
+   if ( $form->{format} eq 'html') { # Formatierungen für HTML Ausgabe
 
       $form->{IN} = $form->{type} . '.html';
       $form->{padding} = "&nbsp;&nbsp;";
@@ -693,41 +612,11 @@ sub generate_ustva {
       foreach my $number (@{$::form->{category_euro}}) {
         $form->{$number} = $form->format_amount(\%myconfig, $form->{$number}, '0', '0');
       }
-    } elsif ( $form->{format} eq '' ){ # No format error.
-
-      $form->header;
-      USTVA::error( $locale->text('Application Error. No Format given' ) . "!");
-      $::dispatcher->end_request;
-
-    } else { # All other Formats are wrong
+   } else { # we have only html
       $form->header;
       USTVA::error( $locale->text('Application Error. Wrong Format') . ": " . $form->{format} );
       $::dispatcher->end_request;
-    }
-
-
-  } else  # Outputformat for generic output
-  {
-
-    $form->{USTVA} = [];
-
-    if ( $form->{format} eq 'generic') { # Formatierungen für HTML Ausgabe
-
-      my $rec_ref = {};
-      for my $kennziffer (@{$::form->{category_cent}}, @{$::form->{category_euro}}) {
-        $rec_ref = {};
-        $rec_ref->{id} = $kennziffer;
-        $rec_ref->{amount} = $form->format_amount(\%myconfig, $form->{$kennziffer}, 2, '0');
-
-        $::lxdebug->message($LXDebug::DEBUG, "Kennziffer $kennziffer: '$form->{$kennziffer}'" );
-        $::lxdebug->dump($LXDebug::DEBUG, $rec_ref );
-        push @ { $form->{USTVA} }, $rec_ref;
-      }
-
-    }
-
-  }
-
+   }
   if ( $form->{period} eq '13' and $form->{format} ne 'html') {
     $form->header;
     USTVA::info(
@@ -736,31 +625,12 @@ sub generate_ustva {
       . '!');
   }
 
-  $form->{templates} = "doc" if ( $form->{type} eq 'help' );
+  # add a prefix for ustva pos numbers, i.e.: 81 ->  post_ustva_81
+  $form->{"pos_ustva_$_"} = $form->{$_} for grep { m{^\d+} } keys %{ $form };
+  $form->{title} = $locale->text('Advance turnover tax return');
 
-  if ($form->{format} eq 'generic'){
-
-    $form->header();
-
-    my $template_ref = {
-        taxnumber => $defaults->taxnumber,
-    };
-
-    print($form->parse_html_template('ustva/generic_taxreport', $template_ref));
-
-  } elsif ( $form->{format} eq 'elstertaxbird' ) {
-   $form->parse_template(\%myconfig);
-  } else
-  {
-   # add a prefix for ustva pos numbers, i.e.: 81 ->  post_ustva_81
-   $form->{"pos_ustva_$_"} = $form->{$_} for grep { m{^\d+} } keys %{ $form };
-   $form->{title} = $locale->text('Advance turnover tax return');
-
-   $form->header;
-   print $form->parse_html_template('ustva/ustva');
-
-
-  }
+  $form->header;
+  print $form->parse_html_template('ustva/ustva');
 
   $::lxdebug->leave_sub();
 }
@@ -770,7 +640,7 @@ sub config_step1 {
 
   $::auth->assert('advance_turnover_tax_return');
 
-$::form->{title} = $::locale->text('Tax Office Preferences');
+  $::form->{title} = $::locale->text('Tax Office Preferences');
 
   # edit all taxauthority prefs
 
@@ -784,10 +654,6 @@ $::form->{title} = $::locale->text('Tax Office Preferences');
 
   my $land = $::form->{fa_land_nr};
   my $amt  = $::form->{fa_bufa_nr};
-
-
-  $::form->{title} = $::locale->text('Tax Office Preferences');
-
 
   my $select_tax_office               = $ustva->fa_auswahl($land, $amt, $ustva->query_finanzamt(\%::myconfig, $::form));
   my $method_local = ($::form->{accounting_method} eq 'accrual') ? $::locale->text('accrual')
@@ -847,6 +713,7 @@ sub config_step2 {
 
   setup_ustva_config_step2_action_bar();
 
+  $form->{title} = $::locale->text('Tax Office Preferences');
   $form->header();
 
   my $fa_land_nr         = '';

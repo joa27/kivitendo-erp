@@ -23,16 +23,16 @@ sub store_pdf {
   my $id = $form->{id};
   $id = $form->{attachment_id} if $form->{attachment_id} && !$form->{id};
   return if !$id || !$type;
-  my $prefix = $form->get_number_prefix_for_type();
+
   SL::File->save(
-    object_id   => $id,
-    object_type => $type,
-    mime_type   => 'application/pdf',
-    source      => 'created',
-    file_type   => 'document',
-    file_name   => $form->{attachment_filename},
-    file_path   => $form->{tmpfile},
-    file_number => $form->{"${prefix}number"},
+    object_id     => $id,
+    object_type   => $type,
+    mime_type     => 'application/pdf',
+    source        => 'created',
+    file_type     => 'document',
+    file_name     => $form->{attachment_filename},
+    file_path     => $form->{tmpfile},
+    print_variant => $form->{formname},
   );
 }
 

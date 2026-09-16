@@ -1,0 +1,37 @@
+[%- USE T8 %]
+[%- USE LxERP %]
+[%- USE L %]
+[%- USE HTML %]
+[%- USE Dumper %]
+
+<div id="email_statistic" class="wrapper">
+  <table class="tbl-list wi-moderate">
+    <thead>
+      <tr>
+        <th>[% 'Sent on' | $T8 %]</th>
+        <th>[% 'Subject' | $T8 %]</th>
+        <th>[% 'Record Type' | $T8 %]</th>
+        <th>[% 'Record number' | $T8 %]</th>
+        <th>[% 'From' | $T8 %]</th>
+        <th>[% 'To' | $T8 %]</th>
+        <th>[% 'Status' | $T8 %]</th>
+      </tr>
+    </thead>
+    <tbody>
+      [%- FOREACH row = emails %]
+      <tr>
+        <td>[% row.sent_on | html %]</td>
+        <td>
+          <a href="[% SELF.url_for(controller='controller.pl', action => 'EmailJournal/show', id => row.id, back_to => SELF.get_callback) %]">
+            [%- HTML.escape(row.subject) %]
+          </a></td>
+          <td>[% row.type | $T8 %]</td>
+          <td>[% row.recordnumber | html %]</td>
+          <td>[% row.from %]</td>
+          <td>[% row.recipients %]</td>
+          <td>[% row.status %]</td>
+      </tr>
+      [% END %]
+    </tbody>
+  </table>
+</div>

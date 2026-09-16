@@ -35,9 +35,14 @@
 
 package WH;
 
+use Carp qw(croak);
+use List::MoreUtils qw(any);
+
 use SL::AM;
 use SL::DBUtils;
+use SL::DB::Inventory;
 use SL::Form;
+use SL::Locale::String qw(t8);
 use SL::Util qw(trim);
 
 use warnings;
@@ -56,9 +61,8 @@ sub transfer {
   require SL::DB::TransferType;
   require SL::DB::Part;
   require SL::DB::Employee;
-  require SL::DB::Inventory;
 
-  my $employee   = SL::DB::Manager::Employee->find_by(login => $::myconfig{login});
+  my $employee   = SL::DB::Manager::Employee->current;
   my ($now)      = selectrow_query($::form, $::form->get_standard_dbh, qq|SELECT current_date|);
   my @directions = (undef, qw(out in transfer));
 
@@ -80,7 +84,8 @@ sub transfer {
   my $db = SL::DB::Inventory->new->db;
   $db->with_transaction(sub{
     while (my $transfer = shift @args) {
-      my ($trans_id) = selectrow_query($::form, $::form->get_standard_dbh, qq|SELECT nextval('id')|);
+      my $trans_id;
+      ($trans_id) = selectrow_query($::form, $::form->get_standard_dbh, qq|SELECT nextval('id')|) if $transfer->{qty};
 
       my $part          = $objectify->($transfer, 'parts',         'SL::DB::Part');
       my $unit          = $objectify->($transfer, 'unit',          'SL::DB::Unit',         name => $transfer->{unit});
@@ -98,13 +103,21 @@ sub transfer {
       $direction |= 1 if $src_bin;
       $direction |= 2 if $dst_bin;
 
-      my $transfer_type = $objectify->($transfer, 'transfer_type', 'SL::DB::TransferType', direction   => $directions[$direction],
-                                                                                           description => $transfer->{transfer_type});
+      my $transfer_type_id;
+      if ($transfer->{transfer_type_id}) {
+        $transfer_type_id = $transfer->{transfer_type_id};
+      } else {
+        my $transfer_type = $objectify->($transfer, 'transfer_type', 'SL::DB::TransferType', direction   => $directions[$direction],
+                                                                                             description => $transfer->{transfer_type});
+        $transfer_type_id = $transfer_type->id;
+      }
+
+      my $stocktaking_qty = $transfer->{stocktaking_qty};
 
       my %params = (
           part             => $part,
           employee         => $employee,
-          trans_type       => $transfer_type,
+          trans_type_id    => $transfer_type_id,
           project          => $project,
           trans_id         => $trans_id,
           shippingdate     => !$transfer->{shippingdate} || $transfer->{shippingdate} eq 'current_date'
@@ -113,13 +126,15 @@ sub transfer {
       );
 
       if ($unit) {
-        $qty = $unit->convert_to($qty, $part->unit_obj);
+        $qty             = $unit->convert_to($qty,             $part->unit_obj);
+        $stocktaking_qty = $unit->convert_to($stocktaking_qty, $part->unit_obj);
       }
 
       $params{chargenumber} ||= '';
 
-      if ($direction & 1) {
-        SL::DB::Inventory->new(
+      my @inventories;
+      if ($qty && $direction & 1) {
+        push @inventories, SL::DB::Inventory->new(
           %params,
           warehouse => $src_wh,
           bin       => $src_bin,
@@ -127,8 +142,8 @@ sub transfer {
         )->save;
       }
 
-      if ($direction & 2) {
-        SL::DB::Inventory->new(
+      if ($qty && $direction & 2) {
+        push @inventories, SL::DB::Inventory->new(
           %params,
           warehouse => $dst_wh->id,
           bin       => $dst_bin->id,
@@ -138,6 +153,30 @@ sub transfer {
         if (defined($transfer->{change_default_bin})){
           $part->update_attributes(warehouse_id  => $dst_wh->id, bin_id => $dst_bin->id);
         }
+      }
+
+      # Record stocktaking if requested.
+      # This is only possible if transfer was a stock in or stock out,
+      # but not both (transfer).
+      if ($transfer->{record_stocktaking}) {
+        die 'Stocktaking can only be recorded for stock in or stock out, but not on a transfer.' if scalar @inventories > 1;
+
+        my $inventory_id;
+        $inventory_id = $inventories[0]->id if $inventories[0];
+
+        SL::DB::Stocktaking->new(
+          inventory_id => $inventory_id,
+          warehouse    => $src_wh  || $dst_wh,
+          bin          => $src_bin || $dst_bin,
+          parts_id     => $part->id,
+          employee_id  => $employee->id,
+          qty          => $stocktaking_qty,
+          comment      => $transfer->{comment},
+          cutoff_date  => $transfer->{stocktaking_cutoff_date},
+          chargenumber => $transfer->{chargenumber},
+          bestbefore   => $transfer->{bestbefore},
+        )->save;
+
       }
 
       push @trans_ids, $trans_id;
@@ -153,183 +192,6 @@ sub transfer {
   return @trans_ids;
 }
 
-sub transfer_assembly {
-  $main::lxdebug->enter_sub();
-
-  my $self     = shift;
-  my %params   = @_;
-  Common::check_params(\%params, qw(assembly_id dst_warehouse_id login qty unit dst_bin_id chargenumber bestbefore comment));
-
-#  my $maxcreate=WH->check_assembly_max_create(assembly_id =>$params{'assembly_id'}, dbh => $my_dbh);
-
-  my $myconfig = \%main::myconfig;
-  my $form     = $main::form;
-  my $kannNichtFertigen ="";  # Falls leer dann erfolgreich
-
-  SL::DB->client->with_transaction(sub {
-    my $dbh      = $params{dbh} || SL::DB->client->dbh;
-
-    # Ablauferklärung
-    #
-    # ... Standard-Check oben Ende. Hier die eigentliche SQL-Abfrage
-    # select parts_id,qty from assembly where id=1064;
-    # Erweiterung für bug 935 am 23.4.09 -
-    # Erzeugnisse können Dienstleistungen enthalten, die ja nicht 'lagerbar' sind.
-    # select parts_id,qty from assembly inner join parts on assembly.parts_id = parts.id
-    # where assembly.id=1066 and inventory_accno_id IS NOT NULL;
-    #
-    # Erweiterung für bug 23.4.09 -2 Erzeugnisse in Erzeugnissen können nicht ausgelagert werden,
-    # wenn assembly nicht überprüft wird ...
-    # patch von joachim eingespielt 24.4.2009:
-    # my $query    = qq|select parts_id,qty from assembly inner join parts
-    # on assembly.parts_id = parts.id  where assembly.id = ? and
-    # (inventory_accno_id IS NOT NULL or parts.assembly = TRUE)|;
-
-    # Lager in dem die Bestandteile gesucht werden kann entweder das Ziellager sein oder ist per Mandantenkonfig
-    # auf das Standardlager des Bestandteiles schaltbar
-
-    my $use_default_warehouse = $::instance_conf->get_transfer_default_warehouse_for_assembly;
-
-    my $query = qq|SELECT assembly.parts_id, assembly.qty, parts.warehouse_id
-                   FROM assembly INNER JOIN parts ON assembly.parts_id = parts.id
-                   WHERE assembly.id = ? AND parts.part_type != 'service'|;
-
-    my $sth_part_qty_assembly = prepare_execute_query($form, $dbh, $query, $params{assembly_id});
-
-    # Hier wird das prepared Statement für die Schleife über alle Lagerplätze vorbereitet
-    my $transferPartSQL = qq|INSERT INTO inventory (parts_id, warehouse_id, bin_id, chargenumber, bestbefore, comment, employee_id, qty,
-                             trans_id, trans_type_id, shippingdate)
-                             VALUES (?, ?, ?, ?, ?, ?, (SELECT id FROM employee WHERE login = ?), ?, nextval('id'),
-                             (SELECT id FROM transfer_type WHERE direction = 'out' AND description = 'used'),
-                             (SELECT current_date))|;
-    my $sthTransferPartSQL   = prepare_query($form, $dbh, $transferPartSQL);
-
-    # der return-string für die fehlermeldung inkl. welche waren zum fertigen noch fehlen
-
-    my $schleife_durchlaufen=0; # Falls die Schleife nicht ausgeführt wird -> Keine Einzelteile definiert. Bessere Idee? jan
-    while (my $hash_ref = $sth_part_qty_assembly->fetchrow_hashref()) { #Schleife für select parts_id,(...) from assembly
-      $schleife_durchlaufen=1;  # Erzeugnis definiert
-
-      my $partsQTY          = $hash_ref->{qty} * $params{qty}; # benötigte teile * anzahl erzeugnisse
-      my $currentPart_ID    = $hash_ref->{parts_id};
-
-      my $currentPart_WH_ID = $use_default_warehouse && $hash_ref->{warehouse_id} ? $hash_ref->{warehouse_id} : $params{dst_warehouse_id};
-      my $no_check = 0;
-
-      # Prüfen ob Erzeugnis-Teile Standardlager haben.
-      if ($use_default_warehouse && ! $hash_ref->{warehouse_id}) {
-        # Prüfen ob in Mandantenkonfiguration ein Standardlager aktiviert isti.
-        if ($::instance_conf->get_transfer_default_ignore_onhand) {
-          $currentPart_WH_ID = $::instance_conf->get_warehouse_id_ignore_onhand;
-          $no_check = 1;
-        } else {
-          $kannNichtFertigen .= "Kein Standardlager: " .
-                              " Die Ware " . $self->get_part_description(parts_id => $currentPart_ID) .
-                              " hat kein Standardlager definiert " .
-                              ", um das Erzeugnis herzustellen. <br>";
-          next;
-        }
-      }
-      my $warehouse_info    = $self->get_basic_warehouse_info('id'=> $currentPart_WH_ID);
-      my $warehouse_desc    = $warehouse_info->{"warehouse_description"};
-
-      # Fertigen ohne Prüfung nach Bestand
-      if ($no_check) {
-        my $temppart_bin_id       = $::instance_conf->get_bin_id_ignore_onhand;
-        my $temppart_chargenumber = "";
-        my $temppart_bestbefore   = localtime();
-        my $temppart_qty          = $partsQTY * -1;
-
-        do_statement($form, $sthTransferPartSQL, $transferPartSQL, $currentPart_ID, $currentPart_WH_ID,
-                       $temppart_bin_id, $temppart_chargenumber, $temppart_bestbefore, 'Verbraucht für ' .
-                       $self->get_part_description(parts_id => $params{assembly_id}), $params{login}, $temppart_qty);
-        next;
-      }
-      # Überprüfen, ob diese Anzahl gefertigt werden kann
-      my $max_parts = $self->get_max_qty_parts(parts_id     => $currentPart_ID, # $self->method() == this.method()
-                                               warehouse_id => $currentPart_WH_ID);
-
-      if ($partsQTY  > $max_parts){
-        # Gibt es hier ein Problem mit nicht "escapten" Zeichen?
-        # 25.4.09 Antwort: Ja.  Aber erst wenn im Frontend die locales-Funktion aufgerufen wird
-
-        $kannNichtFertigen .= "Zum Fertigen fehlen: " . abs($partsQTY - $max_parts) .
-                              " Einheiten der Ware: " . $self->get_part_description(parts_id => $currentPart_ID) .
-                              " im Lager: " . $warehouse_desc .
-                              ", um das Erzeugnis herzustellen. <br>"; # Konnte die Menge nicht mit der aktuellen Anzahl der Waren fertigen
-        next; # die weiteren Überprüfungen sind unnötig, daher das nächste elemente prüfen (genaue Ausgabe, was noch fehlt)
-      }
-
-      # Eine kurze Vorabfrage, um den Lagerplatz, Chargennummer und die Mindesthaltbarkeit zu bestimmen
-      # Offen: Die Summe über alle Lagerplätze wird noch nicht gebildet
-      # Gelöst: Wir haben vorher schon die Abfrage durchgeführt, ob wir fertigen können.
-      # Noch besser gelöst: Wir laufen durch alle benötigten Waren zum Fertigen und geben eine Rückmeldung an den Benutzer was noch fehlt
-      # und lösen den Rest dann so wie bei xplace im Barcode-Programm
-      # S.a. Kommentar im bin/mozilla-Code mb übernimmt und macht das in ordentlich
-
-      my $tempquery = qq|SELECT SUM(qty), bin_id, chargenumber, bestbefore   FROM inventory
-                         WHERE warehouse_id = ? AND parts_id = ?  GROUP BY bin_id, chargenumber, bestbefore having SUM(qty)>0|;
-      my $tempsth   = prepare_execute_query($form, $dbh, $tempquery, $currentPart_WH_ID, $currentPart_ID);
-
-      # Alle Werte zu dem einzelnen Artikel, die wir später auslagern
-      my $tmpPartsQTY = $partsQTY;
-
-      while (my $temphash_ref = $tempsth->fetchrow_hashref()) {
-        my $temppart_bin_id       = $temphash_ref->{bin_id}; # kann man hier den quelllagerplatz beim verbauen angeben?
-        my $temppart_chargenumber = $temphash_ref->{chargenumber};
-        my $temppart_bestbefore   = conv_date($temphash_ref->{bestbefore});
-        my $temppart_qty          = $temphash_ref->{sum};
-
-        if ($tmpPartsQTY > $temppart_qty) {  # wir haben noch mehr waren zum wegbuchen.
-                                             # Wir buchen den kompletten Lagerplatzbestand und zählen die Hilfsvariable runter
-          $tmpPartsQTY = $tmpPartsQTY - $temppart_qty;
-          $temppart_qty = $temppart_qty * -1; # TODO beim analyiseren des sql-trace, war dieser wert positiv,
-                                              # wenn * -1 als berechnung in der parameter-übergabe angegeben wird.
-                                              # Dieser Wert IST und BLEIBT positiv!! Hilfe.
-                                              # Liegt das daran, dass dieser Wert aus einem SQL-Statement stammt?
-          do_statement($form, $sthTransferPartSQL, $transferPartSQL, $currentPart_ID, $currentPart_WH_ID,
-                       $temppart_bin_id, $temppart_chargenumber, $temppart_bestbefore, 'Verbraucht für ' .
-                       $self->get_part_description(parts_id => $params{assembly_id}), $params{login}, $temppart_qty);
-
-          # hier ist noch ein fehler am besten mit definierten erzeugnissen debuggen 02/2009 jb
-          # idee: ausbuch algorithmus mit rekursion lösen und an- und abschaltbar machen
-          # das problem könnte sein, dass strict nicht an war und sth global eine andere zuweisung bekam
-          # auf jeden fall war der internal-server-error nach aktivierung von strict und warnings plus ein paar my-definitionen weg
-        } else { # okay, wir haben weniger oder gleich Waren die wir wegbuchen müssen, wir können also aufhören
-          $tmpPartsQTY *=-1;
-          do_statement($form, $sthTransferPartSQL, $transferPartSQL, $currentPart_ID, $currentPart_WH_ID,
-                       $temppart_bin_id, $temppart_chargenumber, $temppart_bestbefore, 'Verbraucht für ' .
-                       $self->get_part_description(parts_id => $params{assembly_id}), $params{login}, $tmpPartsQTY);
-          last; # beendet die schleife (springt zum letzten element)
-        }
-      }  # ende while SELECT SUM(qty), bin_id, chargenumber, bestbefore   FROM inventory  WHERE warehouse_id
-    } #ende while select parts_id,qty from assembly where id = ?
-
-    if ($schleife_durchlaufen==0){  # falls die schleife nicht durchlaufen wurde, wurden auch
-                                    # keine einzelteile definiert
-        $kannNichtFertigen ="Für dieses Erzeugnis sind keine Einzelteile definiert.
-                             Dementsprechend kann auch nichts hergestellt werden";
-   }
-    # gibt die Fehlermeldung zurück. A.) Keine Teile definiert
-    #                                B.) Artikel und Anzahl der fehlenden Teile/Dienstleistungen
-    die "<br><br>" . $kannNichtFertigen if ($kannNichtFertigen);
-
-    # soweit alles gut. Jetzt noch die wirkliche Lagerbewegung für das Erzeugnis ausführen ...
-    my $transferAssemblySQL = qq|INSERT INTO inventory (parts_id, warehouse_id, bin_id, chargenumber, bestbefore,
-                                                        comment, employee_id, qty, trans_id, trans_type_id, shippingdate)
-                                 VALUES (?, ?, ?, ?, ?, ?, (SELECT id FROM employee WHERE login = ?), ?, nextval('id'),
-                                 (SELECT id FROM transfer_type WHERE direction = 'in' AND description = 'assembled'),
-                                 (select current_date))|;
-    my $sthTransferAssemblySQL   = prepare_query($form, $dbh, $transferAssemblySQL);
-    do_statement($form, $sthTransferAssemblySQL, $transferAssemblySQL, $params{assembly_id}, $params{dst_warehouse_id},
-                 $params{dst_bin_id}, $params{chargenumber}, conv_date($params{bestbefore}), $params{comment}, $params{login}, $params{qty});
-    1;
-  }) or do { return $kannNichtFertigen };
-
-  $main::lxdebug->leave_sub();
-  return 1; # Alles erfolgreich
-}
-
 sub get_warehouse_journal {
   $main::lxdebug->enter_sub();
 
@@ -343,6 +205,12 @@ sub get_warehouse_journal {
 
   # connect to database
   my $dbh = $form->get_standard_dbh($myconfig);
+
+
+  my $count_only = delete $filter{count_only};
+  if ($count_only) {
+    delete local $form->{l_oe_id};
+  }
 
   # filters
   my (@filter_ary, @filter_vars, $joins, %select_tokens, %select);
@@ -396,6 +264,16 @@ sub get_warehouse_journal {
     $joins .= "";
   }
 
+  if ($filter{trans_id}) {
+    push @filter_ary, "i1.trans_id = ?";
+    push @filter_vars, $filter{trans_id};
+  }
+
+  if ($filter{id}) {
+    push @filter_ary, "i1.id = ?";
+    push @filter_vars, $filter{id};
+  }
+
   # prepare qty comparison for later filtering
   my ($f_qty_op, $f_qty, $f_qty_base_unit);
   if ($filter{qty_op} && defined($filter{qty}) && $filter{qty_unit} && $all_units->{$filter{qty_unit}}) {
@@ -408,7 +286,7 @@ sub get_warehouse_journal {
 
   # if of a property number or description is requested,
   # automatically check the matching id too.
-  map { $form->{"l_${_}id"} = "Y" if ($form->{"l_${_}description"} || $form->{"l_${_}number"}); } qw(warehouse bin);
+  map { $form->{"l_${_}id"} = "Y" if ($form->{"l_${_}"} || $form->{"l_${_}number"}); } qw(warehouse bin used_for);
 
   # customize shown entry for not available fields.
   $filter{na} = '-' unless $filter{na};
@@ -437,6 +315,10 @@ sub get_warehouse_journal {
     'employee'       => ['employee'],
     'projectnumber'  => ['projectnumber'],
     'chargenumber'   => ['chargenumber'],
+    'trans_id'       => ['trans_id'],
+    'bestbefore'     => ['bestbefore'],
+    'direction'      => ['direction'],
+    'used_for'       => ['used_for'],
   );
 
   $sort_order    = $filter{order}  unless $sort_order;
@@ -445,113 +327,115 @@ sub get_warehouse_journal {
 
   my $where_clause = @filter_ary ? join(" AND ", @filter_ary) . " AND " : '';
 
+  my ($cvar_where, @cvar_values) = CVar->build_filter_query(
+    module         => 'IC',
+    trans_id_field => 'p.id',
+    filter         => $form,
+    sub_module     => undef,
+  );
+
+  if ($cvar_where) {
+    $where_clause .= qq| ($cvar_where) AND |;
+    push @filter_vars, @cvar_values;
+  }
+
   $select_tokens{'trans'} = {
-     "parts_id"             => "i1.parts_id",
-     "qty"                  => "ABS(SUM(i1.qty))",
-     "partnumber"           => "p.partnumber",
-     "partdescription"      => "p.description",
-     "classification_id"    => "p.classification_id",
-     "part_type"            => "p.part_type",
-     "bindescription"       => "b.description",
-     "chargenumber"         => "i1.chargenumber",
-     "bestbefore"           => "i1.bestbefore",
-     "warehousedescription" => "w.description",
-     "partunit"             => "p.unit",
-     "bin_from"             => "b1.description",
-     "bin_to"               => "b2.description",
-     "warehouse_from"       => "w1.description",
-     "warehouse_to"         => "w2.description",
-     "comment"              => "i1.comment",
-     "trans_type"           => "tt.description",
-     "trans_id"             => "i1.trans_id",
-     "oe_id"                => "COALESCE(i1.oe_id, i2.oe_id)",
-     "invoice_id"           => "COALESCE(i1.invoice_id, i2.invoice_id)",
-     "date"                 => "i1.shippingdate",
-     "itime"                => "i1.itime",
-     "shippingdate"         => "i1.shippingdate",
-     "employee"             => "e.name",
-     "projectnumber"        => "COALESCE(pr.projectnumber, '$filter{na}')",
-     };
+     "parts_id"          => "i1.parts_id",
+     "qty"               => "ABS(SUM(i1.qty))",
+     "partnumber"        => "p.partnumber",
+     "partdescription"   => "p.description",
+     "classification_id" => "p.classification_id",
+     "part_type"         => "p.part_type",
+     "chargenumber"      => "i1.chargenumber",
+     "bestbefore"        => "i1.bestbefore",
+     "partunit"          => "p.unit",
+     "bin_from"          => "b1.description",
+     "bin_to"            => "b2.description",
+     "warehouse_from"    => "w1.description",
+     "warehouse_to"      => "w2.description",
+     "comment"           => "i1.comment",
+     "trans_type"        => "tt.description",
+     "direction"         => "tt.direction",
+     "trans_id"          => "i1.trans_id",
+     "id"                => "i1.id",
+     "oe_id"             => "i1.oe_id",
+     "invoice_id"        => "i1.invoice_id",
+     "date"              => "i1.shippingdate",
+     "itime"             => "i1.itime",
+     "shippingdate"      => "i1.shippingdate",
+     "employee"          => "e.name",
+     "projectnumber"     => "COALESCE(pr.projectnumber, '$filter{na}')",
+     "used_for"          => "'$filter{na}'",
+     "used_forid"        => 0,
+  };
 
-  $select_tokens{'out'} = {
-     "bin_to"               => "'$filter{na}'",
-     "warehouse_to"         => "'$filter{na}'",
-     };
-
-  $select_tokens{'in'} = {
-     "bin_from"             => "'$filter{na}'",
-     "warehouse_from"       => "'$filter{na}'",
-     };
+  $select_tokens{'in_out'} = {
+    "bin_from"       => "(CASE WHEN tt.direction = 'out' THEN b1.description ELSE '$filter{na}' END)",
+    "bin_to"         => "(CASE WHEN tt.direction = 'in'  THEN b1.description ELSE '$filter{na}' END)",
+    "warehouse_from" => "(CASE WHEN tt.direction = 'out' THEN w1.description ELSE '$filter{na}' END)",
+    "warehouse_to"   => "(CASE WHEN tt.direction = 'in'  THEN w1.description ELSE '$filter{na}' END)",
+    "used_for"       => "COALESCE(assembly_part.description, '$filter{na}')",
+    "used_forid"     => "assembly_part.id",
+  };
 
   $form->{l_classification_id}  = 'Y';
   $form->{l_part_type}          = 'Y';
   $form->{l_itime}              = 'Y';
   $form->{l_invoice_id} = $form->{l_oe_id} if $form->{l_oe_id};
 
+  local $form->{l_trans_id}     = 'Y';
+
   # build the select clauses.
   # take all the requested ones from the first hash and overwrite them from the out/in hashes if present.
-  for my $i ('trans', 'out', 'in') {
+  for my $i ('trans', 'in_out') {
     $select{$i} = join ', ', map { +/^l_/; ($select_tokens{$i}{"$'"} || $select_tokens{'trans'}{"$'"}) . " AS r_$'" }
-          ( grep( { !/qty$/ and /^l_/ and $form->{$_} eq 'Y' } keys %$form), qw(l_parts_id l_qty l_partunit l_shippingdate) );
+          ( grep( { !/qty$/ and !/^l_cvar/ and /^l_/ and $form->{$_} eq 'Y' } keys %$form), qw(l_parts_id l_qty l_partunit l_shippingdate) );
   }
 
   my $group_clause = join ", ", map { +/^l_/; "r_$'" }
-        ( grep( { !/qty$/ and /^l_/ and $form->{$_} eq 'Y' } keys %$form), qw(l_parts_id l_partunit l_shippingdate l_itime) );
+        ( grep( { !/qty$/ and !/^l_cvar/ and /^l_/ and $form->{$_} eq 'Y' } keys %$form), qw(l_parts_id l_partunit l_shippingdate l_itime) );
 
   $where_clause = defined($where_clause) ? $where_clause : '';
 
+  my $columns = $count_only ? 'COUNT(*)' : '*';
+
   my $query =
-  qq|SELECT * FROM (SELECT DISTINCT $select{trans}
-    FROM inventory i1
-    LEFT JOIN inventory i2 ON i1.trans_id = i2.trans_id
-    LEFT JOIN parts p ON i1.parts_id = p.id
-    LEFT JOIN bin b1 ON i1.bin_id = b1.id
-    LEFT JOIN bin b2 ON i2.bin_id = b2.id
-    LEFT JOIN warehouse w1 ON i1.warehouse_id = w1.id
-    LEFT JOIN warehouse w2 ON i2.warehouse_id = w2.id
-    LEFT JOIN transfer_type tt ON i1.trans_type_id = tt.id
-    LEFT JOIN project pr ON i1.project_id = pr.id
-    LEFT JOIN employee e ON i1.employee_id = e.id
-    WHERE $where_clause i2.qty = -i1.qty AND i2.qty > 0 AND
-          i1.trans_id IN ( SELECT i.trans_id FROM inventory i GROUP BY i.trans_id HAVING COUNT(i.trans_id) = 2 )
-    GROUP BY $group_clause
+  qq|SELECT $columns FROM (
 
-    UNION
+     SELECT DISTINCT $select{trans}
+     FROM inventory i1
+     LEFT JOIN inventory i2 ON i1.trans_id = i2.trans_id
+     LEFT JOIN parts p ON i1.parts_id = p.id
+     LEFT JOIN parts assembly_part ON i1.used_for_assembly_id = assembly_part.id
+     LEFT JOIN bin b1 ON i1.bin_id = b1.id
+     LEFT JOIN bin b2 ON i2.bin_id = b2.id
+     LEFT JOIN warehouse w1 ON i1.warehouse_id = w1.id
+     LEFT JOIN warehouse w2 ON i2.warehouse_id = w2.id
+     LEFT JOIN transfer_type tt ON i1.trans_type_id = tt.id
+     LEFT JOIN project pr ON i1.project_id = pr.id
+     LEFT JOIN employee e ON i1.employee_id = e.id
+     WHERE $where_clause tt.direction = 'transfer' AND i2.qty = -i1.qty AND i2.qty > 0
+     GROUP BY $group_clause
 
-    SELECT DISTINCT $select{out}
-    FROM inventory i1
-    LEFT JOIN inventory i2 ON i1.trans_id = i2.trans_id
-    LEFT JOIN parts p ON i1.parts_id = p.id
-    LEFT JOIN bin b1 ON i1.bin_id = b1.id
-    LEFT JOIN bin b2 ON i2.bin_id = b2.id
-    LEFT JOIN warehouse w1 ON i1.warehouse_id = w1.id
-    LEFT JOIN warehouse w2 ON i2.warehouse_id = w2.id
-    LEFT JOIN transfer_type tt ON i1.trans_type_id = tt.id
-    LEFT JOIN project pr ON i1.project_id = pr.id
-    LEFT JOIN employee e ON i1.employee_id = e.id
-    WHERE $where_clause i1.qty < 0 AND
-          i1.trans_id IN ( SELECT i.trans_id FROM inventory i GROUP BY i.trans_id HAVING COUNT(i.trans_id) = 1 )
-    GROUP BY $group_clause
+     UNION
 
-    UNION
+     SELECT DISTINCT $select{in_out}
+     FROM inventory i1
+     LEFT JOIN parts p ON i1.parts_id = p.id
+     LEFT JOIN parts assembly_part ON i1.used_for_assembly_id = assembly_part.id
+     LEFT JOIN bin b1 ON i1.bin_id = b1.id
+     LEFT JOIN bin b2 ON i1.bin_id = b2.id
+     LEFT JOIN warehouse w1 ON i1.warehouse_id = w1.id
+     LEFT JOIN warehouse w2 ON i1.warehouse_id = w2.id
+     LEFT JOIN transfer_type tt ON i1.trans_type_id = tt.id
+     LEFT JOIN project pr ON i1.project_id = pr.id
+     LEFT JOIN employee e ON i1.employee_id = e.id
+     WHERE $where_clause tt.direction IN ('in', 'out')
+     GROUP BY $group_clause
 
-    SELECT DISTINCT $select{in}
-    FROM inventory i1
-    LEFT JOIN inventory i2 ON i1.trans_id = i2.trans_id
-    LEFT JOIN parts p ON i1.parts_id = p.id
-    LEFT JOIN bin b1 ON i1.bin_id = b1.id
-    LEFT JOIN bin b2 ON i2.bin_id = b2.id
-    LEFT JOIN warehouse w1 ON i1.warehouse_id = w1.id
-    LEFT JOIN warehouse w2 ON i2.warehouse_id = w2.id
-    LEFT JOIN transfer_type tt ON i1.trans_type_id = tt.id
-    LEFT JOIN project pr ON i1.project_id = pr.id
-    LEFT JOIN employee e ON i1.employee_id = e.id
-    WHERE $where_clause i1.qty > 0 AND
-          i1.trans_id IN ( SELECT i.trans_id FROM inventory i GROUP BY i.trans_id HAVING COUNT(i.trans_id) = 1 )
-    GROUP BY $group_clause
-    ORDER BY r_${sort_spec}) AS lines WHERE r_qty>0|;
+    ORDER BY r_${sort_spec}) AS lines WHERE r_qty != 0|;
 
-  my @all_vars = (@filter_vars,@filter_vars,@filter_vars);
+  my @all_vars = (@filter_vars, @filter_vars);
 
   if ($filter{limit}) {
     $query .= " LIMIT ?";
@@ -564,14 +448,16 @@ sub get_warehouse_journal {
 
   my $sth = prepare_execute_query($form, $dbh, $query, @all_vars);
 
+  if ($count_only) {
+    $main::lxdebug->leave_sub();
+    return $sth->fetchrow_array();
+  }
+
   my ($h_oe_id, $q_oe_id);
   if ($form->{l_oe_id}) {
     $q_oe_id = <<SQL;
       SELECT dord.id AS id, dord.donumber AS number,
-        CASE
-          WHEN dord.customer_id IS NULL THEN 'purchase_delivery_order'
-          ELSE                               'sales_delivery_order'
-        END AS type
+      dord.record_type::text AS type
       FROM delivery_orders dord
       WHERE dord.id = ?
 
@@ -591,6 +477,7 @@ SQL
   }
 
   my @contents = ();
+
   while (my $ref = $sth->fetchrow_hashref("NAME_lc")) {
     map { /^r_/; $ref->{"$'"} = $ref->{$_} } keys %$ref;
     my $qty = $ref->{"qty"} * 1;
@@ -660,7 +547,7 @@ sub get_warehouse_report {
   # filters
   my (@filter_ary, @filter_vars, @wh_bin_filter_ary, @wh_bin_filter_vars);
 
-  delete $form->{include_empty_bins} unless ($form->{l_warehousedescription} || $form->{l_bindescription});
+  delete $form->{include_empty_bins} unless ($form->{l_warehouse} || $form->{l_bin});
 
   if ($filter{warehouse_id}) {
     push @wh_bin_filter_ary,  "w.id = ?";
@@ -693,6 +580,11 @@ sub get_warehouse_report {
   if ($filter{partsid}) {
     push @filter_ary,  "p.id = ?";
     push @filter_vars, $filter{partsid};
+  }
+
+  if ($filter{partsgroup_id}) {
+    push @filter_ary,  "p.partsgroup_id = ?";
+    push @filter_vars, $filter{partsgroup_id};
   }
 
   if ($filter{chargenumber}) {
@@ -736,7 +628,7 @@ sub get_warehouse_report {
 
   # if of a property number or description is requested,
   # automatically check the matching id too.
-  map { $form->{"l_${_}id"} = "Y" if ($form->{"l_${_}description"} || $form->{"l_${_}number"}); } qw(warehouse bin);
+  map { $form->{"l_${_}id"} = "Y" if ($form->{"l_${_}"} || $form->{"l_${_}number"}); } qw(warehouse bin);
 
   # make order, search in $filter and $form
   my $sort_col    =  $form->{sort};
@@ -764,35 +656,85 @@ sub get_warehouse_report {
      "partdescription"      => "p.description",
      "classification_id"    => "p.classification_id",
      "part_type"            => "p.part_type",
-     "bindescription"       => "b.description",
+     "bin"                  => "b.description",
      "binid"                => "b.id",
+     "default_bin"          => "default_bin.description",
+     "default_warehouse"    => "default_wh.description",
      "chargenumber"         => "i.chargenumber",
      "bestbefore"           => "i.bestbefore",
      "ean"                  => "p.ean",
      "chargeid"             => "c.id",
-     "warehousedescription" => "w.description",
+     "warehouse"            => "w.description",
      "partunit"             => "p.unit",
-     "stock_value"          => "p.lastcost / COALESCE(pfac.factor, 1)",
+     "stock_value"          => ($form->{stock_value_basis} // '') eq 'list_price' ? "p.listprice / COALESCE(pfac.factor, 1)" : "p.lastcost / COALESCE(pfac.factor, 1)",
      "purchase_price"       => "p.lastcost",
+     "list_price"           => "p.listprice",
+     "price_factor"         => ($form->{l_purchase_price} || $form->{l_list_price}) ? "pfac.description" : undef,
   );
   $form->{l_classification_id}  = 'Y';
   $form->{l_part_type}          = 'Y';
+  $form->{l_price_factor}       = 'Y' if $form->{l_purchase_price} || $form->{l_list_price};
 
   my $select_clause = join ', ', map { +/^l_/; "$select_tokens{$'} AS $'" }
-        ( grep( { !/qty/ and /^l_/ and $form->{$_} eq 'Y' } keys %$form),
+        ( grep( { !/qty/ and !/^l_cvar/ and /^l_/ and $form->{$_} eq 'Y' } keys %$form),
           qw(l_parts_id l_qty l_partunit) );
 
   my $group_clause = join ", ", map { +/^l_/; "$'" }
-        ( grep( { !/qty/ and /^l_/ and $form->{$_} eq 'Y' } keys %$form),
+        ( grep( { !/qty/ and !/^l_cvar/ and /^l_/ and $form->{$_} eq 'Y' } keys %$form),
           qw(l_parts_id l_partunit) );
 
+  my @join_values = ();
   my %join_tokens = (
-    "stock_value" => "LEFT JOIN price_factors pfac ON (p.price_factor_id = pfac.id)",
-    );
+    "stock_value"  => "LEFT JOIN price_factors pfac ON (p.price_factor_id = pfac.id)",
+  );
+  $join_tokens{price_factor} = "LEFT JOIN price_factors pfac ON (p.price_factor_id = pfac.id)" if !$form->{l_stock_value};
+  $join_tokens{default_bin}  = "LEFT JOIN bin default_bin ON (p.bin_id = default_bin.id)" if $form->{l_default_bin};
+  $join_tokens{default_warehouse} = "LEFT JOIN warehouse default_wh ON (p.warehouse_id = default_wh.id)" if $form->{l_default_warehouse};
 
   my $joins = join ' ', grep { $_ } map { +/^l_/; $join_tokens{"$'"} }
-        ( grep( { !/qty/ and /^l_/ and $form->{$_} eq 'Y' } keys %$form),
+        ( grep( { !/qty/ and !/^l_cvar/ and /^l_/ and $form->{$_} eq 'Y' } keys %$form),
           qw(l_parts_id l_qty l_partunit) );
+
+  # add cvar for sorting
+  if (($form->{sort} // '') =~ /^cvar_/) {
+    my $sort_name = $form->{sort};
+    my $cvar_name = $sort_name;
+    $cvar_name =~ s/^cvar_//;
+    my $cvar_configs = CVar->get_configs('module' => 'IC');
+    my @allowed_cvar_names =
+      map {$_->{name}}
+      grep {$_->{type} =~ m/text|textfield|htmlfield/}
+      @$cvar_configs;
+    unless (any {$sort_name eq 'cvar_' . $_} @allowed_cvar_names) {
+      die "unsupported sort on cvar field";
+    }
+
+    $select_clause .= ", cvar_fields.$sort_name";
+    $group_clause  .= ", cvar_fields.$sort_name";
+    $joins .= qq|
+      LEFT JOIN (
+        SELECT text_value as $sort_name, trans_id
+        FROM custom_variable_configs cvar_cfg
+        LEFT JOIN custom_variables cvar
+        ON (cvar_cfg.module = 'IC' AND cvar_cfg.name = ?
+            AND cvar_cfg.id = cvar.config_id)
+      ) cvar_fields ON (cvar_fields.trans_id = p.id)
+      |;
+    push @join_values, $cvar_name
+  }
+  @filter_vars = (@join_values, @filter_vars);
+
+  my ($cvar_where, @cvar_values) = CVar->build_filter_query(
+    module         => 'IC',
+    trans_id_field => 'p.id',
+    filter         => $form,
+    sub_module     => undef,
+  );
+
+  if ($cvar_where) {
+    $where_clause .= qq| AND ($cvar_where)|;
+    push @filter_vars, @cvar_values;
+  }
 
   my $query =
     qq|SELECT * FROM ( SELECT $select_clause
@@ -847,8 +789,8 @@ sub get_warehouse_report {
   if ($form->{include_empty_bins}) {
     $query =
       qq|SELECT
-           w.id AS warehouseid, w.description AS warehousedescription,
-           b.id AS binid, b.description AS bindescription
+           w.id AS warehouseid, w.description AS warehouse,
+           b.id AS binid, b.description AS bin
          FROM bin b
          LEFT JOIN warehouse w ON (b.warehouse_id = w.id)|;
 
@@ -871,7 +813,7 @@ sub get_warehouse_report {
     }
     $sth->finish();
 
-    if (grep { $orderby eq $_ } qw(bindescription warehousedescription)) {
+    if (grep { $orderby eq $_ } qw(bin warehouse)) {
       @contents = sort { ($a->{$orderby} cmp $b->{$orderby}) * (($form->{order}) ? 1 : -1) } @contents;
     }
   }
@@ -1091,6 +1033,31 @@ $main::lxdebug->enter_sub();
   return ($max_qty_parts, $error);
 }
 
+sub get_wh_and_bin_for_charge {
+  $main::lxdebug->enter_sub();
+
+  my $self     = shift;
+  my %params   = @_;
+  my %bin_qty;
+
+  croak t8('Need charge number!') unless $params{chargenumber};
+
+  my $inv_items = SL::DB::Manager::Inventory->get_all(where => [chargenumber => $params{chargenumber} ]);
+
+  croak t8("Invalid charge number: #1", $params{chargenumber}) unless (ref @{$inv_items}[0] eq 'SL::DB::Inventory');
+  # add all qty for one bin and add wh_id
+  ($bin_qty{$_->bin_id}{qty}, $bin_qty{$_->bin_id}{wh}) = ($bin_qty{$_->bin_id}{qty} + $_->qty, $_->warehouse_id) for @{ $inv_items };
+
+  while (my ($bin, $value) = each (%bin_qty)) {
+    if ($value->{qty} > 0) {
+      $main::lxdebug->leave_sub();
+      return ($value->{qty}, $value->{wh}, $bin, $params{chargenumber});
+    }
+  }
+
+  $main::lxdebug->leave_sub();
+  return undef;
+}
 1;
 
 __END__
@@ -1132,6 +1099,13 @@ a destination or a src is mandatory.
 transfer accepts more than one transaction parameter, each being a hash ref. If
 more than one is supplied, it is guaranteed, that all are processed in the same
 transaction.
+
+It is possible to record stocktakings within this transaction as well.
+This is useful if the transfer is the result of stocktaking (see also
+C<SL::Controller::Inventory>). To do so the parameters C<record_stocktaking>,
+C<stocktaking_qty> and C<stocktaking_cutoff_date> hava to be given.
+If stocktaking should be saved, then the transfer quantity can be zero. In this
+case no entry in inventory will be made, but only the stocktaking entry.
 
 Here is a full list of parameters. All "_id" parameters except oe and
 orderitems can be called without id with RDB objects as well.
@@ -1199,6 +1173,18 @@ An optional comment.
 
 An expiration date. Note that this is not by default used by C<warehouse_report>.
 
+=item record_stocktaking
+
+A boolean flag to indicate that a stocktaking entry should be saved.
+
+=item stocktaking_qty
+
+The quantity for the stocktaking entry.
+
+=item stocktaking_cutoff_date
+
+The cutoff date for the stocktaking entry.
+
 =back
 
 =head2 create_assembly \%PARAMS, [ \%PARAMS, ... ]
@@ -1225,6 +1211,16 @@ The typical params would be:
     'comment'          => $form->{comment}
   );
 
+
+=head2 get_wh_and_bin_for_charge C<$params{chargenumber}>
+
+Gets the current qty from the inventory entries with the mandatory chargenumber: C<$params{chargenumber}>.
+Croaks if the chargenumber is missing or no entry currently exists.
+If there is one bin and warehouse with a positive qty, this fields are returned:
+C<qty> C<warehouse_id>, C<bin_id>, C<chargenumber>.
+Otherwise returns undef.
+
+
 =head3 Prerequisites
 
 All of these prerequisites have to be trueish, otherwise the function will exit
@@ -1244,10 +1240,13 @@ unsuccessfully with a return value of undef.
 
   There has to be at least one data set in the table assembly referenced to this assembly_id.
 
-=item Assembly cannot be destroyed or disassembled
+=item Assembly can be disassembled
 
   Assemblies are like cakes. You cannot disassemble it. NEVER.
-  No negative nor zero qty's are valid inputs.
+  But if your assembly is a mechanical cake you may unscrew it.
+  Assemblies are created in one transaction therefore you can
+  safely rely on the trans_id in inventory to disassemble the
+  created assemblies (see action disassemble_assembly in wh.pl).
 
 =item The assembly item(s) have to be in the same warehouse
 
@@ -1279,26 +1278,6 @@ as the specific reason.
 
 The method is transaction safe, in case of errors not a single entry will be made
 in inventory.
-
-Two prerequisites can be changed with this global parameters
-
-=over 2
-
-=item  $::instance_conf->get_transfer_default_warehouse_for_assembly
-
-  If trueish we try to get all the items form the default bins defined in parts
-  and do not try to find them in the destination warehouse. Returns an
-  error if not all items have set a default bin in parts.
-
-=item  $::instance_conf->get_bin_id_ignore_onhand
-
-  If trueish we can create assemblies even if we do not have enough items in stock.
-  The needed qty will be booked in a special bin, which has to be configured in
-  the client config.
-
-=back
-
-
 
 
 =head1 BUGS

@@ -4,12 +4,14 @@ use strict;
 
 use parent qw(Rose::Object);
 
-use Clone qw(clone);
+use Carp;
 use SL::File::Backend;
 use SL::File::Object;
+use SL::DB;
 use SL::DB::History;
 use SL::DB::ShopImage;
 use SL::DB::File;
+use SL::DB::FileVersion;
 use SL::Helper::UserPreferences;
 use SL::Controller::Helper::ThumbnailCreator qw(file_probe_type);
 use SL::JSON;
@@ -22,11 +24,39 @@ use constant RENAME_NEW_VERSION => 4;
 
 sub get {
   my ($self, %params) = @_;
-  die 'no id' unless $params{id};
-  my $dbfile = SL::DB::Manager::File->get_first(query => [id => $params{id}]);
-  die 'not found' unless $dbfile;
-  $main::lxdebug->message(LXDebug->DEBUG2(), "object_id=".$dbfile->object_id." object_type=".$dbfile->object_type." dbfile=".$dbfile);
-  SL::File::Object->new(db_file => $dbfile, id => $dbfile->id, loaded => 1);
+  croak "no id or dbfile or guid" unless $params{id} || $params{dbfile} || $params{guid};
+  croak "dbfile has to be of type SL::DB::File"
+    if defined $params{dbfile} && ref $params{dbfile} ne 'SL::DB::File';
+
+  my $dbfile;
+  my $file_version;
+  if (defined $params{guid}) {
+    $file_version = SL::DB::Manager::FileVersion->get_first(where => [guid => $params{guid}]);
+    die 'file version with guid not found: ' . $params{guid} unless $file_version;
+    $dbfile = $file_version->file;
+    if (defined $params{dbfile}) {
+      croak "dbfile doesn't match guid" if $dbfile->id != $params{dbfile}->id;
+    }
+    if (defined $params{id}) {
+      croak "id doesn't match guid" if $dbfile->id != $params{id};
+    }
+  } elsif (defined $params{dbfile}) {
+    $dbfile = $params{dbfile};
+    if (defined $params{id}) {
+      croak "id doesn't match dbfile id" if $dbfile->_id != $params{id};
+    }
+  } elsif (defined $params{id}) {
+    $dbfile = SL::DB::Manager::File->get_first(query => [id => $params{id}]);
+    die 'file with id not found: ' . $params{id} unless $dbfile;
+  }
+
+  my %object_params = (
+    db_file => $dbfile,
+    id => $dbfile->id,
+    loaded => 1,
+  );
+  $object_params{file_version} = $file_version if $file_version;
+  SL::File::Object->new(%object_params);
 }
 
 sub get_version_count {
@@ -49,10 +79,12 @@ sub get_all {
     object_id   => $params{object_id},
     object_type => $params{object_type}
   );
-  push @query, (file_name => $params{file_name}) if $params{file_name};
-  push @query, (file_type => $params{file_type}) if $params{file_type};
-  push @query, (mime_type => $params{mime_type}) if $params{mime_type};
-  push @query, (source    => $params{source})    if $params{source};
+  push @query, (file_name     => $params{file_name})     if $params{file_name};
+  push @query, (file_type     => $params{file_type})     if $params{file_type};
+  push @query, (mime_type     => $params{mime_type})     if $params{mime_type};
+  push @query, (source        => $params{source})        if $params{source};
+  push @query, (print_variant => $params{print_variant}) if $params{print_variant};
+  push @query, (uid           => $params{uid})           if $params{uid};
 
   my $sortby = $params{sort_by} || 'itime DESC,file_name ASC';
 
@@ -63,29 +95,24 @@ sub get_all {
 sub get_all_versions {
   my ($self, %params) = @_;
   my @versionobjs;
-  my @fileobjs = $self->get_all(%params);
+  my @fileobjs;
   if ( $params{dbfile} ) {
-    push @fileobjs, SL::File::Object->new(dbfile => $params{db_file}, id => $params{dbfile}->id, loaded => 1);
+    push @fileobjs, SL::File::Object->new(db_file => $params{dbfile}, id => $params{dbfile}->id, loaded => 1);
   } else {
     @fileobjs = $self->get_all(%params);
   }
   foreach my $fileobj (@fileobjs) {
-    $main::lxdebug->message(LXDebug->DEBUG2(), "obj=" . $fileobj . " id=" . $fileobj->id." versions=".$fileobj->version_count);
-    my $maxversion = $fileobj->version_count;
-    $fileobj->version($maxversion);
+    my @file_versions = reverse @{$fileobj->loaded_db_file->file_versions_sorted};
+    my $latest_file_version = shift @file_versions;
+    $fileobj->version($latest_file_version->version);
+    $fileobj->file_version($latest_file_version);
     push @versionobjs, $fileobj;
-    if ($maxversion > 1) {
-      for my $version (2..$maxversion) {
-        $main::lxdebug->message(LXDebug->DEBUG2(), "clone for version=".($maxversion-$version+1));
-        eval {
-          my $clone = clone($fileobj);
-          $clone->version($maxversion-$version+1);
-          $clone->newest(0);
-          $main::lxdebug->message(LXDebug->DEBUG2(), "clone version=".$clone->version." mtime=". $clone->mtime);
-          push @versionobjs, $clone;
-          1;
-        }
-      }
+    foreach my $file_version (@file_versions) {
+      my $clone = $fileobj->clone;
+      $clone->version($file_version->version);
+      $clone->file_version($file_version);
+      $clone->newest(0);
+      push @versionobjs, $clone;
     }
   }
   return @versionobjs;
@@ -99,10 +126,12 @@ sub get_all_count {
     object_id   => $params{object_id},
     object_type => $params{object_type}
   );
-  push @query, (file_name => $params{file_name}) if $params{file_name};
-  push @query, (file_type => $params{file_type}) if $params{file_type};
-  push @query, (mime_type => $params{mime_type}) if $params{mime_type};
-  push @query, (source    => $params{source})    if $params{source};
+  push @query, (file_name     => $params{file_name})     if $params{file_name};
+  push @query, (file_type     => $params{file_type})     if $params{file_type};
+  push @query, (mime_type     => $params{mime_type})     if $params{mime_type};
+  push @query, (source        => $params{source})        if $params{source};
+  push @query, (print_variant => $params{print_variant}) if $params{print_variant};
+  push @query, (uid           => $params{uid})           if $params{uid};
 
   my $cnt = SL::DB::Manager::File->get_all_count(query => [@query]);
   return $cnt;
@@ -127,10 +156,10 @@ sub delete {
   my ($self, %params) = @_;
   die "no id or dbfile in delete" unless $params{id} || $params{dbfile};
   my $rc = 0;
-  eval {
-    $rc = SL::DB->client->with_transaction(\&_delete, $self, %params);
+  SL::DB->client->with_transaction(sub {
+    $rc = $self->_delete(%params);
     1;
-  } or do { die $@ };
+  }) or do { die SL::DB->client->error };
   return $rc;
 }
 
@@ -163,7 +192,7 @@ sub _delete {
   }
   if ($backend->delete(%params)) {
     my $do_delete = 0;
-    if ( $params{last} || $params{version} || $params{all_but_notlast} ) {
+    if ( $params{last} || $params{file_version} || $params{all_but_notlast} ) {
       if ( $backend->get_version_count(%params) > 0 ) {
         $params{dbfile}->mtime(DateTime->now_local);
         $params{dbfile}->save;
@@ -183,10 +212,10 @@ sub save {
   my ($self, %params) = @_;
 
   my $obj;
-  eval {
-    $obj = SL::DB->client->with_transaction(\&_save, $self, %params);
+  SL::DB->client->with_transaction(sub {
+    $obj = $self->_save(%params);
     1;
-  } or do { die $@ };
+  }) or do { die SL::DB->client->error };
   return $obj;
 }
 
@@ -219,6 +248,8 @@ sub _save {
         mime_type      => $params{mime_type},
         title          => $params{title},
         description    => $params{description},
+        print_variant  => $params{print_variant},
+        uid            => $params{uid},
       );
       $file->itime($params{mtime})    if $params{mtime};
       $params{itime} = $params{mtime} if $params{mtime};
@@ -290,6 +321,7 @@ sub rename {
                                                   mime_type     => $file->mime_type,
                                                   source        => $file->source,
                                                   file_type     => $file->file_type,
+                                                  uid           => $file->uid,
                                                   file_name     => $params{to}
                                                 ) > 0;
 
@@ -389,7 +421,7 @@ SL::File - The intermediate Layer for handling files
                      object_id     => $self->object_id,
                      object_type   => $self->object_type,
                      mime_type     => 'application/pdf',
-                     file_type     => 'documents',
+                     file_type     => 'document',
                      file_contents => 'this is no pdf');
 
   my $file1  = SL::File->get(id => $id);
@@ -402,7 +434,7 @@ SL::File - The intermediate Layer for handling files
   SL::File->rename(id => $id,to => $newname);
   my $files1 = SL::File->get_all(object_id   => $object_id,
                                  object_type => $object_type,
-                                 file_type   => 'images',  # may be optional
+                                 file_type   => 'image',   # may be optional
                                  source      => 'uploaded' # may be optional
                                 );
 
@@ -419,13 +451,13 @@ There are three types of files:
 
 =over 2
 
-=item - documents,
+=item - document,
 
 which can be generated files (for sales), scanned files or uploaded files (for purchase) for an ERP-object.
 They can exist in different versions. The versioning is handled implicit. All versions of a file may be
 deleted by the user if she/he is allowed to do this.
 
-=item - attachments,
+=item - attachment,
 
 which have additional information for an ERP-objects. They are uploadable. If a filename still exists
 on a ERP-Object the new uploaded file is a new version of this or it must be renamed by user.
@@ -434,7 +466,7 @@ There are generic attachments for a specific document group (like sales_invoices
 combinide/merged with the document-file in the time of printing.
 Today only PDF-Attachmnets can be merged with the generated document-PDF.
 
-=item - images,
+=item - image,
 
 they are like attachments, but they may be have thumbnails for displaying.
 So the must have an image format like png,jpg. The versioning is like attachments
@@ -527,7 +559,7 @@ The Type of the ERP-object like "sales_quotation" for a new file. A clear mappin
 
 =item C<file_type>
 
-The type may be "documents", "attachments" or "images" for a new file.
+The type may be "document", "attachment" or "image" for a new file.
 
 =item C<source>
 
@@ -632,7 +664,7 @@ The Type of the ERP-object like "sales_quotation". A clear mapping to the class/
 
 =item C<file_type>
 
-The type may be "documents", "attachments" or "images". This parameter is optional.
+The type may be "document", "attachment" or "image". This parameter is optional.
 
 =item C<file_name>
 

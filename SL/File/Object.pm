@@ -6,7 +6,7 @@ use DateTime;
 
 use Rose::Object::MakeMethods::Generic (
   scalar => [ qw() ],
-  'scalar --get_set_init' => [ qw(db_file loaded id version newest) ],
+  'scalar --get_set_init' => [ qw(db_file loaded id file_version version newest) ],
 );
 
 #use SL::DB::Helper::Attr;
@@ -97,8 +97,8 @@ sub delete_last_version {
   SL::File->delete(dbfile => $_[0]->loaded_db_file, last => 1 )
 }
 
-sub delete_version {
-  SL::File->delete(dbfile => $_[0]->loaded_db_file, version => $_[0]->version )
+sub delete_file_version {
+  SL::File->delete(dbfile => $_[0]->loaded_db_file, file_version => $_[0]->file_version )
 }
 
 sub purge {
@@ -124,12 +124,17 @@ sub loaded_db_file {  # so, dass wir die nur einmal laden.
   $_[0]->db_file;
 }
 
+sub clone {
+  bless +{ %{ $_[0] } }, __PACKAGE__;
+}
 
-sub init_db_file { die 'must always have a db file'; }
-sub init_loaded  { 0 }
-sub init_id      { 0 }
-sub init_version { 0 }
-sub init_newest  { 1 }
+
+sub init_db_file      { die 'must always have a db file'; }
+sub init_loaded       { 0 }
+sub init_id           { 0 }
+sub init_version      { 0 }
+sub init_file_version { undef }
+sub init_newest       { 1 }
 
 1;
 
@@ -147,7 +152,7 @@ SL::File::Object - a filemangement object wrapper
 
   my ($object) = SL::File->get_all(object_id   => $object_id,
                                    object_type => $object_type,
-                                   file_type   => 'images',  # may be optional
+                                   file_type   => 'image',   # may be optional
                                    source      => 'uploaded' # may be optional
                                   );
 # read attributes
@@ -214,9 +219,11 @@ Following methods are wrapper to read the attributes of L<SL::DB::File> :
 
 =back
 
-Additional are there special methods. If the Object is created by SL::File::get_all_versions()
-or by "$object->versions"
-it has a version number. So the different mtime, filepath or content can be retrieved:
+Additional are there special methods. If the Object is created by
+C<SL::File::get_all_versions()> or by C<$object->versions>. It has a version
+number in C<version> and a version object in C<file_version> of type
+C<SL::DB::FileVersion>. So the different mtime, filepath or content can be
+retrieved:
 
 =over 4
 

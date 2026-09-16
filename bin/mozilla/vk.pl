@@ -49,7 +49,7 @@ use strict;
 
 sub search_invoice {
   $main::lxdebug->enter_sub();
-  $main::auth->assert('ar_transactions | ap_transactions | invoice_edit');
+  $main::auth->assert('sales_report');
 
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
@@ -88,7 +88,7 @@ sub search_invoice {
 sub invoice_transactions {
   $main::lxdebug->enter_sub();
 
-  $main::auth->assert('ar_transactions | ap_transactions | invoice_edit');
+  $main::auth->assert('sales_report');
 
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
@@ -137,7 +137,7 @@ sub invoice_transactions {
   $form->{title} = $locale->text('Sales Report');
 
   @columns =
-    qw(description invnumber transdate customernumber customername partnumber partsgroup country business transdate qty parts_unit weight sellprice sellprice_total discount lastcost lastcost_total marge_total marge_percent employee salesman);
+    qw(description invnumber transdate shipvia customernumber customername partnumber partsgroup country business transdate qty parts_unit weight sellprice sellprice_total discount lastcost lastcost_total marge_total marge_percent employee salesman);
 
   my @includeable_custom_variables = grep { $_->{includeable} } @{ $cvar_configs_ic }, @{ $cvar_configs_ct };
   my @searchable_custom_variables  = grep { $_->{searchable} }  @{ $cvar_configs_ic }, @{ $cvar_configs_ct };
@@ -171,6 +171,7 @@ sub invoice_transactions {
     'salesman'                => { 'text' => $locale->text('Salesperson'), },
     'invnumber'               => { 'text' => $locale->text('Invoice Number'), },
     'transdate'               => { 'text' => $locale->text('Invoice Date'), },
+    'shipvia'                 => { 'text' => $locale->text('Ship via'), },
     'qty'                     => { 'text' => $locale->text('Quantity'), },
     'parts_unit'              => { 'text' => $locale->text('Base unit'), },
     'weight'                  => { 'text' => $locale->text('Weight'), },
@@ -209,9 +210,10 @@ sub invoice_transactions {
   push @options, $locale->text('Department')              . " : " . SL::DB::Department->new(id => $form->{department_id})->load->description if $form->{department_id};
   push @options, $locale->text('Invoice Number')          . " : $form->{invnumber}"                                                         if $form->{invnumber};
   push @options, $locale->text('Invoice Date')            . " : $form->{invdate}"                                                           if $form->{invdate};
+  push @options, $locale->text('Ship via')                . " : $form->{shipvia}"                                                         if $form->{shipvia};
   push @options, $locale->text('Part Number')             . " : $form->{partnumber}"                                                        if $form->{partnumber};
   push @options, $locale->text('Partsgroup')              . " : " . SL::DB::PartsGroup->new(id => $form->{partsgroup_id})->load->partsgroup if $form->{partsgroup_id};
-  push @options, $locale->text('Country')                 . " : $form->{country}"                                                           if $form->{country};
+  push @options, $locale->text('Country')                 . " : " . SL::DB::Country->new(id => $form->{country_id})->load->description_localized($::myconfig{countrycode}) if $form->{country_id};
   push @options, $locale->text('Employee')                . ' : ' . SL::DB::Employee->new(id => $form->{employee_id})->load->name           if $form->{employee_id};
   push @options, $locale->text('Salesman')                . ' : ' . SL::DB::Employee->new(id => $form->{salesman_id})->load->name           if $form->{salesman_id};
   push @options, $locale->text('Customer type')           . ' : ' . SL::DB::Business->new(id => $form->{business_id})->load->description    if $form->{business_id};

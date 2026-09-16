@@ -2,8 +2,9 @@ package SL::Layout::ActionBar::Action;
 
 use strict;
 use parent qw(Rose::Object);
+use SL::Locale::String qw(t8);
 
-use SL::Presenter;
+use SL::Presenter::Tag qw(div_tag name_to_id);
 
 use Rose::Object::MakeMethods::Generic (
   'scalar --get_set_init' => [ qw(id params text) ],
@@ -28,6 +29,21 @@ sub from_params {
   my ($text, %params) = @$data;
   return if exists($params{only_if}) && !$params{only_if};
   return if exists($params{not_if})  &&  $params{not_if};
+
+  if (my $key = $params{accesskey}) {
+    my $help = '';
+    $help .= t8('kbd Alt')   . '+' if $key =~ s/alt\+//;
+    $help .= t8('kbd Ctrl')  . '+' if $key =~ s/ctrl\+//;
+    $help .= t8('kbd Shift') . '+' if $key =~ s/shift\+//;
+    $help .= $key;
+    $text =~ s/($key)/<u>$1<\/u>/i;
+    $text = div_tag(
+      div_tag($text).
+      div_tag('', class => 'actionbar-accesskey-spacer').
+      div_tag($help, class => 'actionbar-accesskey-help'),
+    class => 'actionbar-accesskey-container');
+  }
+
   return SL::Layout::ActionBar::Submit->new(text => $text, params => \%params);
 }
 
@@ -35,18 +51,13 @@ sub callable { 0 }
 
 # shortcut for presenter
 
-sub p {
-  SL::Presenter->get
-}
-
 sub init_params {
   +{}
 }
 
 # unique id to tie div and javascript together
 sub init_id {
-  $_[0]->params->{id} //
-  $_[0]->p->name_to_id('action[]')
+  $_[0]->params->{id} // name_to_id('action[]')
 }
 
 1;

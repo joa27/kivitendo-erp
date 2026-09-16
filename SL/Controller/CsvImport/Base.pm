@@ -45,8 +45,8 @@ sub run {
 
   $self->controller->track_progress(progress => 10);
 
-  my $old_numberformat      = $::myconfig{numberformat};
-  $::myconfig{numberformat} = $self->controller->profile->get('numberformat');
+  local $::myconfig{numberformat} = $self->controller->profile->get('numberformat');
+  local $::myconfig{dateformat}   = $self->controller->profile->get('dateformat');
 
   $self->csv->parse;
 
@@ -64,6 +64,10 @@ sub run {
   $self->controller->info_headers({ used => { }, headers => [ ] });
 
   my $objects  = $self->csv->get_objects;
+  if ($self->csv->errors) {
+    $self->controller->errors([ $self->csv->errors ]) ;
+    return;
+  }
 
   $self->controller->track_progress(progress => 70);
 
@@ -83,8 +87,6 @@ sub run {
   $self->fix_field_lengths;
 
   $self->controller->track_progress(progress => 100);
-
-  $::myconfig{numberformat} = $old_numberformat;
 }
 
 sub add_columns {
@@ -290,14 +292,19 @@ sub check_vc {
 sub handle_cvars {
   my ($self, $entry) = @_;
 
+  my $object = $entry->{object_to_save} || $entry->{object};
+  return unless $object->can('cvars_by_config');
+
   my %type_to_column = ( text      => 'text_value',
                          textfield => 'text_value',
+                         htmlfield => 'text_value',
                          select    => 'text_value',
                          date      => 'timestamp_value_as_date',
                          timestamp => 'timestamp_value_as_date',
                          number    => 'number_value_as_number',
                          bool      => 'bool_value' );
 
+  # autovivify all cvars (cvars_by_config will do that for us)
   my @cvars;
   my %changed_cvars;
   foreach my $config (@{ $self->all_cvar_configs }) {
@@ -312,16 +319,13 @@ sub handle_cvars {
   }
 
   # merge existing with new cvars. swap every existing with the imported one, push the rest
-  if (@cvars) {
-    my @orig_cvars = ($entry->{object_to_save} || $entry->{object})->custom_variables;
-    for (@orig_cvars) {
-      $_ = $changed_cvars{ $_->config->name } if $changed_cvars{ $_->config->name };
-      delete $changed_cvars{ $_->config->name };
-    }
-    push @orig_cvars, values %changed_cvars;
-
-    $entry->{object}->custom_variables(\@orig_cvars);
+  my @orig_cvars = @{ $object->cvars_by_config };
+  for (@orig_cvars) {
+    $_ = $changed_cvars{ $_->config->name } if $changed_cvars{ $_->config->name };
+    delete $changed_cvars{ $_->config->name };
   }
+  push @orig_cvars, values %changed_cvars;
+  $object->custom_variables(\@orig_cvars);
 }
 
 sub init_profile {
@@ -522,6 +526,34 @@ sub check_delivery_term {
   return 1;
 }
 
+sub check_country_optional {
+  my ($self, $entry, $id_column, $obj_column) = @_;
+
+  my $country;
+  my $country_id;
+  my $object = $entry->{object};
+
+  if ($entry->{raw_data}{$id_column}) {
+    $country = SL::DB::Manager::Country->find_by(id => $entry->{raw_data}{$id_column});
+    if (!$country) {
+      push @{ $entry->{errors} }, $::locale->text('Error: Country not found: value #1 in #2', $entry->{raw_data}{$id_column}, $id_column);
+      return 0;
+    }
+  } elsif ($entry->{raw_data}{$obj_column}) {
+    $country = SL::DB::Manager::Country->find_by_name($entry->{raw_data}{$obj_column});
+    if (!$country) {
+      push @{ $entry->{errors} }, $::locale->text('Error: Country not found: value #1 in #2', $entry->{raw_data}{$obj_column}, $obj_column);
+      return 0;
+    }
+  } else {
+    return 1;
+  }
+  $object->$id_column($country->id);
+  $self->clone_methods->{$id_column} = 1;
+
+  return 1;
+}
+
 sub save_objects {
   my ($self, %params) = @_;
 
@@ -529,6 +561,33 @@ sub save_objects {
 
   return unless $data->[0];
   return unless $data->[0]{object};
+
+  # If we store into tables which get numbers from the TransNumberGenerator
+  # we have to lock all tables referenced by the storage table (or by
+  # tables stored alongside with the storage table) that are handled by
+  # the TransNumberGenerator, too.
+  # Otherwise we can run into a deadlock if someone saves a document via
+  # the user interface. The exact behavoir depends on timing.
+  # E.g. we are importing orders and a user want to
+  # book an invoice:
+  # web: locks ar (via before-save hook and TNG (or SL::TransNumber))
+  # importer: locks oe (via before-save hook and TNG) (*)
+  # importer: locks defaults (via before-save hook and TNG)
+  # web: wants to lock defaults (via before-save hook and TNG (or SL::TransNumber)) -> is waiting
+  # importer: wants to save oe and wants to lock referenced tables (here ar) -> is waiting
+  # --> deadlock
+  #
+  # (*) if the importer locks ar here, too, everything is fine, because it will wait here
+  # before locking the defaults table.
+  #
+  # List of referenced tables:
+  # (Locking is done in the transaction below)
+  my %referenced_tables_by_type = (
+    orders          => [qw(ar customer vendor)],
+    delivery_orders => [qw(customer vendor)   ],
+    ar_transactions => [qw(customer)          ],
+    ap_transactions => [qw(vendor)            ],
+  );
 
   $self->controller->track_progress(phase => 'saving data', progress => 0); # scale from 45..95%;
 
@@ -538,11 +597,18 @@ sub save_objects {
   for my $chunk (0 .. $last_index / $chunk_size) {
     $self->controller->track_progress(progress => ($chunk_size * $chunk)/scalar(@$data) * 100); # scale from 45..95%;
     SL::DB->client->with_transaction(sub {
+
+      foreach my $refs (@{ $referenced_tables_by_type{$self->controller->{type}} || [] }) {
+        SL::DB->client->dbh->do('LOCK ' . $refs . ' IN ROW EXCLUSIVE MODE') || die SL::DB->client->dbh->errstr;
+      }
+
       foreach my $entry_index ($chunk_size * $chunk .. min( $last_index, $chunk_size * ($chunk + 1) - 1 )) {
         my $entry = $data->[$entry_index];
-        next if @{ $entry->{errors} };
 
         my $object = $entry->{object_to_save} || $entry->{object};
+        $self->save_additions_always($object);
+
+        next if @{ $entry->{errors} };
 
         my $ret;
         if (!eval { $ret = $object->save(cascade => !!$self->save_with_cascade()); 1 }) {
@@ -551,6 +617,7 @@ sub save_objects {
           push @{ $entry->{errors} }, $::locale->text('Error when saving: #1', $object->db->error);
         } else {
           $self->_save_history($object);
+          $self->save_additions($object);
           $self->controller->num_imported($self->controller->num_imported + 1);
         }
       }
@@ -592,19 +659,47 @@ sub clean_fields {
   return @cleaned_fields;
 }
 
+sub save_additions {
+  my ($self, $object) = @_;
+
+  # Can be overridden by derived specialized importer classes to save
+  # additional tables (e.g. record links).
+  # This sub is called after the object is saved successfully in an transaction.
+
+  return;
+}
+
+sub save_additions_always {
+  my ($self, $object) = @_;
+
+  # Can be overridden by derived specialized importer classes to save
+  # additional tables always.
+  # This sub is called before the object is saved. Therefore this
+  # hook will always be executed whether or not the import entry can be saved successfully.
+
+  return;
+}
+
+
 sub _save_history {
   my ($self, $object) = @_;
 
-  if (any { $self->controller->{type} && $_ eq $self->controller->{type} } qw(parts customers_vendors orders ar_transactions)) {
+  if (any { $self->controller->{type} && $_ eq $self->controller->{type} } qw(parts customers_vendors orders delivery_orders ar_transactions)) {
     my $snumbers = $self->controller->{type} eq 'parts'             ? 'partnumber_' . $object->partnumber
                  : $self->controller->{type} eq 'customers_vendors' ?
                      ($self->table eq 'customer' ? 'customernumber_' . $object->customernumber : 'vendornumber_' . $object->vendornumber)
                  : $self->controller->{type} eq 'orders'            ? 'ordnumber_' . $object->ordnumber
+                 : $self->controller->{type} eq 'delivery_orders'   ? 'donumber_'  . $object->donumber
                  : $self->controller->{type} eq 'ar_transactions'   ? 'invnumber_' . $object->invnumber
                  : '';
 
-    my $what_done = $self->controller->{type} eq 'orders' ? 'sales_order'
-                  : '';
+    my $what_done = '';
+    if ($self->controller->{type} eq 'orders') {
+      $what_done = $object->customer_id ? 'sales_order' : 'purchase_order';
+    }
+    if ($self->controller->{type} eq 'delivery_orders') {
+      $what_done = $object->customer_id ? 'sales_delivery_order' : 'purchase_delivery_order';
+    }
 
     SL::DB::History->new(
       trans_id    => $object->id,

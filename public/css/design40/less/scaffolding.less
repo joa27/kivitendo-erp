@@ -1,0 +1,208 @@
+/* ------------------------------------------------------------- */
+/* SCAFFOLDING (scaffolding.less)                                */
+/* ------------------------------------------------------------- */
+
+// ----------------------------------------------------------------------------
+//
+// SCAFFOLDING (PAGE & PAGE COMPONENTS)
+//
+// ----------------------------------------------------------------------------
+// DESCRIPTION:
+// All main components of a Kivitendo page are defined here
+// but not in all details. See therefore in the mentioned specialized
+// LESS-files
+//
+//
+// CONTENTS:
+// - BODY
+// - FRAME-HEADER
+// - MENUV3
+// - LAYOUT-ACTIONBAR
+// - CONTENT
+// - COLUMNS
+//   - SINGLE COLUMN
+// - WRAPPER POSITIONS-TABLE (FULL-WIDTH)
+// - DIVERS COMPONENTS (General Wrapper)
+// - MEDIA: Print
+// ----------------------------------------------------------------------------
+
+
+
+
+// --------------------------------------
+// BODY
+// --------------------------------------
+html {
+  height: 100%;
+}
+
+body {
+  margin:           0 ;
+  color:            @base-primary ;
+  font-family:      @font-family-sans-serif;
+  font-size:        @font-size-base ;
+
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+//  background-color: @body-bg;
+  .bg-body() ;
+
+
+  // --------------------------------------
+  // Frame-Header
+  // --------------------------------------
+  // Quicksearch, User, Client, Logout
+  // see also frame-header.less
+  #frame-header{
+    z-index: @zindex-dashboard;
+  }
+
+
+
+  // --------------------------------------
+  // MENUV3
+  // --------------------------------------
+
+  // admin section &
+  & #menuv3:first-child{
+    top: 0 !important;
+  }
+  // see also menu.less
+  #menuv3  {
+    z-index:   @zindex-navbar;
+    width:     100%;
+  }
+
+
+
+  // --------------------------------------
+  // LAYOUT-ACTIONBAR
+  // --------------------------------------
+
+  // see also menu_actionbar.less
+  .layout-actionbar  {
+    flex-basis: content;
+    flex-grow: 0;
+    flex-shrink: 0;
+    z-index: @zindex-actionbar;
+    height: 33px;
+    margin: 0 0.4em 0 0;
+
+    & ~ div:first {
+      padding-top: 25px;
+    }
+
+    & > div + div {
+      margin-left: 2px;
+    }
+
+  }
+
+
+
+
+  // --------------------------------------
+  // CONTENT
+  // --------------------------------------
+  //& > #content {
+  & #content {
+    flex: 1;
+    overflow: auto;
+    display:          block;
+
+    .bg-content() ;
+
+
+    // --------------------------------------
+    // UI-TABS-PANEL
+    // --------------------------------------
+    .ui-tabs-panel {
+       //background-color: @tabs-bg;
+    }
+
+
+
+    // --------------------------------------
+    // Wrapper & Columns
+    // --------------------------------------
+    // PENDENT: .cols-no-padding???
+    .wrapper{
+      clear:       both;
+      display:     block;
+      overflow:    hidden;
+      width:       97.2%;
+      height:      auto;
+
+
+      // -----------------------
+      // Colums (.col)
+      // -----------------------
+      // Single Column (DIV or HORIZONTAL TABLE .tbl-horizontal)
+      & > .col {
+        display: block;
+        overflow: hidden;
+        float: left;
+        margin-right: 1.6em;
+      } // /.col
+
+      & > .col,
+      & > .tbl-horizontal{
+        float: left;
+        margin-right: 1.6em;
+        padding-bottom: 20px ; // required to avoid crops of buttons
+      }
+//      & > .tbl-horizontal:last-child{
+//        margin-right: 0 !important ;
+//      }
+
+
+
+      // Centered Column
+      &.center{
+        margin: 0 auto;
+        display: table;
+        width: auto;
+      }
+      // PENDENT: anschauen
+      &.width-moderate{
+        width: auto;
+      }
+
+      & > table.tbl-horizontal:last-child{
+        margin-right: 0 !important ;
+      }
+
+    } // /.wrapper
+
+  } // /#content
+
+
+
+  // --------------------------------------
+  // WRAPPER POSITIONS-TABLE (FULL-WIDTH)
+  // --------------------------------------
+  // Special Container with Full-Width-Table (Positions) and Show/Hide-Buttons
+  // PENDENT: woanders plazieren
+  .full-width {
+    width:   100% ;
+    padding: 0 0 1.0em 0 ;
+    margin:  0 0 0 0;
+
+    // Use this Selector on the same Level for Show/Hide Details-Buttons
+    // Edit these Buttons in tables.less
+    // PENDENT: vielleicht anders loesen
+    &.positions{ }
+  }
+
+  // zentrierte Elemente
+  // PENDENT: braucht es das?
+  div.center{
+      margin: 0 auto;
+      display: table;
+      width: auto;
+  }
+
+
+}
+// /body

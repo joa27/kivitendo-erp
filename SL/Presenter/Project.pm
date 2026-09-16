@@ -2,15 +2,16 @@ package SL::Presenter::Project;
 
 use strict;
 
-use parent qw(Exporter);
+use SL::Presenter::EscapedText qw(escape is_escaped);
+use SL::Presenter::Tag qw(input_tag html_tag name_to_id select_tag link_tag);
 
 use Exporter qw(import);
-our @EXPORT = qw(project project_picker);
+our @EXPORT_OK = qw(project project_picker);
 
 use Carp;
 
 sub project {
-  my ($self, $project, %params) = @_;
+  my ($project, %params) = @_;
 
   return '' unless $project;
 
@@ -18,35 +19,53 @@ sub project {
 
   croak "Unknown display type '$params{display}'" unless $params{display} =~ m/^(?:inline|table-cell)$/;
 
-  my $description = $project->full_description(style => $params{style});
-  my $callback    = $params{callback} ? '&callback=' . $::form->escape($params{callback}) : '';
+  my $description = $project->full_description(style => delete $params{style});
+  my $callback    = $params{callback} ?
+                      '&callback=' . $::form->escape(delete $params{callback})
+                    : '';
 
-  my $text = join '', (
-    $params{no_link} ? '' : '<a href="controller.pl?action=Project/edit&amp;id=' . $self->escape($project->id) . $callback . '">',
-    $self->escape($description),
-    $params{no_link} ? '' : '</a>',
-  );
-  return $self->escaped_text($text);
+  my $text = escape($description);
+  if (! delete $params{no_link}) {
+    my $href = 'controller.pl?action=Project/edit'
+               . '&id=' . escape($project->id)
+               . $callback;
+    $text = link_tag($href, $text, %params);
+  }
+
+  is_escaped($text);
 }
 
 sub project_picker {
-  my ($self, $name, $value, %params) = @_;
+  my ($name, $value, %params) = @_;
 
   $value      = SL::DB::Manager::Project->find_by(id => $value) if $value && !ref $value;
-  my $id      = delete($params{id}) || $self->name_to_id($name);
+  my $id      = delete($params{id}) || name_to_id($name);
   my @classes = $params{class} ? ($params{class}) : ();
   push @classes, 'project_autocomplete';
 
+
+  my %data_params = map { $_ => delete $params{$_}  } grep { defined $params{$_} } qw(customer_id active valid description_style);
+
+  # If there is no 'onClick' parameter, set it to 'this.select()',
+  # so that the user can type directly in the input field
+  # to search another project.
+  if (!grep { m{onclick}i } keys %params) {
+    $params{onClick} = 'this.select()';
+  }
+
   my $ret =
-    $self->input_tag($name, (ref $value && $value->can('id') ? $value->id : ''), class => "@classes", type => 'hidden', id => $id) .
-    join('', map { $params{$_} ? $self->input_tag("", delete $params{$_}, id => "${id}_${_}", type => 'hidden') : '' } qw(customer_id)) .
-    $self->input_tag("", ref $value ? $value->displayable_name : '', id => "${id}_name", %params);
+    input_tag($name, (ref $value && $value->can('id') ? $value->id : ''), class => "@classes", type => 'hidden', id => $id,
+              'data-project-picker-data' => JSON::to_json(\%data_params),
+    ) .
+    input_tag("", ref $value ? $value->displayable_name : '', id => "${id}_name", %params);
 
   $::request->layout->add_javascripts('autocomplete_project.js');
   $::request->presenter->need_reinit_widgets($id);
 
-  $self->html_tag('span', $ret, class => 'project_picker');
+  html_tag('span', $ret, class => 'project_picker');
 }
+
+sub picker { goto &project_picker };
 
 1;
 
@@ -63,7 +82,7 @@ SL::Presenter::Project - Presenter module for project Rose::DB objects
 =head1 SYNOPSIS
 
   my $project = SL::DB::Manager::Project->get_first;
-  my $html    = SL::Presenter->get->project($project, display => 'inline');
+  my $html    = SL::Presenter::Project->project($project, display => 'inline');
 
 =head1 FUNCTIONS
 
@@ -74,21 +93,25 @@ SL::Presenter::Project - Presenter module for project Rose::DB objects
 Returns a rendered version (actually an instance of
 L<SL::Presenter::EscapedText>) of the project object C<$customer>.
 
-C<%params> can include:
+Remaining C<%params> are passed to the function
+C<SL::Presenter::Tag::link_tag>. It can include:
 
 =over 2
 
 =item * display
 
-Either C<inline> (the default) or C<table-cell>. At the moment both
-representations are identical and produce the project's description
-(controlled by the C<style> parameter) linked to the corresponding
-'edit' action.
+Either C<inline> (the default) or C<table-cell>. Is passed to the function
+C<SL::Presenter::Tag::link_tag>.
 
 =item * style
 
 Determines what exactly will be output. Can be one of the values with
 C<both> being the default if it is missing:
+
+=item * no_link
+
+If falsish (the default) then the description will be linked to the "edit"
+dialog.
 
 =over 2
 

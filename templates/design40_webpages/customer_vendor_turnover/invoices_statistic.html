@@ -1,0 +1,61 @@
+[%- USE T8 %]
+[%- USE LxERP %]
+[%- USE L %]
+[%- USE HTML %]
+<div id="invoice_statistic" class="wrapper">
+  <table class="tbl-list wi-moderate">
+    <thead>
+      <tr>
+        <th>[% 'Type' | $T8 %]</th>
+        <th>[% 'Invoice Number' | $T8 %]</th>
+        <th>[% 'Invoice Date' | $T8 %]</th>
+        <th>[% 'Amount' | $T8 %]</th>
+        <th>[% 'Inv. Duedate' | $T8 %]</th>
+        <th>[% 'Paid' | $T8 %]</th>
+        <th>[% 'Open Amount' | $T8 %]</th>
+      </tr>
+    </thead>
+    <tbody>
+
+      [%- FOREACH row = invoices %]
+        [% IF FORM.db == 'customer' %]
+          [% IF row.type == 'invoice' %]
+            [% SET type = 'Invoice (one letter abbreviation)' %]
+            [% SET link = 'is.pl?action=edit&id=' _ row.id %]
+            [% IF INSTANCE_CONF.get_feature_experimental_invoice %]
+              [% SET link = 'controller.pl?action=Invoice/edit&type=invoice&id=' _ row.id %]
+            [% END %]
+          [% ELSIF row.type == 'credit_note' %]
+            [% SET type = 'Credit Note (one letter abbreviation)' %]
+            [% IF INSTANCE_CONF.get_feature_experimental_invoice %]
+              [% SET link = 'is.pl?action=edit&id=' _ row.id %]
+            [% END %]
+          [% ELSE %]
+            [% SET type = 'AR Transaction (abbreviation)' %]
+            [% SET link = 'ar.pl?action=edit&id=' _ row.id %]
+          [% END %]
+          [% ELSE %]
+            [% IF row.invoice %]
+            [% SET type = 'Invoice (one letter abbreviation)' %]
+            [% SET link = 'ir.pl?action=edit&id=' _ row.id %]
+            [% IF INSTANCE_CONF.get_feature_experimental_invoice %]
+              [% SET link = 'controller.pl?action=Invoice/edit&type=purchase_invoice&id=' _ row.id %]
+            [% END %]
+          [% ELSE %]
+            [% SET type = 'AP Transaction (abbreviation)' %]
+            [% SET link = 'ap.pl?action=edit&id=' _ row.id %]
+          [% END %]
+        [% END %]
+      <tr>
+        <td>[% type | $T8 %]</td>
+        <td><a href="[% link %]">[% row.invnumber | html %]</a></td>
+        <td>[% row.transdate.to_kivitendo | html %]</td>
+        <td class="numeric">[%- LxERP.format_amount(row.amount, 2) %]</td>
+        <td>[% row.duedate.to_kivitendo | html %]</td>
+        <td class="numeric">[%- LxERP.format_amount(row.paid, 2) %]</td>
+        <td class="numeric">[%- LxERP.format_amount(row.amount - row.paid, 2) %]
+      </tr>
+      [% END %]
+    </tbody>
+  </table>
+</div>

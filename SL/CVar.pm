@@ -10,6 +10,7 @@ use Data::Dumper;
 
 use SL::DBUtils;
 use SL::MoreCommon qw(listify);
+use SL::Presenter::Text;
 use SL::Util qw(trim);
 use SL::DB;
 
@@ -40,13 +41,13 @@ SQL
     my $configs  = selectall_hashref_query($form, $dbh, $query, @values);
 
     foreach my $config (@{ $configs }) {
-      if ($config->{type} eq 'select') {
+      if ($config->{type} eq 'select' or $config->{type} eq 'multiselect') {
         $config->{OPTIONS} = [ map { { 'value' => $_ } } split(m/\#\#/, $config->{options}) ];
 
       } elsif ($config->{type} eq 'number') {
         $config->{precision} = $1 if ($config->{options} =~ m/precision=(\d+)/i);
 
-      } elsif ($config->{type} eq 'textfield') {
+      } elsif ($config->{type} =~ m{^(?:html|text)field$}) {
         $config->{width}  = 30;
         $config->{height} =  5;
         $config->{width}  = $1 if ($config->{options} =~ m/width=(\d+)/i);
@@ -112,7 +113,7 @@ sub get_custom_variables {
   my $custom_variables = $self->get_configs(module => $params{module});
 
   foreach my $cvar (@{ $custom_variables }) {
-    if ($cvar->{type} eq 'textfield') {
+    if ($cvar->{type} =~ m{^(?:html|text)field}) {
       $cvar->{width}  = 30;
       $cvar->{height} =  5;
 
@@ -125,7 +126,7 @@ sub get_custom_variables {
     } elsif ($cvar->{type} eq 'number') {
       $cvar->{precision} = $1 if ($cvar->{options} =~ m/precision=(\d+)/i);
 
-    } elsif ($cvar->{type} eq 'select') {
+    } elsif ($cvar->{type} eq 'select' or $cvar->{type} eq 'multiselect') {
       $cvar->{OPTIONS} = [ map { { 'value' => $_ } } split(m/\#\#/, $cvar->{options}) ];
     }
 
@@ -149,6 +150,7 @@ sub get_custom_variables {
                      : $cvar->{type} eq 'vendor'    ? $act_var->{number_value}
                      : $cvar->{type} eq 'part'      ? $act_var->{number_value}
                      : $cvar->{type} eq 'bool'      ? $act_var->{bool_value}
+                     : $cvar->{type} eq 'multiselect' ? [ split /##/, ($act_var->{text_value} =~ s/^##|##$//gr) ]  # value is assumed serialized with leading and trailing ## for easier matching
                      :                                $act_var->{text_value};
       $cvar->{valid} = $valid;
     } else {
@@ -173,6 +175,8 @@ sub get_custom_variables {
 
       } elsif ($cvar->{type} eq 'number') {
         $cvar->{value} = $cvar->{default_value} * 1 if ($cvar->{default_value} ne '');
+      } elsif ($cvar->{type} eq 'multiselect') {
+        $cvar->{value} = [ split /##/, ($cvar->{default_value} =~ s/^##|##$//gr) ];  # value is assumed serialized with leading and trailing ## for easier matching
 
       } else {
         $cvar->{value} = $cvar->{default_value};
@@ -190,6 +194,11 @@ sub get_custom_variables {
     } elsif ($cvar->{type} eq 'part') {
       require SL::DB::Part;
       $cvar->{value} = SL::DB::Manager::Part->find_by(id => $cvar->{value} * 1);
+    }
+    if ($cvar->{type} eq 'multiselect') {
+      foreach my $o (@{$cvar->{OPTIONS}}) {
+        $o->{selected} = any { $_ eq $o->{value} } @{$cvar->{value}};
+      }
     }
   }
 
@@ -244,12 +253,40 @@ sub _save_custom_variables {
   my $sth = prepare_query($form, $dbh, $query);
 
   foreach my $config (@configs) {
+    if ($params{save_validity}) {
+      my $valid_index = "$params{name_prefix}cvar_$config->{name}$params{name_postfix}_valid";
+      my $new_valid   = $params{variables}{$valid_index} || $params{always_valid} ? 1 : 0;
+      my $old_valid   = $self->get_custom_variables_validity(trans_id => $params{trans_id}, config_id => $config->{id});
+
+      $self->save_custom_variables_validity(trans_id  => $params{trans_id},
+                                            config_id => $config->{id},
+                                            validity  => $new_valid,
+                                           );
+
+      if (!$new_valid || !$old_valid) {
+        # When activating a cvar (old_valid == 0 && new_valid == 1)
+        # the input to hold the variable's value wasn't actually
+        # rendered, meaning saving the value now would only save an
+        # empty value/the value 0. This means that the next time the
+        # form is rendered, an existing value is found and used
+        # instead of the variable's default value from the
+        # configuration. Therefore don't save the values in such
+        # cases.
+        next;
+      }
+    }
+
     my @values = (conv_i($config->{id}), "$params{sub_module}", conv_i($params{trans_id}));
 
     my $value  = $params{variables}->{"$params{name_prefix}cvar_$config->{name}$params{name_postfix}"};
 
-    if (($config->{type} eq 'text') || ($config->{type} eq 'textfield') || ($config->{type} eq 'select')) {
+    if (any { $config->{type} eq $_ } qw(text textfield htmlfield select)) {
       push @values, undef, undef, $value, undef;
+
+    } elsif ($config->{type} eq 'multiselect') {
+      # multiselect values are serialized with leading and trailing delimiter to make this match easier
+      # for example with value '##B##C##BB##' searching for B will match against '##B##'
+      push @values, undef, undef, join('##', '', @{$value // []}, ''), undef;
 
     } elsif (($config->{type} eq 'date') || ($config->{type} eq 'timestamp')) {
       push @values, undef, conv_date($value), undef, undef;
@@ -264,14 +301,6 @@ sub _save_custom_variables {
     }
 
     do_statement($form, $sth, $query, @values);
-
-    if ($params{save_validity}) {
-      my $valid_index = "$params{name_prefix}cvar_$config->{name}$params{name_postfix}_valid";
-      $self->save_custom_variables_validity(trans_id  => $params{trans_id},
-                                            config_id => $config->{id},
-                                            validity  => ($params{variables}{$valid_index} || $params{always_valid} ? 1 : 0)
-                                           );
-    }
   }
 
   $sth->finish();
@@ -360,7 +389,7 @@ sub build_filter_query {
 
     my (@sub_values, @sub_where, $not);
 
-    if (($config->{type} eq 'text') || ($config->{type} eq 'textfield')) {
+    if (any { $config->{type} eq $_ } qw(text textfield htmlfield)) {
       next unless ($params{filter}->{$name});
 
       push @sub_where,  qq|cvar.text_value ILIKE ?|;
@@ -371,6 +400,14 @@ sub build_filter_query {
 
       push @sub_where,  qq|cvar.text_value = ?|;
       push @sub_values, $params{filter}->{$name};
+
+    } elsif ($config->{type} eq 'multiselect') {
+      next unless ($params{filter}->{$name});
+
+      # multiselect values are serialized with leading and trailing delimiter to make this match easier
+      # for example with value '##B##C##BB##' searching for B will match against '##B##'
+      push @sub_where,  qq|cvar.text_value like ?|;
+      push @sub_values, like('##' . $params{filter}->{$name} . '##');
 
     } elsif (($config->{type} eq 'date') || ($config->{type} eq 'timestamp')) {
       my $name_from = "${name}_from";
@@ -510,6 +547,8 @@ sub add_custom_variables_to_report {
         : $cfg->{type} eq 'vendor'    ? (SL::DB::Manager::Vendor->find_by(id => 1*$ref->{number_value})   || SL::DB::Vendor->new)->name
         : $cfg->{type} eq 'part'      ? (SL::DB::Manager::Part->find_by(id => 1*$ref->{number_value})     || SL::DB::Part->new)->partnumber
         : $cfg->{type} eq 'bool'      ? ($ref->{bool_value} ? $locale->text('Yes') : $locale->text('No'))
+        : $cfg->{type} eq 'htmlfield' ? SL::Presenter::Text::stripped_html($ref->{text_value})
+        : $cfg->{type} eq 'multiselect' ? ($ref->{text_value} =~ s/^##|##$//gr) =~ s/##/, /gr    # strip leading/trailing delimiter and change ## to ,
         :                               $ref->{text_value};
     }
   }
@@ -676,6 +715,7 @@ sub parse {
   return !ref $value ? SL::DB::Manager::Customer->find_by(id => $value * 1) : $value  if $config->{type} eq 'customer';
   return !ref $value ? SL::DB::Manager::Vendor->find_by(id => $value * 1)   : $value  if $config->{type} eq 'vendor';
   return !ref $value ? SL::DB::Manager::Part->find_by(id => $value * 1)     : $value  if $config->{type} eq 'part';
+  return !ref $value ? [ split /##/, ($value =~ s/^##|##$//gr) ]            : $value  if $config->{type} eq 'multiselect';
   return $value;
 }
 

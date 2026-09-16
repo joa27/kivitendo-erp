@@ -9,22 +9,27 @@ use parent qw(SL::DB::Object);
 __PACKAGE__->meta->table('gl');
 
 __PACKAGE__->meta->columns(
-  cb_transaction => { type => 'boolean' },
-  department_id  => { type => 'integer' },
-  description    => { type => 'text' },
-  employee_id    => { type => 'integer' },
-  gldate         => { type => 'date', default => 'now' },
-  id             => { type => 'integer', not_null => 1, sequence => 'glid' },
-  itime          => { type => 'timestamp', default => 'now()' },
-  mtime          => { type => 'timestamp' },
-  notes          => { type => 'text' },
-  ob_transaction => { type => 'boolean' },
-  reference      => { type => 'text' },
-  storno         => { type => 'boolean', default => 'false' },
-  storno_id      => { type => 'integer' },
-  taxincluded    => { type => 'boolean' },
-  transdate      => { type => 'date', default => 'now' },
-  type           => { type => 'text' },
+  bank_import_template    => { type => 'boolean', default => 'false' },
+  cb_transaction          => { type => 'boolean' },
+  deliverydate            => { type => 'date' },
+  department_id           => { type => 'integer' },
+  description             => { type => 'text' },
+  employee_id             => { type => 'integer' },
+  gldate                  => { type => 'date', default => 'now' },
+  id                      => { type => 'integer', not_null => 1, sequence => 'glid' },
+  imported                => { type => 'boolean', default => 'false' },
+  itime                   => { type => 'timestamp', default => 'now()' },
+  mtime                   => { type => 'timestamp' },
+  notes                   => { type => 'text' },
+  ob_transaction          => { type => 'boolean' },
+  reference               => { type => 'text' },
+  storno                  => { type => 'boolean', default => 'false' },
+  storno_id               => { type => 'integer' },
+  tax_point               => { type => 'date' },
+  taxincluded             => { type => 'boolean' },
+  transaction_description => { type => 'text' },
+  transdate               => { type => 'date', default => 'now' },
+  type                    => { type => 'text' },
 );
 
 __PACKAGE__->meta->primary_key_columns([ 'id' ]);
@@ -49,4 +54,4 @@ __PACKAGE__->meta->foreign_keys(
 );
 
 1;
-;
+

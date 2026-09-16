@@ -6,13 +6,14 @@ use Data::Dumper;
 use SL::DB::Default;
 use SL::DB::Currency;
 use SL::DB::TaxZone;
+use SL::DB::Pricegroup;
 use SL::DB::Project;
 use SL::DB::Department;
 
 use SL::Helper::Csv::Error;
 
 use parent qw(Exporter);
-our @EXPORT = qw(check_currency check_taxzone check_project check_department check_customer_vendor handle_salesman handle_employee);
+our @EXPORT = qw(check_currency check_taxzone check_pricegroup check_project check_department check_customer_vendor handle_salesman handle_employee);
 
 #
 # public functions
@@ -113,6 +114,31 @@ sub check_taxzone {
   return 1;
 }
 
+sub check_pricegroup {
+  my ($self, $entry) = @_;
+
+  my $object = $entry->{object};
+
+  # Check whether or not pricegroup ID is valid.
+  if ($object->pricegroup_id && !_pricegroups_by($self)->{id}->{ $object->pricegroup_id }) {
+    push @{ $entry->{errors} }, $::locale->text('Error: Invalid price group');
+    return 0;
+  }
+
+  # Map pricegroup to ID if given.
+  if (!$object->pricegroup_id && $entry->{raw_data}->{pricegroup}) {
+    my $pricegroup = _pricegroups_by($self)->{pricegroup}->{ $entry->{raw_data}->{pricegroup} };
+    if (!$pricegroup) {
+      push @{ $entry->{errors} }, $::locale->text('Error: Invalid price group');
+      return 0;
+    }
+
+    $object->pricegroup_id($pricegroup->id);
+  }
+
+  return 1;
+}
+
 sub check_project {
   my ($self, $entry, %params) = @_;
 
@@ -208,7 +234,7 @@ sub handle_salesman {
     if ($vc_obj && $vc_obj->salesman_id) {
       $object->salesman(SL::DB::Manager::Employee->find_by(id => $vc_obj->salesman_id));
     } else {
-      $object->salesman(SL::DB::Manager::Employee->find_by(login => $::myconfig{login}));
+      $object->salesman(SL::DB::Manager::Employee->current);
     }
   }
 }
@@ -264,6 +290,13 @@ sub _departments_by {
 
   my $all_departments = SL::DB::Manager::Department->get_all;
   return { map { my $col = $_; ( $col => { map { ( $_->$col => $_ ) } @{ $all_departments } } ) } qw(id description) };
+}
+
+sub _pricegroups_by {
+  my ($self) = @_;
+
+  my $all_pricegroups = SL::DB::Manager::Pricegroup->get_all;
+  return { map { my $col = $_; ( $col => { map { ( $_->$col => $_ ) } @{ $all_pricegroups } } ) } qw(id pricegroup) };
 }
 
 sub _projects_by {

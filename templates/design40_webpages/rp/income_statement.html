@@ -1,0 +1,154 @@
+[%- USE T8 %]
+[%- USE HTML %]
+[%- USE LxERP %]
+[%- USE L %]
+
+<div class="wrapper">
+
+[% L.button_tag('', LxERP.t8('Show charts'),  id="show_charts_button",  class="noprint") %]
+[% L.button_tag('', LxERP.t8('Hide charts'),  id="hide_charts_button",  class="noprint") %]
+
+<h3>[% period %]<br><big>[% accounting_method %]<br></big><i>[% report_date %]</i></h3>
+
+<table id="eurtable" class="tbl-list">
+<thead>
+<tr>
+  <th colspan="2">A. Betriebseinnahmen</th>
+</tr>
+</thead>
+<tbody>
+
+[% FOREACH i IN categories_income %]
+  <tr class="category" data-catid="cat[% i %]">
+    <td>[% HTML.escape(category_names.item(i)) %]</td>
+    <td class="numeric">[% eur_amounts.item(i) %]</td>
+  </tr>
+  [% FOREACH chart = charts_by_category.item(i).list %]
+  <tr class="chartrow cat[% i %]">
+    <td class="chartname">[% chart.accno %] [% chart.description %]</td>
+    <td class="numeric"> [% LxERP.format_amount(chart.amount,2) %] </td>
+  </tr>
+  [% END %]
+[% END %]
+
+
+<tr class="inrows-footer">
+  <th><b>Summe Einnahmen</b></th>
+  <td class="numeric"><b>[% sumeura %]</b></td>
+</tr>
+<tr class="spacer">
+  <td colspan="2">&nbsp;</td>
+</tr>
+
+</tbody>
+<thead>
+<tr>
+  <th colspan="2">B. Betriebsausgaben</th>
+</tr>
+</thead>
+<tbody>
+
+[% FOREACH i IN categories_expense %]
+  <tr class="category" data-catid="cat[% i %]">
+    <td>[% HTML.escape(category_names.item(i)) %]</td>
+    <td class="numeric">[% eur_amounts.item(i) %]</td>
+  </tr>
+  [% FOREACH chart = charts_by_category.item(i).list %]
+  <tr class="chartrow cat[% i %]">
+    <td class="chartname">[% chart.accno %] [% chart.description %]</td>
+    <td class="numeric"> [% LxERP.format_amount(chart.amount,2) %] </td>
+  </tr>
+  [% END %]
+[% END %]
+<tr class="inrows-footer">
+  <th><b>Summe Ausgaben</b></th>
+  <td class="numeric"><b>[% sumeurb %]</b></td>
+</tr>
+</tbody>
+<tfoot>
+<tr>
+  <td>GEWINN / VERLUST</td>
+  <td class="numeric">[% guvsumme %]</td>
+</tr>
+</tfoot>
+</table>
+
+
+<br>
+
+[% L.button_tag('', LxERP.t8('Show chart list'), id="show_chartlist_button", class="noprint") %]
+[% L.button_tag('', LxERP.t8('Hide chart list'), id="hide_chartlist_button", class="noprint") %]
+
+<div id="chartlist">
+<div>[% 'Chart list' | $T8 %]</div>
+<div>
+<table class="tbl-list">
+<thead>
+<tr>
+  <th>[% 'Chart'    | $T8 %]</th>
+  <th>[% 'Amount'   | $T8 %]</th>
+  <th>[% 'Category' | $T8 %]</th>
+</tr>
+</thead>
+[% FOREACH key = charts.keys.sort %]
+[% UNLESS charts.$key.pos_eur %]
+[% NEXT %]
+[% END %]
+<tr>
+ <td>[% charts.$key.accno %]</td>
+ <td class="numeric">[%  LxERP.format_amount( charts.$key.amount, 2 ) %]</td>
+ <td>[% HTML.escape(category_names.item(charts.$key.pos_eur)) %]</td>
+</tr>
+[% END %]
+</table>
+</div>
+</div>
+
+</div><!-- .wrapper -->
+
+<script language="javascript">
+$( document ).ready(function() {
+  $( ".chartrow" ).hide();
+  $( "#hide_charts_button" ).hide();
+  $( "#hide_chartlist_button" ).hide();
+  $( "#chartlist" ).hide();
+  $( '.category:even' ).css('background-color','#f0f0f0');
+  $( '.category:odd' ).css('background-color','#f8f8f8');
+
+  $( "#show_chartlist_button" ).click(function() {
+    $( "#chartlist" ).toggle();
+    $('html, body').animate({
+        scrollTop: $(this).offset().top
+    }, 500);
+    $(this).hide();
+    $("#hide_chartlist_button").show();
+  });
+
+  $( "#hide_chartlist_button" ).click(function() {
+    $( "#chartlist" ).toggle();
+    $('html, body').animate({
+        scrollTop: $(this).offset().top
+    }, 500);
+    $(this).hide();
+    $("#show_chartlist_button").show();
+  });
+
+  $( "#show_charts_button" ).click(function() {
+    $( ".chartrow" ).show();
+    $(this).hide();
+    $("#hide_charts_button").show();
+  });
+
+  $( "#hide_charts_button" ).click(function() {
+    $( ".chartrow" ).hide();
+    $(this).hide();
+    $("#show_charts_button").show();
+  });
+
+  $( ".category" ).click(function() {
+    var chartrow_class = $(this).attr('data-catid');
+    $('.' + chartrow_class).toggle();
+  });
+})
+
+</script>

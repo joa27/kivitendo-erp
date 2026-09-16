@@ -1,0 +1,59 @@
+[% USE HTML %]
+[% USE LxERP %]
+[% USE L %]
+[% USE T8 %]
+
+<div id="bank">
+<div class="wrapper">
+  <table class="tbl-horizontal">
+    <caption>[% 'SEPA' | $T8 %]</caption>
+    <tbody>
+      <tr>
+        <th>[% LxERP.t8('SEPA-XML File extension') %]</th>
+        <td>[% L.yes_no_tag('defaults.sepa_export_xml', SELF.defaults.sepa_export_xml) %]</td>
+        <td class="longdesc">[% LxERP.t8('If enabled the file ending for SEPA exports will be .xml instead of .cct or .cdd') %]</td>
+      </tr>
+      <tr>
+        <th>[% LxERP.t8('SEPA Bank transfer amounts are editable') %]</th>
+        <td>[% L.yes_no_tag('defaults.sepa_amount_editable', SELF.defaults.sepa_amount_editable) %]</td>
+        <td class="longdesc">[% LxERP.t8('If enabled the bank transfer amount for SEPA exports will be editable.') %]</td>
+      </tr>
+      <tr>
+        <th>[% LxERP.t8('SEPA Combine Payments') %]</th>
+        <td>[% L.yes_no_tag('defaults.sepa_combine_payments', SELF.defaults.sepa_combine_payments) %]</td>
+        <td class="longdesc">
+          [% LxERP.t8('If enabled combining multiple payments for a single vendor will be the default.') %]
+          <br>
+          [% LxERP.t8('When multiple payments for a single vendor are combined, it is impossible to change the total amount of the payment. This rule ensures that the bank reconciliation process will be able to mark all corresponding records as paid automatically, later on.') %]
+        </td>
+      </tr>
+      <tr>
+        <th>[% LxERP.t8('SEPA Subtract Vendor Credit Notes') %]</th>
+        <td>[% L.yes_no_tag('defaults.sepa_subtract_credit_notes', SELF.defaults.sepa_subtract_credit_notes) %]</td>
+        <td class="longdesc">[% LxERP.t8('If this option, the setting <i>Payments cannot be edited manually</i> (see Tab Posting Configuration) are both enabled and a <i>default transit chart</i> is defined (see Tab Default Accounts), then purchase credit notes will be also fetched for the SEPA Export and can be subtracted automatically from other open invoices for the same vendor.') %]</td>
+      </tr>
+      <tr>
+        <th>[% LxERP.t8('Approve SEPA Transfer for AR') %]</th>
+        <td>[% L.yes_no_tag('defaults.payment_approval', SELF.defaults.payment_approval) %]</td>
+        <td class="longdesc">[% LxERP.t8("If set to yes all SEPA Transfers for AR needs to be approved first.") %]</td>
+      </tr>
+      <tr>
+        <th class="caption" colspan="3">[% LxERP.t8('Bank') %]</th>
+      </tr>
+      <tr>
+        <th>[% LxERP.t8('Ignore Proposals for Bank Transactions') %]</th>
+        <td>[% L.yes_no_tag('defaults.no_bank_proposals', SELF.defaults.no_bank_proposals) %]</td>
+        <td class="longdesc">
+          [% LxERP.t8('If enabled the tab Proposals will not be the default view for bank transaction bookings') %]<br>
+          [% LxERP.t8('This is helpful if you prefer a chronologic order of bank transactions, i.e. the tab all transactions meanwhile you are still able to use the quick add link for the suggested proposals') %]
+        </td>
+      </tr>
+      <tr>
+        <th>[% LxERP.t8('Use END-TO-END-ID to detect duplicates in bank import transactions') %]</th>
+        <td>[% L.yes_no_tag('defaults.check_bt_duplicates_endtoend', SELF.defaults.check_bt_duplicates_endtoend) %]</td>
+        <td class="longdesc">[% LxERP.t8("If set to yes and an end-to-end id can be extracted from the transaction this will be used to detect duplicates instead of the transaction purpose.") %]</td>
+      </tr>
+    </tbody>
+  </table>
+</div><!-- /.wrapper -->
+</div><!-- /#bank -->

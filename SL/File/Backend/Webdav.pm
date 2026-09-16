@@ -4,13 +4,16 @@ use strict;
 
 use parent qw(SL::File::Backend);
 use SL::DB::File;
+use SL::DB::FileVersion;
 
-#use SL::Webdav;
+use SL::System::Process;
 use File::Copy;
 use File::Slurp;
 use File::Basename;
 use File::Path qw(make_path);
 use File::MimeInfo::Magic;
+use File::stat;
+use UUID::Tiny ':std';
 
 #
 # public methods
@@ -58,14 +61,29 @@ sub save {
     print OUT $params{file_contents};
     close(OUT);
   }
+
+  # save file version
+  my $doc_path = $self->get_rootdir();
+  my $rel_file = $tofile;
+  $rel_file    =~ s/$doc_path//;
+  my $fv = SL::DB::FileVersion->new(
+    file_id       => $params{dbfile}->id,
+    version       => 1, # Webdav doesn't have versions by now.
+    file_location => $rel_file,
+    doc_path      => $doc_path,
+    backend       => 'Webdav',
+    guid          => create_uuid_as_string(UUID_V4),
+  )->save;
+
   return 1;
 }
 
 sub get_version_count {
   my ($self, %params) = @_;
   die "no dbfile" unless $params{dbfile};
-  ## TODO
-  return 1;
+  # TODO: Webdav doesn't have versions by now.
+  my ($path, undef, undef) = $self->webdav_path($params{dbfile});
+  return (-f $path || 0) * 1; # return 1 if file is found otherwise 0
 }
 
 sub get_mtime {
@@ -73,9 +91,8 @@ sub get_mtime {
   die "no dbfile" unless $params{dbfile};
   $main::lxdebug->message(LXDebug->DEBUG2(), "version=" .$params{version});
   my ($path, undef, undef) = $self->webdav_path($params{dbfile});
-  die "no file found in backend" if !-f $path;
-  my @st = stat($path);
-  my $dt = DateTime->from_epoch(epoch => $st[9])->clone();
+  die "No file found in Backend: " . $path unless -f $path;
+  my $dt = DateTime->from_epoch(epoch => stat($path)->mtime, time_zone => $::locale->get_local_time_zone()->name)->clone();
   $main::lxdebug->message(LXDebug->DEBUG2(), "dt=" .$dt);
   return $dt;
 }
@@ -84,7 +101,7 @@ sub get_filepath {
   my ($self, %params) = @_;
   die "no dbfile" unless $params{dbfile};
   my ($path, undef, undef) = $self->webdav_path($params{dbfile});
-  die "no file" if !-f $path;
+  die "No file found in Backend: " . $path unless -f $path;
   return $path;
 }
 
@@ -105,8 +122,7 @@ sub sync_from_backend {
 }
 
 sub enabled {
-  return 0 unless $::instance_conf->get_doc_webdav;
-  return 1;
+  return $::instance_conf->get_doc_webdav;
 }
 
 #
@@ -114,54 +130,78 @@ sub enabled {
 #
 
 my %type_to_path = (
-  sales_quotation         => 'angebote',
-  sales_order             => 'bestellungen',
-  request_quotation       => 'anfragen',
-  purchase_order          => 'lieferantenbestellungen',
-  sales_delivery_order    => 'verkaufslieferscheine',
-  purchase_delivery_order => 'einkaufslieferscheine',
-  credit_note             => 'gutschriften',
-  invoice                 => 'rechnungen',
-  purchase_invoice        => 'einkaufsrechnungen',
-  part                    => 'waren',
-  service                 => 'dienstleistungen',
-  assembly                => 'erzeugnisse',
-  letter                  => 'briefe',
-  general_ledger          => 'dialogbuchungen',
-  gl_transaction          => 'dialogbuchungen',
-  accounts_payable        => 'kreditorenbuchungen',
-  shop_image              => 'shopbilder',
+  sales_quotation             => 'angebote',
+  sales_order_intake          => 'auftragseingaenge',
+  sales_order                 => 'bestellungen',
+  request_quotation           => 'anfragen',
+  purchase_quotation_intake   => 'angebotseingaenge',
+  purchase_order              => 'lieferantenbestellungen',
+  purchase_order_confirmation => 'lieferantenauftragsbestaetigungen',
+  sales_delivery_order        => 'verkaufslieferscheine',
+  purchase_delivery_order     => 'einkaufslieferscheine',
+  purchase_reclamation        => 'einkaufsreklamation',
+  sales_reclamation           => 'verkaufsreklamation',
+  supplier_delivery_order     => 'beistelllieferscheine',
+  rma_delivery_order          => 'retourenlieferscheine',
+  credit_note                 => 'gutschriften',
+  invoice                     => 'rechnungen',
+  invoice_for_advance_payment => 'rechnungen',
+  final_invoice               => 'rechnungen',
+  purchase_invoice            => 'einkaufsrechnungen',
+  part                        => 'waren',
+  service                     => 'dienstleistungen',
+  assembly                    => 'erzeugnisse',
+  letter                      => 'briefe',
+  general_ledger              => 'dialogbuchungen',
+  gl_transaction              => 'dialogbuchungen',
+  accounts_payable            => 'kreditorenbuchungen',
+  shop_image                  => 'shopbilder',
+  customer                    => 'kunden',
+  vendor                      => 'lieferanten',
 );
 
 my %type_to_model = (
-  sales_quotation         => 'Order',
-  sales_order             => 'Order',
-  request_quotation       => 'Order',
-  purchase_order          => 'Order',
-  sales_delivery_order    => 'DeliveryOrder',
-  purchase_delivery_order => 'DeliveryOrder',
-  credit_note             => 'Invoice',
-  invoice                 => 'Invoice',
-  purchase_invoice        => 'PurchaseInvoice',
-  part                    => 'Part',
-  service                 => 'Part',
-  assembly                => 'Part',
-  letter                  => 'Letter',
-  general_ledger          => 'GLTransaction',
-  gl_transaction          => 'GLTransaction',
-  accounts_payable        => 'GLTransaction',
-  shop_image              => 'Part',
+  sales_quotation             => 'Order',
+  sales_order_intake          => 'Order',
+  sales_order                 => 'Order',
+  request_quotation           => 'Order',
+  purchase_quotation_intake   => 'Order',
+  purchase_order              => 'Order',
+  sales_delivery_order        => 'DeliveryOrder',
+  purchase_delivery_order     => 'DeliveryOrder',
+  sales_reclamation           => 'Reclamation',
+  purchase_reclamation        => 'Reclamation',
+  supplier_delivery_order     => 'DeliveryOrder',
+  rma_delivery_order          => 'DeliveryOrder',
+  credit_note                 => 'Invoice',
+  invoice                     => 'Invoice',
+  invoice_for_advance_payment => 'Invoice',
+  final_invoice               => 'Invoice',
+  purchase_invoice            => 'PurchaseInvoice',
+  part                        => 'Part',
+  service                     => 'Part',
+  assembly                    => 'Part',
+  letter                      => 'Letter',
+  general_ledger              => 'GLTransaction',
+  gl_transaction              => 'GLTransaction',
+  accounts_payable            => 'GLTransaction',
+  shop_image                  => 'Part',
+  customer                    => 'Customer',
+  vendor                      => 'Vendor',
 );
 
 my %model_to_number = (
-  Order           => 'ordnumber',
-  DeliveryOrder   => 'ordnumber',
+  Order           => 'record_number',
+  DeliveryOrder   => 'record_number',
+  Reclamation     => 'record_number',
   Invoice         => 'invnumber',
   PurchaseInvoice => 'invnumber',
   Part            => 'partnumber',
   Letter          => 'letternumber',
   GLTransaction   => 'reference',
   ShopImage       => 'partnumber',
+  Customer        => 'customernumber',
+  Vendor          => 'vendornumber',
 );
 
 sub webdav_path {
@@ -179,6 +219,7 @@ sub webdav_path {
     $dbfile->backend_data($number);
     $dbfile->save;
   }
+  $number =~ s/\//-/g; # replace forbidden char;
   $main::lxdebug->message(LXDebug->DEBUG2(), "file_name=" . $dbfile->file_name ." number=".$number);
 
   my @fileparts = split(/_/, $dbfile->file_name);
@@ -200,17 +241,7 @@ sub webdav_path {
   return (File::Spec->catfile($path, $fname), $path, $fname);
 }
 
-sub get_rootdir {
-  my ($self) = @_;
-
-  #TODO immer noch das alte Problem:
-  #je nachdem von woher der Aufruf kommt ist man in ./users oder .
-  my $rootdir  = POSIX::getcwd();
-  my $basename = basename($rootdir);
-  my $dirname  = dirname($rootdir);
-  $rootdir = $dirname if $basename eq 'users';
-  return $rootdir;
-}
+sub get_rootdir { SL::System::Process::exe_dir() }
 
 sub _get_number_from_model {
   my ($self, $dbfile) = @_;
@@ -340,5 +371,3 @@ The synchronization must be tested and a periodical task is needed to synchroniz
 Martin Helmling E<lt>martin.helmling@opendynamic.deE<gt>
 
 =cut
-
-

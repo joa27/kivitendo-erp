@@ -11,7 +11,7 @@ use Template;
 use Template::Provider;
 use Test::More tests => ( scalar(@referenced_files));
 
-my $template_path = 'templates/webpages/';
+my $template_path = 'templates/design40_webpages/';
 
 my $provider = Template::Provider->new(Support::TestSetup::template_config());
 
@@ -27,7 +27,7 @@ foreach my $ref (@Support::Templates::referenced_files) {
     ok(0, "${file} contains syntax errors");
 
   } else {
-    die "Unknown result type: " . ref($result);
+    die "Unknown result type: " . ref($result) . " for file " . $file;
   }
 }
 

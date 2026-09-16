@@ -1,0 +1,1213 @@
+package SL::DB::Helper::ZUGFeRD;
+
+use strict;
+use utf8;
+
+use parent qw(Exporter);
+our @EXPORT_CREATE = qw(create_zugferd_data create_zugferd_xmp_data);
+our @EXPORT_IMPORT = qw(import_zugferd_data);
+our @EXPORT_OK = (@EXPORT_CREATE, @EXPORT_IMPORT);
+our %EXPORT_TAGS     = (
+  ALL => (@EXPORT_CREATE, @EXPORT_IMPORT),
+  CREATE => \@EXPORT_CREATE,
+  IMPORT => \@EXPORT_IMPORT,
+);
+
+use SL::Helper::ISO3166;
+use SL::Helper::ISO4217;
+use SL::Helper::UNECERecommendation20;
+use SL::VATIDNr;
+use SL::ZUGFeRD qw(:PROFILES);
+use SL::Locale::String qw(t8);
+
+use Carp;
+use Encode qw(encode);
+use List::MoreUtils qw(any);
+use List::Util qw(first sum sum0);
+use MIME::Base64 qw();
+use File::Slurp qw();
+use Template;
+use XML::Writer;
+use Params::Validate qw(:all);
+
+my %standards_ids = (
+  PROFILE_FACTURX_EXTENDED() => 'urn:cen.eu:en16931:2017#conformant#urn:factur-x.eu:1p0:extended',
+  PROFILE_XRECHNUNG()        => 'urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0',
+);
+
+sub _is_profile {
+  my ($self, @profiles) = @_;
+  return any { $self->{_zugferd}->{profile} == $_ } @profiles;
+}
+
+sub _u8 {
+  my ($value) = @_;
+  return encode('UTF-8', $value // '');
+}
+
+sub _r2 {
+  my ($value) = @_;
+  return $::form->round_amount($value, 2);
+}
+
+sub _parts_to_lines {
+  my (@parts) = @_;
+
+  my @line_names = qw(LineOne LineTwo LineThree);
+
+  die "too much parts for lines" if scalar @parts > scalar @line_names;
+
+  my @lines;
+  push @lines, [$line_names[$_], $parts[$_]] for (0..$#parts);
+
+  return @lines;
+}
+
+sub _type_code {
+  my ($self) = @_;
+  my $type   = $self->invoice_type;
+
+  # 326 (Partial invoice)
+  # 380 (Commercial invoice)
+  # 384 (Corrected Invoice)
+  # 381 (Credit note)
+  # 389 (Credit note, self billed invoice)
+
+  return $type eq 'credit_note'        ? 381
+       : $type eq 'invoice_storno'     ? 457
+       : $type eq 'credit_note_storno' ? 458
+       :                                 380;
+}
+
+sub _unit_code {
+  my ($unit) = @_;
+
+  # Mapping from kivitendo's units to UN/ECE Recommendation 20 & 21.
+  my $code = SL::Helper::UNECERecommendation20::map_name_to_code($unit);
+  return $code if $code;
+
+  $::lxdebug->message(LXDebug::WARN(), "ZUGFeRD unit name mapping: no UN/ECE Recommendation 20/21 unit known for kivitendo unit '$unit'; using 'C62'");
+
+  return 'C62';
+}
+
+sub _parse_our_address {
+  my @result;
+  my @street = grep { $_ } ($::instance_conf->get_address_street1, $::instance_conf->get_address_street2);
+
+  push @result, [ 'PostcodeCode', $::instance_conf->get_address_zipcode ] if $::instance_conf->get_address_zipcode;
+  push @result, _parts_to_lines(@street);
+  push @result, [ 'CityName', $::instance_conf->get_address_city ] if $::instance_conf->get_address_city;
+  push @result, [ 'CountryID', SL::DB::Country->new(id => $::instance_conf->get_address_country_id)->load->iso2 ];
+
+  return @result;
+}
+
+sub _generate_register_note {
+  my $register_note = '';
+
+  if ($::instance_conf->get_managing_directors) {
+    $register_note .= 'Geschäftsführer/in: ' . $::instance_conf->get_managing_directors . "\n";
+  }
+
+  if ($::instance_conf->get_commercial_register_entry) {
+    $register_note .= 'HRB-Nr. ' . $::instance_conf->get_commercial_register_entry;
+    $register_note .= ' '        . $::instance_conf->get_commercial_register_place if $::instance_conf->get_commercial_register_place;
+    $register_note .= "\n";
+  }
+
+  if ($::instance_conf->get_registered_seat) {
+    $register_note .= 'Sitz der Gesellschaft: ' . $::instance_conf->get_registered_seat . "\n";
+  }
+
+  return $register_note;
+}
+
+sub _buyer_contact_information {
+  my ($self, %params) = @_;
+
+  my $contact = $params{contact};
+
+  #       <ram:DefinedTradeContact>
+  $params{xml}->startTag("ram:DefinedTradeContact");
+
+  $params{xml}->dataElement("ram:PersonName", _u8(join(" ", $contact->cp_givenname, $contact->cp_name)));
+
+  if ($contact->cp_abteilung) {
+    $params{xml}->dataElement("ram:DepartmentName", _u8($contact->cp_abteilung));
+  }
+
+  my $phone_number = first {$_} (
+    $contact->cp_phone1,
+    $contact->cp_phone2,
+    $contact->cp_mobile1,
+    $contact->cp_mobile2,
+    $contact->cp_satphone,
+  );
+  if ($phone_number) {
+    $params{xml}->startTag("ram:TelephoneUniversalCommunication");
+    $params{xml}->dataElement("ram:CompleteNumber", _u8($phone_number));
+    $params{xml}->endTag;
+  }
+
+  if (_is_profile($self, PROFILE_FACTURX_EXTENDED())) {
+    my $fax_number = first {$_} (
+      $contact->cp_fax,
+      $contact->cp_satfax,
+    );
+    if ($fax_number) {
+      $params{xml}->startTag("ram:FaxUniversalCommunication");
+      $params{xml}->dataElement("ram:CompleteNumber", _u8($fax_number));
+      $params{xml}->endTag;
+    }
+  }
+
+  if ($contact->cp_email) {
+    $params{xml}->startTag("ram:EmailURIUniversalCommunication");
+    $params{xml}->dataElement("ram:URIID", _u8($contact->cp_email));
+    $params{xml}->endTag;
+  }
+
+  $params{xml}->endTag;
+  #       </ram:DefinedTradeContact>
+}
+
+sub _customer_postal_trade_address {
+  my (%params) = @_;
+
+  #       <ram:PostalTradeAddress>
+  $params{xml}->startTag("ram:PostalTradeAddress");
+
+  my @parts = grep { $_ } map { $params{customer}->$_ } qw(street department_1 department_2);
+
+  $params{xml}->dataElement("ram:PostcodeCode", _u8($params{customer}->zipcode));
+  $params{xml}->dataElement("ram:" . $_->[0],   _u8($_->[1])) for _parts_to_lines(@parts);
+  $params{xml}->dataElement("ram:CityName",     _u8($params{customer}->city));
+  $params{xml}->dataElement("ram:CountryID",    _u8($params{customer}->country->iso2));
+  $params{xml}->endTag;
+  #       </ram:PostalTradeAddress>
+}
+
+sub _shipto_postal_trade_address {
+  my (%params) = @_;
+
+  #       <ram:PostalTradeAddress>
+  $params{xml}->startTag("ram:PostalTradeAddress");
+
+  my @parts = grep { $_ } map { $params{shipto}->$_ } qw(shiptostreet shiptodepartment_1 shiptodepartment_2);
+
+  $params{xml}->dataElement("ram:PostcodeCode", _u8($params{shipto}->shiptozipcode));
+  $params{xml}->dataElement("ram:" . $_->[0],   _u8($_->[1])) for _parts_to_lines(@parts);
+
+  $params{xml}->dataElement("ram:CityName",     _u8($params{shipto}->shiptocity));
+  $params{xml}->dataElement("ram:CountryID",    _u8(SL::Helper::ISO3166::map_name_to_alpha_2_code($params{shipto}->shiptocountry) // 'DE'));
+  $params{xml}->endTag;
+  #       </ram:PostalTradeAddress>
+}
+
+sub _shipto_trade_party {
+  my ($self, %params) = @_;
+
+  my $shipto = first { $_ } (
+    $self->custom_shipto,
+    $self->shipto
+  );
+
+  return if !$shipto;
+
+  #       <ram:ShipToTradeParty>
+  $params{xml}->startTag("ram:ShipToTradeParty");
+
+  if ($shipto->shiptogln) {
+    $params{xml}->dataElement("ram:ID", _u8($shipto->shiptogln), schemeID => '0088');
+  }
+
+  if ($shipto->shiptoname) {
+    $params{xml}->dataElement("ram:Name", _u8($shipto->shiptoname));
+  }
+
+  _shipto_postal_trade_address(%params, shipto => $shipto);
+
+  $params{xml}->endTag;
+  #       </ram:ShipToTradeParty>
+}
+
+sub _buyer_communication {
+  my (%params) = @_;
+  my $customer = $params{customer};
+
+  my $buyer_electronic_address = first {$_} (
+    $customer->invoice_mail,
+    $customer->email,
+  );
+  if ($buyer_electronic_address) {
+    $params{xml}->startTag("ram:URIUniversalCommunication");
+    $params{xml}->dataElement("ram:URIID", _u8($buyer_electronic_address), schemeID => 'EM');
+    $params{xml}->endTag;
+  } elsif ($customer->gln) {
+    $params{xml}->startTag("ram:URIUniversalCommunication");
+    $params{xml}->dataElement("ram:URIID", _u8($customer->gln), schemeID => '0088');
+    $params{xml}->endTag;
+  }
+}
+
+sub _tax_rate_and_code {
+  my ($taxzone, $tax) = @_;
+
+  my ($tax_rate, $tax_code) = @_;
+
+  if ($taxzone->description =~ m{Au.*erhalb}) {
+    $tax_rate = 0;
+    $tax_code = 'G';
+
+  } elsif ($taxzone->description =~ m{EU mit}) {
+    $tax_rate = 0;
+    $tax_code = 'K';
+
+  } else {
+    $tax_rate = $tax->rate * 100;
+    $tax_code = !$tax_rate ? 'Z' : 'S';
+  }
+
+  return (rate => $tax_rate, code => $tax_code);
+}
+
+sub _additional_referenced_document {
+  my ($self, %params) = @_;
+
+  die "doc_id is needed in params" if !$params{doc_id}; # BT-122
+
+  # type codes:
+  #  50 Validated priced tender
+  # 130 Rechnungsdatenblatt
+  # 916 Referenzpapier
+  my $type_code = $params{type_code} || '916';
+
+  # check params for including binary data
+  if ($params{filename}) {
+    die "file or content is needed in params" if !($params{file} || $params{content});
+
+    my %valid_mime_codes = (
+      'application/pdf'                                                   => 1,
+      'image/png'                                                         => 1,
+      'image/jpeg'                                                        => 1,
+      'text/csv'                                                          => 1,
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 1,
+      'application/vnd.oasis.opendocument.spreadsheet'                    => 1,
+    );
+    die "a valid mime_code is needed in params" if !$valid_mime_codes{$params{mime_code}};
+  }
+
+  #   <ram:AdditionalReferencedDocument>
+  $params{xml}->startTag("ram:AdditionalReferencedDocument");
+  $params{xml}->dataElement("ram:IssuerAssignedID", _u8($params{doc_id}));
+  $params{xml}->dataElement("ram:TypeCode",         $type_code);
+  $params{xml}->dataElement("ram:Name",             _u8($params{name}))    if $params{name};
+
+  if ($params{filename}) {
+    my $content = $params{content} // File::Slurp::read_file($params{file}, binmode => ':raw');
+    my $data    = MIME::Base64::encode($content, '');
+    $params{xml}->dataElement("ram:AttachmentBinaryObject",
+                              $data,
+                              mimeCode => $params{mime_code},
+                              filename => _u8($params{filename}));
+  }
+
+  $params{xml}->endTag;
+  #   </ram:AdditionalReferencedDocument>
+
+}
+
+sub _line_item {
+  my ($self, %params) = @_;
+
+  my $item_ptc = $params{ptc_data}->{items}->[$params{line_number}];
+
+  my $taxkey   = $item_ptc->{taxkey_id} ? SL::DB::TaxKey->load_cached($item_ptc->{taxkey_id}) : undef;
+  my $tax      = $item_ptc->{taxkey_id} ? SL::DB::Tax->load_cached($taxkey->tax_id)           : undef;
+  my %tax_info = _tax_rate_and_code($self->taxzone, $tax);
+
+  # <ram:IncludedSupplyChainTradeLineItem>
+  $params{xml}->startTag("ram:IncludedSupplyChainTradeLineItem");
+
+  #   <ram:AssociatedDocumentLineDocument>
+  $params{xml}->startTag("ram:AssociatedDocumentLineDocument");
+  $params{xml}->dataElement("ram:LineID", $params{line_number} + 1);
+  $params{xml}->endTag;
+  #   </ram:AssociatedDocumentLineDocument>
+
+  #   <ram:SpecifiedTradeProduct>
+  $params{xml}->startTag("ram:SpecifiedTradeProduct");
+
+  if (_is_profile($self, PROFILE_XRECHNUNG())) {
+    if ($params{item}->part->ean) {
+      $params{xml}->dataElement("ram:SellerAssignedID", _u8($params{item}->part->ean), schemeID => '0160');
+    } else {
+      $params{xml}->dataElement("ram:SellerAssignedID", _u8($params{item}->part->partnumber));
+    }
+
+  } else {                      # profile != XRechnung
+    if ($params{item}->part->ean) {
+      $params{xml}->dataElement("ram:GlobalID", _u8($params{item}->part->ean), schemeID => '0160');
+    }
+    $params{xml}->dataElement("ram:SellerAssignedID", _u8($params{item}->part->partnumber));
+  }
+
+  $params{xml}->dataElement("ram:Name",             _u8($params{item}->description));
+  $params{xml}->dataElement("ram:Description",      _u8($params{item}->longdescription_as_stripped_html))
+    if $params{item}->longdescription_as_stripped_html;
+
+  $params{xml}->endTag;
+  #   </ram:SpecifiedTradeProduct>
+
+  #   <ram:SpecifiedLineTradeAgreement>
+  $params{xml}->startTag("ram:SpecifiedLineTradeAgreement");
+
+  # GrossPrice is the not discounted price per unit. This is stored in the
+  # items sellprice. In the PTC-data, the sellprice is already discounted.
+  #       <ram:GrossPriceProductTradePrice>
+  $params{xml}->startTag("ram:GrossPriceProductTradePrice");
+  $params{xml}->dataElement("ram:ChargeAmount", $item_ptc->{sellprice_no_alc});
+
+  if ($params{item}->discount) {
+    #       <ram:AppliedTradeAllowanceCharge>
+    $params{xml}->startTag("ram:AppliedTradeAllowanceCharge");
+
+    $params{xml}->startTag("ram:ChargeIndicator");
+    $params{xml}->dataElement("udt:Indicator", "false"); # Allowance/Abschlag => false
+    $params{xml}->endTag;
+
+    $params{xml}->dataElement("ram:CalculationPercent", _r2($params{item}->discount * 100))                     if _is_profile($self, PROFILE_FACTURX_EXTENDED());
+    $params{xml}->dataElement("ram:BasisAmount",        $item_ptc->{sellprice_no_alc})                          if _is_profile($self, PROFILE_FACTURX_EXTENDED());
+    $params{xml}->dataElement("ram:ActualAmount",       $item_ptc->{sellprice_no_alc} - $item_ptc->{sellprice});
+    $params{xml}->dataElement("ram:Reason",             _u8(t8('Discount')))                                    if _is_profile($self, PROFILE_FACTURX_EXTENDED());
+
+    $params{xml}->endTag;
+    #       </ram:AppliedTradeAllowanceCharge>
+  }
+
+  #       </ram:GrossPriceProductTradePrice>
+  $params{xml}->endTag;
+
+  $params{xml}->startTag("ram:NetPriceProductTradePrice");
+  $params{xml}->dataElement("ram:ChargeAmount", $item_ptc->{sellprice});
+  $params{xml}->endTag;
+
+  $params{xml}->endTag;
+  #   </ram:SpecifiedLineTradeAgreement>
+
+  #   <ram:SpecifiedLineTradeDelivery>
+  $params{xml}->startTag("ram:SpecifiedLineTradeDelivery");
+  $params{xml}->dataElement("ram:BilledQuantity", $params{item}->qty, unitCode => _unit_code($params{item}->unit));
+  $params{xml}->endTag;
+  #   </ram:SpecifiedLineTradeDelivery>
+
+  #   <ram:SpecifiedLineTradeSettlement>
+  $params{xml}->startTag("ram:SpecifiedLineTradeSettlement");
+
+  #     <ram:ApplicableTradeTax>
+  $params{xml}->startTag("ram:ApplicableTradeTax");
+  $params{xml}->dataElement("ram:TypeCode",              "VAT");
+  $params{xml}->dataElement("ram:CategoryCode",          $tax_info{code});
+  $params{xml}->dataElement("ram:RateApplicablePercent", _r2($tax_info{rate}));
+  $params{xml}->endTag;
+  #     </ram:ApplicableTradeTax>
+
+  if ($params{item}->invoicing_period_start && $params{item}->invoicing_period_end) {
+    #     <ram:BillingSpecifiedPeriod>
+    $params{xml}->startTag("ram:BillingSpecifiedPeriod");
+
+    #       <ram:StartDateTime> BT-134
+    $params{xml}->startTag("ram:StartDateTime");
+    $params{xml}->dataElement("udt:DateTimeString", $params{item}->invoicing_period_start->strftime('%Y%m%d'), format => "102");
+    $params{xml}->endTag;
+    #       </ram:StartDateTime>
+
+    #       <ram:EndDateTime> BT-135
+    $params{xml}->startTag("ram:EndDateTime");
+    $params{xml}->dataElement("udt:DateTimeString", $params{item}->invoicing_period_end->strftime('%Y%m%d'), format => "102");
+    $params{xml}->endTag;
+    #       </ram:EndDateTime>
+
+    $params{xml}->endTag;
+    #     </ram:BillingSpecifiedPeriod>
+  }
+
+  my $linetotal_net = $self->taxincluded ? $item_ptc->{linetotal} - $item_ptc->{tax_amount} : $item_ptc->{linetotal};
+  #     <ram:SpecifiedTradeSettlementLineMonetarySummation>
+  $params{xml}->startTag("ram:SpecifiedTradeSettlementLineMonetarySummation");
+  $params{xml}->dataElement("ram:LineTotalAmount", _r2($linetotal_net));
+  $params{xml}->endTag;
+  #     </ram:SpecifiedTradeSettlementLineMonetarySummation>
+
+  $params{xml}->endTag;
+  #   </ram:SpecifiedLineTradeSettlement>
+
+  $params{xml}->endTag;
+  # <ram:IncludedSupplyChainTradeLineItem>
+}
+
+sub _specified_trade_settlement_payment_means {
+  my ($self, %params) = @_;
+
+  #     <ram:SpecifiedTradeSettlementPaymentMeans>
+  $params{xml}->startTag('ram:SpecifiedTradeSettlementPaymentMeans');
+  $params{xml}->dataElement('ram:TypeCode', $self->direct_debit ? 59 : 58); # 59 = SEPA direct debit, 58 = SEPA credit transfer
+  $params{xml}->dataElement('ram:Information', $self->direct_debit ? _u8(t8('Bank collection via SEPA')): _u8(t8('Bank transfer via SEPA')));
+
+  if ($self->direct_debit) {
+    $params{xml}->startTag('ram:PayerPartyDebtorFinancialAccount');
+    $params{xml}->dataElement('ram:IBANID', $self->customer->iban);
+    $params{xml}->endTag;
+
+  } else {
+    $params{xml}->startTag('ram:PayeePartyCreditorFinancialAccount');
+    $params{xml}->dataElement('ram:IBANID', $params{bank_account}->iban);
+    $params{xml}->dataElement('ram:AccountName', _u8($params{bank_account}->name)) if $params{bank_account}->name;
+    $params{xml}->endTag;
+
+    if ($params{bank_account}->bic) {
+      $params{xml}->startTag('ram:PayeeSpecifiedCreditorFinancialInstitution');
+      $params{xml}->dataElement('ram:BICID', $params{bank_account}->bic);
+      $params{xml}->endTag;
+    }
+  }
+
+  $params{xml}->endTag;
+  #     </ram:SpecifiedTradeSettlementPaymentMeans>
+}
+
+sub _taxes {
+  my ($self, %params) = @_;
+
+  my @taxes;
+  my $pat   = $params{ptc_data};
+  foreach my $tax_id (keys %{ $pat->{taxes_by_tax_id} }) {
+    my $netamount = sum0 map { $pat->{amounts}->{$_}->{amount} } grep { $pat->{amounts}->{$_}->{tax_id} == $tax_id } keys %{ $pat->{amounts} };
+
+    push(@taxes, { amount    => $pat->{taxes_by_tax_id}->{$tax_id},
+                   netamount => $netamount,
+                   tax       => SL::DB::Tax->new(id => $tax_id)->load });
+  }
+
+  foreach my $taxinfo (@taxes) {
+    my %rate_and_code = _tax_rate_and_code($self->taxzone, $taxinfo->{tax});
+
+    #     <ram:ApplicableTradeTax>
+    $params{xml}->startTag("ram:ApplicableTradeTax");
+    $params{xml}->dataElement("ram:CalculatedAmount",      _r2($taxinfo->{amount}));
+    $params{xml}->dataElement("ram:TypeCode",              "VAT");
+    $params{xml}->dataElement("ram:BasisAmount",           _r2($taxinfo->{netamount}));
+    $params{xml}->dataElement("ram:CategoryCode",          $rate_and_code{code});
+    $params{xml}->dataElement("ram:RateApplicablePercent", _r2($rate_and_code{rate}));
+    $params{xml}->endTag;
+    #     </ram:ApplicableTradeTax>
+  }
+}
+
+sub _calculate_payment_terms_values {
+  my ($self) = @_;
+
+  my (%vars, %amounts, %formatted_amounts);
+
+  local $::myconfig{numberformat} = $::myconfig{numberformat};
+  local $::myconfig{dateformat}   = $::myconfig{dateformat};
+
+  if ($self->language_id) {
+    my $language = SL::DB::Language->load_cached($self->language_id);
+    $::myconfig{dateformat}   = $language->output_dateformat   if $language->output_dateformat;
+    $::myconfig{numberformat} = $language->output_numberformat if $language->output_numberformat;
+  }
+
+  $vars{currency}              = $self->currency->name if $self->currency;
+  $vars{$_}                    = $self->customer->$_      for qw(account_number bank bank_code bic iban mandate_date_of_signature mandator_id);
+  $vars{$_}                    = $self->payment_terms->$_ for qw(terms_netto terms_skonto percent_skonto);
+  $vars{payment_description}   = $self->payment_terms->description;
+  $vars{netto_date}            = $self->payment_terms->calc_date(reference_date => $self->transdate, due_date => $self->duedate, terms => 'net')->to_kivitendo;
+  $vars{skonto_date}           = $self->payment_terms->calc_date(reference_date => $self->transdate, due_date => $self->duedate, terms => 'discount')->to_kivitendo;
+
+  $amounts{invtotal}           = $self->amount;
+  $amounts{total}              = $self->amount - $self->paid;
+
+  $amounts{skonto_in_percent}  = 100.0 * $vars{percent_skonto};
+  $amounts{skonto_amount}      = $amounts{invtotal} * $vars{percent_skonto};
+  $amounts{invtotal_wo_skonto} = $amounts{invtotal} * (1 - $vars{percent_skonto});
+  $amounts{total_wo_skonto}    = $amounts{total}    * (1 - $vars{percent_skonto});
+
+  foreach (keys %amounts) {
+    $amounts{$_}           = $::form->round_amount($amounts{$_}, 2);
+    $formatted_amounts{$_} = $::form->format_amount(\%::myconfig, $amounts{$_}, 2);
+  }
+
+  return (
+    vars              => \%vars,
+    amounts           => \%amounts,
+    formatted_amounts => \%formatted_amounts,
+  );
+}
+
+sub _format_payment_terms_description {
+  my ($self, %params) = @_;
+
+  my $description = ($self->payment_terms->translated_attribute('description_long_invoice', $self->language_id) // '') || $self->payment_terms->description_long_invoice;
+  $description    =~ s{<\%$_\%>}{ $params{vars}->{$_} }ge              for keys %{ $params{vars} };
+  $description    =~ s{<\%$_\%>}{ $params{formatted_amounts}->{$_} }ge for keys %{ $params{formatted_amounts} };
+
+  if (_is_profile($self, PROFILE_XRECHNUNG())) {
+    my @terms;
+
+    if ($self->payment_terms->terms_skonto && ($self->payment_terms->percent_skonto * 1)) {
+      push @terms, sprintf("#SKONTO#TAGE=\%d#PROZENT=\%.2f#\n", $self->payment_terms->terms_skonto, $self->payment_terms->percent_skonto * 100);
+    }
+
+    $description =~ s{#}{_}g;
+    $description =  join('', @terms) . $description;
+  }
+
+  return $description;
+}
+
+sub _payment_terms {
+  my ($self, %params) = @_;
+
+  return if !$self->payment_terms && !$self->duedate;
+
+  if (!$self->payment_terms) { # only duedate
+    #     <ram:SpecifiedTradePaymentTerms>
+    $params{xml}->startTag("ram:SpecifiedTradePaymentTerms");
+
+    #       <ram:DueDateDateTime>
+    $params{xml}->startTag("ram:DueDateDateTime");
+    $params{xml}->dataElement("udt:DateTimeString", $self->duedate->strftime('%Y%m%d'), format => "102");
+    $params{xml}->endTag;
+    #       </ram:DueDateDateTime>
+
+    $params{xml}->endTag;
+    #     </ram:SpecifiedTradePaymentTerms>
+    return;
+  }
+
+  my %payment_terms_vars = _calculate_payment_terms_values($self);
+
+  #     <ram:SpecifiedTradePaymentTerms>
+  $params{xml}->startTag("ram:SpecifiedTradePaymentTerms");
+
+  $params{xml}->dataElement("ram:Description", _u8(_format_payment_terms_description($self, %payment_terms_vars)));
+
+  #       <ram:DueDateDateTime>
+  $params{xml}->startTag("ram:DueDateDateTime");
+  $params{xml}->dataElement("udt:DateTimeString", $self->duedate->strftime('%Y%m%d'), format => "102");
+  $params{xml}->endTag;
+  #       </ram:DueDateDateTime>
+
+  if (   _is_profile($self, PROFILE_FACTURX_EXTENDED())
+      && $self->payment_terms->percent_skonto
+      && $self->payment_terms->terms_skonto) {
+    my $currency_id = _u8(SL::Helper::ISO4217::map_currency_name_to_code($self->currency->name) // 'EUR');
+
+    #       <ram:ApplicableTradePaymentDiscountTerms>
+    $params{xml}->startTag("ram:ApplicableTradePaymentDiscountTerms");
+    $params{xml}->dataElement("ram:BasisPeriodMeasure", $self->payment_terms->terms_skonto, unitCode => "DAY");
+    $params{xml}->dataElement("ram:BasisAmount",        _r2($payment_terms_vars{amounts}->{invtotal}));
+    $params{xml}->dataElement("ram:CalculationPercent", _r2($self->payment_terms->percent_skonto * 100));
+    $params{xml}->endTag;
+    #       </ram:ApplicableTradePaymentDiscountTerms>
+  }
+
+  $params{xml}->endTag;
+  #     </ram:SpecifiedTradePaymentTerms>
+}
+
+sub _billing_specified_period {
+  my ($self, %params) = @_;
+
+  my $invoicing_period_start = $self->tax_point_start // $self->tax_point;
+  my $invoicing_period_end   = $self->tax_point;
+
+  return unless ($invoicing_period_start && $invoicing_period_end);
+
+  #     <ram:BillingSpecifiedPeriod>
+  $params{xml}->startTag("ram:BillingSpecifiedPeriod");
+
+  #       <ram:StartDateTime> BT-73
+  $params{xml}->startTag("ram:StartDateTime");
+  $params{xml}->dataElement("udt:DateTimeString", $invoicing_period_start->strftime('%Y%m%d'), format => "102");
+  $params{xml}->endTag;
+  #       </ram:StartDateTime>
+
+  #       <ram:EndDateTime> BT-74
+  $params{xml}->startTag("ram:EndDateTime");
+  $params{xml}->dataElement("udt:DateTimeString", $invoicing_period_end->strftime('%Y%m%d'), format => "102");
+  $params{xml}->endTag;
+  #       </ram:EndDateTime>
+
+  $params{xml}->endTag;
+  #     </ram:BillingSpecifiedPeriod>
+}
+
+sub _totals {
+  my ($self, %params) = @_;
+
+  #     <ram:SpecifiedTradeSettlementHeaderMonetarySummation>
+  $params{xml}->startTag("ram:SpecifiedTradeSettlementHeaderMonetarySummation");
+
+  $params{xml}->dataElement("ram:LineTotalAmount",     _r2($self->netamount));
+  $params{xml}->dataElement("ram:TaxBasisTotalAmount", _r2($self->netamount));
+  $params{xml}->dataElement("ram:TaxTotalAmount",      _r2(sum(values %{ $params{ptc_data}->{taxes_by_tax_id} })), currencyID => "EUR");
+  $params{xml}->dataElement("ram:GrandTotalAmount",    _r2($self->amount));
+  $params{xml}->dataElement("ram:TotalPrepaidAmount",  _r2($self->paid));
+  $params{xml}->dataElement("ram:DuePayableAmount",    _r2($self->amount - $self->paid));
+
+  $params{xml}->endTag;
+  #     </ram:SpecifiedTradeSettlementHeaderMonetarySummation>
+}
+
+sub _exchanged_document_context {
+  my ($self, %params) = @_;
+
+  #   <rsm:ExchangedDocumentContext>
+  $params{xml}->startTag("rsm:ExchangedDocumentContext");
+
+  if ($self->{_zugferd}->{test_mode}) {
+    $params{xml}->startTag("ram:TestIndicator");
+    $params{xml}->dataElement("udt:Indicator", "true");
+    $params{xml}->endTag;
+  }
+
+  # According to XRechnung 3.0.x the customer can optionally request a
+  # different business process identifier. The default should be fine
+  # for most customers. If any of ours requests to make this
+  # configurable, we'll move the configuration into the customer base
+  # data, just like the ZUGFeRD/XRechnung version selector itself.
+  $params{xml}->startTag("ram:BusinessProcessSpecifiedDocumentContextParameter");
+  $params{xml}->dataElement("ram:ID", 'urn:fdc:peppol.eu:2017:poacc:billing:01:1.0');
+  $params{xml}->endTag;
+
+  $params{xml}->startTag("ram:GuidelineSpecifiedDocumentContextParameter");
+  $params{xml}->dataElement("ram:ID", $standards_ids{ $self->{_zugferd}->{profile} });
+  $params{xml}->endTag;
+  $params{xml}->endTag;
+  #   </rsm:ExchangedDocumentContext>
+}
+
+sub _included_note {
+  my ($self, %params) = @_;
+
+  $params{xml}->startTag("ram:IncludedNote");
+  $params{xml}->dataElement("ram:Content",     _u8($params{note}));
+  $params{xml}->dataElement("ram:SubjectCode", _u8($params{subject_code})) if $params{subject_code};
+
+  $params{xml}->endTag;
+}
+
+sub _exchanged_document {
+  my ($self, %params) = @_;
+
+  #   <rsm:ExchangedDocument>
+  $params{xml}->startTag("rsm:ExchangedDocument");
+
+  $params{xml}->dataElement("ram:ID",       _u8($self->invnumber));
+  $params{xml}->dataElement("ram:TypeCode", _u8(_type_code($self)));
+
+  #     <ram:IssueDateTime>
+  $params{xml}->startTag("ram:IssueDateTime");
+  $params{xml}->dataElement("udt:DateTimeString", $self->transdate->strftime('%Y%m%d'), format => "102");
+  $params{xml}->endTag;
+  #     </ram:IssueDateTime>
+
+  if (   _is_profile($self, PROFILE_FACTURX_EXTENDED())
+      && $self->language
+      && (($self->language->template_code // '') =~ m{^(de|en)}i)) {
+    $params{xml}->dataElement("ram:LanguageID", uc($1));
+  }
+
+  require SL::DB::GenericTranslation;
+  my $std_notes = SL::DB::Manager::GenericTranslation->get_all(
+    where => [
+      translation_type => 'ZUGFeRD/notes',
+      or               => [
+        language_id    => undef,
+        language_id    => $self->language_id,
+      ],
+      '!translation'   => undef,
+      '!translation'   => '',
+    ],
+  );
+
+  my $std_note = first { $_->language_id == $self->language_id } @{ $std_notes };
+  $std_note  //= first { !defined $_->language_id }              @{ $std_notes };
+
+  my $notes         = $self->notes_as_stripped_html;
+  my $register_note = _generate_register_note();
+
+  _included_note($self, %params, note => $self->transaction_description)        if $self->transaction_description;
+  _included_note($self, %params, note => $notes)                                if $notes;
+  _included_note($self, %params, note => $std_note->translation)                if $std_note;
+  _included_note($self, %params, note => $register_note, subject_code => 'REG') if $register_note;
+
+  if (my $reduction_terms = $self->customer->reduction_terms) {
+    $reduction_terms =~ s{\r\n}{\n}g;
+    _included_note($self, %params, note => $reduction_terms);
+  }
+
+  $params{xml}->endTag;
+  #   </rsm:ExchangedDocument>
+}
+
+sub _specified_tax_registration {
+  my ($ustid_nr, %params) = @_;
+
+  #         <ram:SpecifiedTaxRegistration>
+  $params{xml}->startTag("ram:SpecifiedTaxRegistration");
+  $params{xml}->dataElement("ram:ID", _u8(SL::VATIDNr->normalize($ustid_nr)), schemeID => "VA");
+  $params{xml}->endTag;
+  #         </ram:SpecifiedTaxRegistration>
+}
+
+sub _seller_trade_party {
+  my ($self, %params) = @_;
+
+  my @our_address            = _parse_our_address();
+
+  my $sales_person           = $self->salesman;
+  my $sales_person_auth      = SL::DB::Manager::AuthUser->find_by(login => $sales_person->login);
+  my %sales_person_cfg       = $sales_person_auth ? %{ $sales_person_auth->config_values } : ();
+  $sales_person_cfg{email} ||= $sales_person->deleted_email;
+  $sales_person_cfg{tel}   ||= $sales_person->deleted_tel;
+
+  #       <ram:SellerTradeParty>
+  $params{xml}->startTag("ram:SellerTradeParty");
+
+  if (_is_profile($self, PROFILE_XRECHNUNG())) {
+    # 0088 = GLN, 0060 = D-U-N-S, only one ID is allowed
+    if ($self->customer->c_vendor_id) {
+      $params{xml}->dataElement("ram:ID", _u8($self->customer->c_vendor_id));
+
+    } elsif ($::instance_conf->get_gln) {
+      $params{xml}->dataElement("ram:ID", _u8($::instance_conf->get_gln),  schemeID => '0088');
+
+    } elsif ($::instance_conf->get_duns) {
+      $params{xml}->dataElement("ram:ID", _u8($::instance_conf->get_duns), schemeID => '0060')
+
+    } else {
+      # no sensible default yet
+    }
+
+  } else {                      # profile != XRechnung
+    if ($self->customer->c_vendor_id) {
+      $params{xml}->dataElement("ram:ID", _u8($self->customer->c_vendor_id));
+    }
+
+    if ($::instance_conf->get_gln) {
+      $params{xml}->dataElement("ram:GlobalID", _u8($::instance_conf->get_gln),  schemeID => '0088');
+    }
+
+    if ($::instance_conf->get_duns) {
+      $params{xml}->dataElement("ram:GlobalID", _u8($::instance_conf->get_duns), schemeID => '0060');
+    }
+  }
+
+  $params{xml}->dataElement("ram:Name", _u8($::instance_conf->get_company));
+
+  #         <ram:DefinedTradeContact>
+  $params{xml}->startTag("ram:DefinedTradeContact");
+
+  $params{xml}->dataElement("ram:PersonName", _u8($sales_person->safe_name));
+
+  if ($sales_person_cfg{tel}) {
+    $params{xml}->startTag("ram:TelephoneUniversalCommunication");
+    $params{xml}->dataElement("ram:CompleteNumber", _u8($sales_person_cfg{tel}));
+    $params{xml}->endTag;
+  }
+
+  if ($sales_person_cfg{email}) {
+    $params{xml}->startTag("ram:EmailURIUniversalCommunication");
+    $params{xml}->dataElement("ram:URIID", _u8($sales_person_cfg{email}));
+    $params{xml}->endTag;
+  }
+
+  $params{xml}->endTag;
+  #         </ram:DefinedTradeContact>
+
+  if (@our_address) {
+    #         <ram:PostalTradeAddress>
+    $params{xml}->startTag("ram:PostalTradeAddress");
+    foreach my $element (@our_address) {
+      $params{xml}->dataElement("ram:" . $element->[0], _u8($element->[1]));
+    }
+    $params{xml}->endTag;
+    #         </ram:PostalTradeAddress>
+  }
+
+  # BT-34
+  $params{xml}->startTag("ram:URIUniversalCommunication");
+  $params{xml}->dataElement("ram:URIID", _u8($::instance_conf->get_invoice_mail), schemeID => 'EM');
+  $params{xml}->endTag;
+
+  _specified_tax_registration($::instance_conf->get_co_ustid, %params);
+
+  $params{xml}->endTag;
+  #     </ram:SellerTradeParty>
+}
+
+sub _buyer_trade_party {
+  my ($self, %params) = @_;
+
+  #       <ram:BuyerTradeParty>
+  $params{xml}->startTag("ram:BuyerTradeParty");
+
+  if (_is_profile($self, PROFILE_XRECHNUNG())) {
+    if ($self->customer->gln) {
+      $params{xml}->dataElement("ram:ID", _u8($self->customer->gln), schemeID => '0088');
+    } else {
+      $params{xml}->dataElement("ram:ID", _u8($self->customer->customernumber));
+    }
+
+  } else {
+    $params{xml}->dataElement("ram:ID", _u8($self->customer->customernumber));
+    if ($self->customer->gln) {
+      $params{xml}->dataElement("ram:GlobalID", _u8($self->customer->gln), schemeID => '0088');
+    }
+  }
+
+  $params{xml}->dataElement("ram:Name", _u8($self->customer->name));
+
+  _buyer_contact_information($self, %params, contact => $self->contact) if ($self->cp_id);
+  _customer_postal_trade_address(%params, customer => $self->customer);
+  _buyer_communication(%params, customer => $self->customer);
+  _specified_tax_registration($self->customer->ustid, %params) if $self->customer->ustid;
+
+  $params{xml}->endTag;
+  #       </ram:BuyerTradeParty>
+}
+
+sub _included_supply_chain_trade_line_item {
+  my ($self, %params) = @_;
+
+  my $line_number = 0;
+  foreach my $item (@{ $self->items }) {
+    _line_item($self, %params, item => $item, line_number => $line_number);
+    $line_number++;
+  }
+}
+
+sub _applicable_header_trade_agreement {
+  my ($self, %params) = @_;
+
+  #     <ram:ApplicableHeaderTradeAgreement>
+  $params{xml}->startTag("ram:ApplicableHeaderTradeAgreement");
+
+  # BT-10 BuyerReference must always be given in XRechnung
+  # v3.0.2. validate_zugferd_data already checks for it.  Optional in
+  # Factur-X.
+  my $buyer_reference = first { ($_ // '') ne '' } ($self->customer->c_vendor_routing_id, $self->cusordnumber, $self->customer->ustid);
+  if ($buyer_reference) {
+    $params{xml}->dataElement("ram:BuyerReference", _u8($buyer_reference));
+  }
+
+  _seller_trade_party($self, %params);
+  _buyer_trade_party($self, %params);
+
+  if ($self->cusordnumber) {
+    #     <ram:BuyerOrderReferencedDocument>
+    $params{xml}->startTag("ram:BuyerOrderReferencedDocument");
+    $params{xml}->dataElement("ram:IssuerAssignedID", _u8($self->cusordnumber));
+    $params{xml}->endTag;
+    #     </ram:BuyerOrderReferencedDocument>
+  }
+
+  foreach my $add_doc (@{$params{add_docs} || []}) {
+    _additional_referenced_document(
+      $self, %params,
+      %$add_doc,
+    );
+  }
+
+  $params{xml}->endTag;
+  #     </ram:ApplicableHeaderTradeAgreement>
+}
+
+sub _applicable_header_trade_delivery {
+  my ($self, %params) = @_;
+
+  #     <ram:ApplicableHeaderTradeDelivery>
+  $params{xml}->startTag("ram:ApplicableHeaderTradeDelivery");
+
+  _shipto_trade_party($self, %params);
+
+  #       <ram:ActualDeliverySupplyChainEvent>
+  $params{xml}->startTag("ram:ActualDeliverySupplyChainEvent");
+
+  $params{xml}->startTag("ram:OccurrenceDateTime");
+  $params{xml}->dataElement("udt:DateTimeString", ($self->deliverydate // $self->transdate)->strftime('%Y%m%d'), format => "102");
+  $params{xml}->endTag;
+
+  $params{xml}->endTag;
+  #       </ram:ActualDeliverySupplyChainEvent>
+
+  if (_is_profile($self, PROFILE_FACTURX_EXTENDED())) {
+    if ($self->donumber) {
+      #       <ram:DeliveryNoteReferencedDocument>
+      $params{xml}->startTag("ram:DeliveryNoteReferencedDocument");
+      $params{xml}->dataElement("ram:IssuerAssignedID", _u8($self->donumber));
+      $params{xml}->endTag;
+      #       </ram:DeliveryNoteReferencedDocument>
+    }
+  }
+
+  $params{xml}->endTag;
+  #     </ram:ApplicableHeaderTradeDelivery>
+}
+
+sub _applicable_header_trade_settlement {
+  my ($self, %params) = @_;
+
+  #     <ram:ApplicableHeaderTradeSettlement>
+  $params{xml}->startTag("ram:ApplicableHeaderTradeSettlement");
+  $params{xml}->dataElement("ram:InvoiceCurrencyCode", _u8(SL::Helper::ISO4217::map_currency_name_to_code($self->currency->name) // 'EUR'));
+
+  _specified_trade_settlement_payment_means($self, %params);
+  _taxes($self, %params);
+  _billing_specified_period($self, %params);
+  _payment_terms($self, %params);
+  _totals($self, %params);
+
+  $params{xml}->endTag;
+  #     </ram:ApplicableHeaderTradeSettlement>
+}
+
+sub _supply_chain_trade_transaction {
+  my ($self, %params) = @_;
+
+  #   <rsm:SupplyChainTradeTransaction>
+  $params{xml}->startTag("rsm:SupplyChainTradeTransaction");
+
+  _included_supply_chain_trade_line_item($self, %params);
+  _applicable_header_trade_agreement($self, %params);
+  _applicable_header_trade_delivery($self, %params);
+  _applicable_header_trade_settlement($self, %params);
+
+  $params{xml}->endTag;
+  #   </rsm:SupplyChainTradeTransaction>
+}
+
+sub create_zugferd_data {
+  my ($self)        = @_;
+  $self->{_zugferd} = { SL::ZUGFeRD->convert_customer_setting($self->customer->create_zugferd_invoices_for_this_customer) };
+
+  if (!$standards_ids{ $self->{_zugferd}->{profile} }) {
+    croak "Profile '" . $self->{_zugferd}->{profile} . "' is not supported";
+  }
+
+  my $output        = '';
+
+  my %params        = $self->validate_zugferd_data(prefix => $::locale->text('The ZUGFeRD invoice data cannot be generated because the data validation failed.') . ' ');
+  $params{ptc_data} = { $self->calculate_prices_and_taxes };
+  $params{add_docs} = $self->get_zugferd_additional_documents || [];
+  $params{xml}      = XML::Writer->new(
+    OUTPUT          => \$output,
+    DATA_MODE       => 1,
+    DATA_INDENT     => 2,
+    ENCODING        => 'utf-8',
+  );
+
+  $params{xml}->xmlDecl();
+
+  # <rsm:CrossIndustryInvoice>
+  $params{xml}->startTag("rsm:CrossIndustryInvoice",
+                         "xmlns:rsm" => "urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100",
+                         "xmlns:qdt" => "urn:un:unece:uncefact:data:standard:QualifiedDataType:100",
+                         "xmlns:ram" => "urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100",
+                         "xmlns:xs"  => "http://www.w3.org/2001/XMLSchema",
+                         "xmlns:udt" => "urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100");
+
+  _exchanged_document_context($self, %params);
+  _exchanged_document($self, %params);
+  _supply_chain_trade_transaction($self, %params);
+
+  $params{xml}->endTag;
+  # </rsm:CrossIndustryInvoice>
+
+  return $output;
+}
+
+sub create_zugferd_xmp_data {
+  my ($self) = @_;
+
+  return {
+    conformance_level  => 'EXTENDED',
+    document_file_name => 'factur-x.xml',
+    document_type      => 'INVOICE',
+    version            => '1.0',
+  };
+}
+
+sub import_zugferd_data {
+  my ($self, $zugferd_parser) = @_;
+  validate_pos(@_,
+    {
+      isa => 'SL::DB::PurchaseInvoice',
+    },
+    {
+      # document class of SL::XMLInvoice
+      can => qw(metadata items)
+    }
+  );
+
+  my %metadata = %{$zugferd_parser->metadata};
+  my @items = @{$zugferd_parser->items};
+
+  my $intnotes = t8("ZUGFeRD Import. Type: #1", $metadata{'type'})->translated;
+  my $iban = $metadata{'iban'};
+  my $invnumber = $metadata{'invnumber'};
+
+  if ( ! ($metadata{'ustid'} or $metadata{'taxnumber'}) ) {
+    die t8("Cannot process this invoice: neither VAT ID nor tax ID present.");
+  }
+
+  my $vendor = SL::ZUGFeRD::find_vendor($metadata{'ustid'}, $metadata{'taxnumber'});
+
+  die t8("Vendor with VAT ID (#1) and/or tax ID (#2) not found. Please check if the vendor " .
+          "#3 exists and whether it has the correct tax ID/VAT ID." ,
+           $metadata{'ustid'},
+           $metadata{'taxnumber'},
+           $metadata{'vendor_name'},
+  ) unless $vendor;
+
+
+  # Check IBAN specified on bill matches the one we've got in
+  # the database for this vendor.
+  if ($iban) {
+    $intnotes .= "\nIBAN: ";
+    $intnotes .= $iban ne $vendor->iban ?
+    t8("Record IBAN #1 doesn't match vendor IBAN #2", $iban, $vendor->iban)
+    : $iban
+  }
+
+  # Use invoice creation date as due date if there's no due date
+  $metadata{'duedate'} = $metadata{'transdate'} unless defined $metadata{'duedate'};
+
+  # parse dates to kivi if set/valid
+  foreach my $key ( qw(transdate duedate) ) {
+    next unless defined $metadata{$key};
+    $metadata{$key} =~ s/^\s+|\s+$//g;
+
+    if ($metadata{$key} =~ /^([0-9]{4})-?([0-9]{2})-?([0-9]{2})$/) {
+    $metadata{$key} = DateTime->new(year  => $1,
+                                    month => $2,
+                                    day   => $3)->to_kivitendo;
+    }
+  }
+
+  my $currency = SL::DB::Manager::Currency->find_by(
+    name => $metadata{'currency'},
+    );
+
+  require SL::DB::Chart;
+  my $default_ap_amount_chart = SL::DB::Manager::Chart->find_by(
+    id => $::instance_conf->get_expense_accno_id
+  );
+  # Fallback if there's no default AP amount chart configured
+  $default_ap_amount_chart ||= SL::DB::Manager::Chart->find_by(charttype => 'A');
+
+  require SL::DB::Tax;
+  require SL::DB::TaxKey;
+  my $active_taxkey = $default_ap_amount_chart->get_active_taxkey;
+  my $taxes = SL::DB::Manager::Tax->get_all(
+    where   => [ chart_categories => {
+        like => '%' . $default_ap_amount_chart->category . '%'
+      }],
+    sort_by => 'taxkey, rate',
+  );
+  die t8(
+    "No tax found for chart #1", $default_ap_amount_chart->displayable_name
+  ) unless scalar @{$taxes};
+
+  require SL::DB::RecordTemplate;
+  my %template_params;
+  my $template_ap = SL::DB::Manager::RecordTemplate->get_first(where => [vendor_id => $vendor->id]);
+  if ($template_ap) {
+    $template_params{globalproject_id}        = $template_ap->project_id;
+    $template_params{payment_id}              = $template_ap->payment_id;
+    $template_params{department_id}           = $template_ap->department_id;
+    $template_params{ordnumber}               = $template_ap->ordnumber;
+    $template_params{transaction_description} = $template_ap->transaction_description;
+    $template_params{notes}                   = $template_ap->notes;
+  }
+
+  # Try to fill in AP account to book against
+  my $ap_chart_id = $template_ap ? $template_ap->ar_ap_chart_id
+                  : $::instance_conf->get_ap_chart_id;
+  my $ap_chart;
+  if ( $ap_chart_id ne '' ) {
+    $ap_chart = SL::DB::Manager::Chart->find_by(id => $ap_chart_id);
+  } else {
+    # If no default account is configured, just use the first AP account found.
+    ($ap_chart) = @{SL::DB::Manager::Chart->get_all(
+      where   => [ link => 'AP' ],
+      sort_by => [ 'accno' ],
+    )};
+  }
+
+  my $today = DateTime->today_local;
+  my $duedate =
+      $metadata{duedate} ?
+        $metadata{duedate}
+    : $vendor->payment ?
+        $vendor->payment->calc_date(reference_date => $today)->to_kivitendo
+    : $today->to_kivitendo;
+
+  my %params = (
+    invoice      => 0,
+    vendor_id    => $vendor->id,
+    taxzone_id   => $vendor->taxzone_id,
+    currency_id  => $currency->id,
+    direct_debit => $metadata{'direct_debit'},
+    invnumber    => $invnumber,
+    transdate    => $metadata{transdate} || $today->to_kivitendo,
+    duedate      => $metadata{duedate}   || $today->to_kivitendo,
+    taxincluded  => 0,
+    intnotes     => $intnotes,
+    transactions => [],
+    %template_params,
+  );
+
+  $self->assign_attributes(%params);
+
+  # parse items
+  my $template_item;
+  if ($template_ap && scalar @{$template_ap->items}) {
+    $template_item = $template_ap->items->[0];
+  }
+  foreach my $i (@items) {
+    my %item = %{$i};
+
+    my $net_total = $item{'subtotal'};
+
+    # set default values for items
+    my %line_params;
+    $line_params{amount} = $net_total;
+    if ($template_item) {
+      $line_params{tax_id}     = $template_item->tax->id;
+      $line_params{chart}      = $template_item->chart;
+      $line_params{project_id} = $template_item->project_id;
+    } else {
+      my $tax_rate  = $item{'tax_rate'};
+         $tax_rate /= 100 if $tax_rate > 1; # XML data is usually in percent
+      my $tax   = first { $tax_rate              == $_->rate } @{ $taxes };
+         $tax //= first { $active_taxkey->tax_id == $_->id }   @{ $taxes };
+         $tax //= $taxes->[0];
+      $line_params{tax_id}  = $tax->id;
+      $line_params{chart}   = $default_ap_amount_chart;
+    }
+
+    $self->add_ap_amount_row(%line_params);
+  }
+  $self->recalculate_amounts();
+
+  $self->create_ap_row(chart => $ap_chart);
+
+  return $self;
+}
+
+1;

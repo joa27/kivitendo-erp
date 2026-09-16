@@ -34,12 +34,20 @@
 
 use POSIX qw(strftime);
 
+use List::Util qw(notall);
+use List::MoreUtils qw(none);
+
 use SL::IS;
 use SL::DN;
 use SL::DB::Department;
 use SL::DB::Dunning;
+use SL::DB::Manager::PaymentTerm;
+use SL::File;
 use SL::Helper::Flash qw(flash);
 use SL::Locale::String qw(t8);
+use SL::Presenter::EmailJournal;
+use SL::Presenter::FileObject;
+use SL::Presenter::WebdavObject;
 use SL::ReportGenerator;
 
 require "bin/mozilla/common.pl";
@@ -103,8 +111,11 @@ sub add {
 
   DN->get_config(\%myconfig, \%$form);
 
+  $form->get_lists("departments" => "ALL_DEPARTMENTS");
+  $::form->{ALL_PAYMENT_TERMS} = SL::DB::Manager::PaymentTerm->get_all_sorted;
+
   $form->{SHOW_DUNNING_LEVEL_SELECTION} = $form->{DUNNING}         && scalar @{ $form->{DUNNING} };
-  $form->{SHOW_DEPARTMENT_SELECTION}    = $form->{all_departments} && scalar @{ $form->{all_departments} || [] };
+  $form->{SHOW_DEPARTMENT_SELECTION}    = $form->{ALL_DEPARTMENTS} && scalar @{ $form->{ALL_DEPARTMENTS} || [] };
 
   $form->{title}    = $locale->text('Start Dunning Process');
 
@@ -203,11 +214,12 @@ sub save_dunning {
 
   my $active=1;
   my @rows = ();
+  my @status;
   undef($form->{DUNNING_PDFS});
 
   my $saved_language_id = $form->{language_id};
 
-  if ($form->{groupinvoices}) {
+  if ($form->{groupinvoices} || $form->{l_include_credit_notes}) {
     my %dunnings_for;
 
     for my $i (1 .. $form->{rowcount}) {
@@ -221,9 +233,11 @@ sub save_dunning {
 
       push @{ $level }, { "row"                    => $i,
                           "invoice_id"             => $form->{"inv_id_$i"},
+                          "credit_note"            => $form->{"credit_note_$i"},
                           "customer_id"            => $form->{"customer_id_$i"},
                           "language_id"            => $form->{"language_id_$i"},
                           "next_dunning_config_id" => $form->{"next_dunning_config_id_$i"},
+                          "print_invoice"          => $form->{"include_invoice_$i"},
                           "email"                  => $form->{"email_$i"}, };
     }
 
@@ -233,7 +247,10 @@ sub save_dunning {
         if (!$form->{force_lang}) {
           $form->{language_id} = @{$level}[0]->{language_id};
         }
-        DN->save_dunning(\%myconfig, $form, $level);
+        my $rc =  DN->save_dunning(\%myconfig, $form, $level);
+        $rc->{error} =~ s{\n}{<br />}g if $rc->{error};
+        push @status, { invnumbers => [map { $form->{'invnumber_' . $_->{row}} } @$level],
+                        map { ( $_ => $rc->{$_} ) } qw(error dunning_id print_original_invoice send_email), };
       }
     }
 
@@ -246,19 +263,32 @@ sub save_dunning {
                       "customer_id"            => $form->{"customer_id_$i"},
                       "language_id"            => $form->{"language_id_$i"},
                       "next_dunning_config_id" => $form->{"next_dunning_config_id_$i"},
+                      "print_invoice"          => $form->{"include_invoice_$i"},
                       "email"                  => $form->{"email_$i"}, } ];
       if (!$form->{force_lang}) {
         $form->{language_id} = @{$level}[0]->{language_id};
       }
-      DN->save_dunning(\%myconfig, $form, $level);
+      my $rc = DN->save_dunning(\%myconfig, $form, $level);
+      $rc->{error} =~ s{\n}{<br />}g if $rc->{error};
+      push @status, { invnumbers => [map { $form->{'invnumber_' . $_->{row}} } @$level],
+                      map { ( $_ => $rc->{$_} ) } qw(error dunning_id print_original_invoice send_email), };
     }
   }
 
   $form->{language_id} = $saved_language_id;
 
-  if (scalar @{ $form->{DUNNING_PDFS} }) {
+  my $pdf_filename;
+  my $pdf_content;
+  if ($form->{DUNNING_PDFS} && scalar @{ $form->{DUNNING_PDFS} }) {
     $form->{dunning_id} = strftime("%Y%m%d", localtime time) if scalar @{ $form->{DUNNING_PDFS}} > 1;
-    DN->melt_pdfs(\%myconfig, $form, $form->{copies});
+    ($pdf_filename, $pdf_content) = DN->melt_pdfs(\%myconfig, $form, $form->{copies}, return_content => $form->{media} ne 'printer');
+
+    flash('info', t8('Dunning Process started for selected invoices!'));
+    if ($form->{media} eq 'printer') {
+      flash('info', t8('The PDF has been printed'));
+    } else {
+      flash('info', t8('The PDF has been created'));
+    }
   }
 
   # saving the history
@@ -269,10 +299,13 @@ sub save_dunning {
   }
   # /saving the history
 
-  if ($form->{media} eq 'printer') {
-    delete $form->{callback};
-    $form->redirect($locale->text('Dunning Process started for selected invoices!'));
-  }
+  setup_dn_status_action_bar();
+  $form->{"title"} = $locale->text("Dunning status");
+  $form->header();
+  print $form->parse_html_template('dunning/status', {
+    pdf_filename => $pdf_filename,
+    pdf_content  => $pdf_content,
+    status       => \@status, });
 
   $main::lxdebug->leave_sub();
 }
@@ -286,7 +319,10 @@ sub set_email {
   $main::auth->assert('dunning_edit');
 
   $form->{"title"} = $locale->text("Set eMail text");
-  $form->header(no_layout => 1);
+  $form->header(
+    no_layout       => 1,
+    use_javascripts => [ qw(ckeditor5/ckeditor ckeditor5/translations/de) ],
+  );
   print($form->parse_html_template("dunning/set_email"));
 
   $main::lxdebug->leave_sub();
@@ -320,6 +356,18 @@ sub search {
 
 }
 
+sub create_subtotal_row {
+  my ($totals, $all_columns, $column_alignment, $subtotal_columns, $class) = @_;
+
+  my $row  = { map { $_ => { 'data' => '', 'class' => $class, 'align' => $column_alignment->{$_}, } } @{ $all_columns } };
+
+  $row->{$_}->{data} = $::form->format_amount(\%::myconfig, $totals->{$_}, 2) for @{ $subtotal_columns };
+
+  $totals->{$_} = 0 for @{ $subtotal_columns };
+
+  return $row;
+}
+
 sub show_dunning {
   $main::lxdebug->enter_sub();
 
@@ -330,8 +378,9 @@ sub show_dunning {
 
   $main::auth->assert('dunning_edit');
 
-  my @filter_field_list = qw(customer_id customer dunning_level department_id invnumber ordnumber
-                             transdatefrom transdateto dunningfrom dunningto notes showold l_salesman salesman_id);
+  my @filter_field_list = qw(customer_id customer dunning_id dunning_level department_id invnumber ordnumber
+                             transdatefrom transdateto dunningfrom dunningto notes showold l_salesman salesman_id
+                             l_mails l_webdav l_documents l_subtotal);
 
   report_generator_set_default_sort('customername', 1);
 
@@ -362,33 +411,42 @@ sub show_dunning {
     'checkbox'            => { 'text' => '', 'visible' => 'HTML' },
     'dunning_description' => { 'text' => $locale->text('Dunning Level') },
     'customername'        => { 'text' => $locale->text('Customername') },
+    'departmentname'      => { 'text' => $locale->text('Department') },
     'language'            => { 'text' => $locale->text('Language') },
     'invnumber'           => { 'text' => $locale->text('Invnumber') },
     'transdate'           => { 'text' => $locale->text('Invdate') },
     'duedate'             => { 'text' => $locale->text('Invoice Duedate') },
     'amount'              => { 'text' => $locale->text('Amount') },
+    'dunning_id'          => { 'text' => $locale->text('Dunning number') },
     'dunning_date'        => { 'text' => $locale->text('Dunning Date') },
     'dunning_duedate'     => { 'text' => $locale->text('Dunning Duedate') },
     'fee'                 => { 'text' => $locale->text('Total Fees') },
     'interest'            => { 'text' => $locale->text('Interest') },
     'salesman'            => { 'text' => $locale->text('Salesperson'), 'visible' => $form->{l_salesman} ? 1 : 0 },
+    'documents'           => { 'text' => $locale->text('Documents'),   'visible' => $form->{l_documents}? 1 : 0 },
+    'webdav'              => { 'text' => $locale->text('WebDAV'),      'visible' => $form->{l_webdav}   ? 1 : 0 },
+    'mails'               => { 'text' => $locale->text('Mails'),       'visible' => $form->{l_mails}    ? 1 : 0 },
   );
 
   $report->set_columns(%column_defs);
-  $report->set_column_order(qw(checkbox dunning_description customername language invnumber transdate
-                               duedate amount dunning_date dunning_duedate fee interest salesman));
+  $report->set_column_order(qw(checkbox dunning_description dunning_id customername language invnumber transdate
+                               duedate amount dunning_date dunning_duedate fee interest salesman departmentname mails webdav documents));
   $report->set_sort_indicator($form->{sort}, $form->{sortdir});
 
   my $edit_url  = sub { build_std_url('script=' . ($_[0]->{invoice} ? 'is' : 'ar') . '.pl', 'action=edit', 'callback') . '&id=' . $::form->escape($_[0]->{id}) };
   my $print_url = sub { build_std_url('action=print_dunning', 'format=pdf', 'media=screen', 'dunning_id='.$_[0]->{dunning_id}, 'language_id=' . $_[0]->{language_id}) };
   my $sort_url  = build_std_url('action=show_dunning', grep { $form->{$_} } @filter_field_list);
 
-  foreach my $name (qw(dunning_description customername invnumber transdate duedate dunning_date dunning_duedate salesman)) {
+  foreach my $name (qw(dunning_description customername invnumber transdate duedate dunning_date dunning_duedate salesman dunning_id)) {
     my $sortdir                 = $form->{sort} eq $name ? 1 - $form->{sortdir} : $form->{sortdir};
     $column_defs{$name}->{link} = $sort_url . "&sort=$name&sortdir=$sortdir";
   }
 
-  my %alignment = map { $_ => 'right' } qw(transdate duedate amount dunning_date dunning_duedate fee interest salesman);
+  my %alignment = map { $_ => 'right' } qw(transdate duedate amount dunning_date dunning_duedate fee interest salesman dunning_id);
+
+  my @subtotal_columns = qw(amount fee interest);
+  my %subtotals        = map { $_ => 0 } @subtotal_columns;
+  my %totals           = map { $_ => 0 } @subtotal_columns;
 
   my ($current_dunning_rows, $previous_dunning_id, $first_row_for_dunning);
 
@@ -411,15 +469,21 @@ sub show_dunning {
       $ref->{language} = SL::DB::Manager::Language->find_by('id' => $ref->{'language_id'})->{'description'};
     }
 
+    $subtotals{$_} += $ref->{$_} for @subtotal_columns;
+    $totals{$_}    += $ref->{$_} for @subtotal_columns;
+
+    $ref->{$_} = $form->format_amount(\%myconfig, $ref->{$_}, 2) for qw(amount fee interest);
+
     my $row = { };
     foreach my $column (keys %{ $ref }) {
       $row->{$column} = {
-        'data'  => $first_row_for_dunning || (($column ne 'dunning_description') && ($column ne 'customername')) ? $ref->{$column} : '',
+        'data'  => $first_row_for_dunning || (none { $_ eq $column } qw(dunning_description customername dunning_id)) ? $ref->{$column} : '',
 
         'align' => $alignment{$column},
 
         'link'  => (  $column eq 'invnumber'           ? $edit_url->($ref)
                     : $column eq 'dunning_description' ? $print_url->($ref)
+                    : $column eq 'dunning_id'          ? $print_url->($ref)
                     :                                    ''),
       };
     }
@@ -438,7 +502,53 @@ sub show_dunning {
       $row->{language} = { };
     }
 
+    if ($form->{l_documents} && $first_row_for_dunning) {
+      my @files  = SL::File->get_all_versions(object_id   => $ref->{dunning_id},
+                                              object_type => 'dunning',
+                                              file_type   => 'document',);
+      if (scalar @files) {
+        my $html          = join '<br>', map { SL::Presenter::FileObject::file_object($_) } @files;
+        my $text          = join "\n",   map { $_->file_name                              } @files;
+        $row->{documents} = { 'raw_data' => $html, data => $text };
+      } else {
+        $row->{documents} = { };
+      }
+    }
+    if ($form->{l_webdav} && $first_row_for_dunning) {
+      my $webdav = SL::Webdav->new(
+        type     => 'dunning',
+        number   => $ref->{dunning_id},
+      );
+      my @all_objects = $webdav->get_all_objects;
+      if (scalar @all_objects) {
+        my $html          = join '<br>', map { SL::Presenter::WebdavObject::webdav_object($_) } @all_objects;
+        my $text          = join "\n",   map { $_->filename                                   } @all_objects;
+        $row->{webdav}    = { 'raw_data' => $html, data => $text };
+      } else {
+        $row->{webdav}    = { };
+      }
+    }
+
+    if ($form->{l_mails}) {
+      my @mail_links = RecordLinks->get_links(from_table => 'dunning', to_table => 'email_journal', from_id => $ref->{dunning_table_id});
+      if (scalar @mail_links) {
+        my $email_journals = SL::DB::Manager::EmailJournal->get_all(where => [id => [ map { $_->{to_id} } @mail_links ]]);
+        my $html          = join '<br>', map { SL::Presenter::EmailJournal::email_journal($_) } @$email_journals;
+        my $text          = join "\n",   map { $_->subject                                    } @$email_journals;
+        $row->{mails}     = { 'raw_data' => $html, data => $text };
+      } else {
+        $row->{mails}     = { };
+      }
+    }
+
     push @{ $current_dunning_rows }, $row;
+
+    if (($form->{l_subtotal})
+        && (($i == (scalar @{ $form->{DUNNINGS} }))
+            || ($ref->{ $form->{sort} } ne $form->{DUNNINGS}->[$i]->{ $form->{sort} }))) {
+      my $subtotal_row = create_subtotal_row(\%subtotals, [keys %column_defs], \%alignment, \@subtotal_columns, 'listsubtotal');
+      push @{ $current_dunning_rows }, $subtotal_row;
+    }
 
     $previous_dunning_id   = $ref->{dunning_id};
     $first_row_for_dunning = 0;
@@ -446,11 +556,15 @@ sub show_dunning {
 
   $report->add_data($current_dunning_rows) if (scalar @{ $current_dunning_rows });
 
+  my $total_row = create_subtotal_row(\%totals, [keys %column_defs], \%alignment, \@subtotal_columns, 'listsubtotal');
+  $report->add_separator();
+  $report->add_data($total_row);
+
   $report->set_options('raw_top_info_text'    => $form->parse_html_template('dunning/show_dunning_top'),
                        'raw_bottom_info_text' => $form->parse_html_template('dunning/show_dunning_bottom'),
                        'output_format'        => 'HTML',
                        'attachment_basename'  => $locale->text('dunning_list') . strftime('_%Y%m%d', localtime time),
-    );
+  );
 
   $report->set_options_from_form();
 
@@ -530,6 +644,11 @@ sub print_multiple {
     $form->{dunning_id} = $dunning_id;
     DN->print_invoice_for_fees(\%myconfig, $form, $dunning_id);
     DN->print_dunning(\%myconfig, $form, $dunning_id);
+
+    # print original dunned invoices, if they where printed on dunning run
+    my $dunnings = SL::DB::Manager::Dunning->get_all(where => [dunning_id => $dunning_id, original_invoice_printed => 1]);
+    DN->print_original_invoice(\%myconfig, $form, $dunning_id, $_->trans_id) for @$dunnings;
+
     $i++;
   }
   $form->{language_id} = $saved_language_id;
@@ -643,6 +762,19 @@ sub setup_dn_edit_config_action_bar {
       ],
     );
   }
+}
+
+sub setup_dn_status_action_bar {
+  for my $bar ($::request->layout->get('actionbar')) {
+    $bar->add(
+      action => [
+        t8('Back'),
+        link      => $::form->{callback},
+        accesskey => 'enter',
+      ],
+    );
+  }
+
 }
 
 # end of main

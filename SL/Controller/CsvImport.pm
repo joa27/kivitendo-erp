@@ -13,6 +13,7 @@ use SL::Helper::Flash;
 use SL::Locale::String;
 use SL::SessionFile;
 use SL::SessionFile::Random;
+use SL::Controller::CsvImport::AdditionalBillingAddress;
 use SL::Controller::CsvImport::Contact;
 use SL::Controller::CsvImport::CustomerVendor;
 use SL::Controller::CsvImport::Part;
@@ -20,13 +21,15 @@ use SL::Controller::CsvImport::Inventory;
 use SL::Controller::CsvImport::Shipto;
 use SL::Controller::CsvImport::Project;
 use SL::Controller::CsvImport::Order;
+use SL::Controller::CsvImport::DeliveryOrder;
 use SL::Controller::CsvImport::ARTransaction;
+use SL::Controller::CsvImport::APTransaction;
 use SL::JSON;
 use SL::Controller::CsvImport::BankTransaction;
 use SL::BackgroundJob::CsvImport;
 use SL::System::TaskServer;
 
-use List::MoreUtils qw(none);
+use List::MoreUtils qw(any none);
 use List::Util qw(min);
 
 use parent qw(SL::Controller::Base);
@@ -102,12 +105,18 @@ sub action_result {
   my $profile = SL::DB::Manager::CsvImportProfile->find_by(id => $data->{profile_id});
   $self->profile($profile);
 
+  my $error_msg;
   if ($data->{errors} and my $first_error =  $data->{errors}->[0]) {
-    flash('error', $::locale->text('There was an error parsing the csv file: #1 in line #2: #3', $first_error->[2], $first_error->[0], $first_error->[1]));
+    if ('ARRAY' eq ref $first_error) {
+      $error_msg = $::locale->text('There was an error parsing the csv file: #1 in line #2.', $first_error->[2], $first_error->[4]);
+    } else {
+      $error_msg = $::locale->text('There was an error parsing the csv file: #1', $first_error);
+    }
   }
 
-  if ($data->{progress}{finished} || $data->{errors}) {
-    $self->render('csv_import/_deferred_report', { layout => 0 });
+  if ($data->{progress}{finished} || $error_msg) {
+    $self->render('csv_import/_deferred_report', { layout => 0 }, error => $error_msg);
+
   } else {
     if (!$self->task_server->is_running) {
       $self->task_server->start;
@@ -163,7 +172,21 @@ sub action_report {
     $::form->error(t8('No report with id #1', $report_id));
   }
 
-  my $num_rows               = $self->{report}->numrows;
+  my $show_info_err = ($self->{report}->profile->get('full_preview', 0) == 1);
+  my $show_first_20 = ($self->{report}->profile->get('full_preview', 0) == 2);
+
+  my $num_rows = 0;
+  if ($show_first_20) {
+    $num_rows  = min($self->{report}->numrows, 20);
+  } elsif ($show_info_err) {
+    # count each status row only once
+    $num_rows  = SL::DB::Manager::CsvImportReportStatus->get_all_count(query    => [csv_import_report_id => $report_id],
+                                                                       select   => ['row'],
+                                                                       distinct => 1,);
+  } else {
+    # show all
+    $num_rows  = $self->{report}->numrows;
+  }
 
   # manual paginating, yuck
   my $page                   = $::form->{page} || 1;
@@ -180,31 +203,35 @@ sub action_report {
   my $last_row_header        = $self->{report_numheaders} - 1;
   my $first_row_data         = $pages->{per_page} * ($pages->{page}-1) + $self->{report_numheaders};
   my $last_row_data          = min($pages->{per_page} * $pages->{page}, $num_rows) + $self->{report_numheaders} - 1;
-  $self->{display_rows}      = [
-    $first_row_header
-      ..
-    $last_row_header,
-    $first_row_data
-      ..
-    $last_row_data
-  ];
+
+
+  $self->{display_rows} = [];
+  if ($show_info_err) {
+    my $limit    = $last_row_data  - $first_row_data + 1;
+    my $offset   = $first_row_data - $self->{report_numheaders};
+    my @err_rows = map { $_->row } @{SL::DB::Manager::CsvImportReportStatus->get_all(query    => [csv_import_report_id => $report_id],
+                                                                                     distinct => 1,
+                                                                                     select   => ['row'],
+                                                                                     limit    => $limit,
+                                                                                     offset   => $offset,
+                                                                                     sort_by  => 'row')};
+    $self->{display_rows} = [ $first_row_header .. $last_row_header,
+                              @err_rows ];
+
+  } else {
+
+    $self->{display_rows} = [ $first_row_header .. $last_row_header,
+                              $first_row_data   .. $last_row_data ];
+  }
 
   my @query = (
+    row                  => $self->{display_rows},
     csv_import_report_id => $report_id,
-    or => [
-      and => [
-        row => { ge => $first_row_header },
-        row => { le => $last_row_header },
-      ],
-      and => [
-        row => { ge => $first_row_data },
-        row => { le => $last_row_data },
-      ]
-    ]
   );
 
-  my $rows               = SL::DB::Manager::CsvImportReportRow   ->get_all(query => \@query);
-  my $status             = SL::DB::Manager::CsvImportReportStatus->get_all(query => \@query);
+  my $rows               = SL::DB::Manager::CsvImportReportRow   ->get_all(query => \@query, sort_by => 'row');
+  my $status             = SL::DB::Manager::CsvImportReportStatus->get_all(query => \@query, sort_by => 'row');
+  $self->{num_errors}    = SL::DB::Manager::CsvImportReportStatus->get_all_count(query => [csv_import_report_id => $report_id, type => 'errors']);
 
   $self->{report_rows}   = $self->{report}->folded_rows(rows => $rows);
   $self->{report_status} = $self->{report}->folded_status(status => $status);
@@ -288,7 +315,7 @@ sub check_auth {
 sub check_type {
   my ($self) = @_;
 
-  die "Invalid CSV import type" if none { $_ eq $::form->{profile}->{type} } qw(parts inventories customers_vendors addresses contacts projects orders bank_transactions ar_transactions);
+  die "Invalid CSV import type" if none { $_ eq $::form->{profile}->{type} } qw(parts inventories customers_vendors billing_addresses addresses contacts projects orders delivery_orders bank_transactions ar_transactions ap_transactions);
   $self->type($::form->{profile}->{type});
 }
 
@@ -329,17 +356,20 @@ sub render_inputs {
   }
 
   my $title = $self->type eq 'customers_vendors' ? $::locale->text('CSV import: customers and vendors')
+            : $self->type eq 'billing_addresses' ? $::locale->text('CSV import: additional billing addresses')
             : $self->type eq 'addresses'         ? $::locale->text('CSV import: shipping addresses')
             : $self->type eq 'contacts'          ? $::locale->text('CSV import: contacts')
             : $self->type eq 'parts'             ? $::locale->text('CSV import: parts and services')
             : $self->type eq 'inventories'       ? $::locale->text('CSV import: inventories')
             : $self->type eq 'projects'          ? $::locale->text('CSV import: projects')
             : $self->type eq 'orders'            ? $::locale->text('CSV import: orders')
+            : $self->type eq 'delivery_orders'   ? $::locale->text('CSV import: delivery orders')
             : $self->type eq 'bank_transactions' ? $::locale->text('CSV import: bank transactions')
             : $self->type eq 'ar_transactions'   ? $::locale->text('CSV import: ar transactions')
+            : $self->type eq 'ap_transactions'   ? $::locale->text('CSV import: ap transactions')
             : die;
 
-  if ($self->{type} eq 'customers_vendors' or $self->{type} eq 'orders' or $self->{type} eq 'ar_transactions' ) {
+  if ( any { $_ eq $self->{type} } qw(customers_vendors orders delivery_orders ar_transactions ap_transactions) ) {
     $self->all_taxzones(SL::DB::Manager::TaxZone->get_all_sorted(query => [ obsolete => 0 ]));
   };
 
@@ -488,7 +518,7 @@ sub profile_from_form {
     $::form->{settings}->{sellprice_adjustment} = $::form->parse_amount(\%::myconfig, $::form->{settings}->{sellprice_adjustment});
   }
 
-  if ($self->type eq 'orders') {
+  if ( any { $_ eq $self->{type} } qw(orders ar_transactions ap_transactions) ) {
     $::form->{settings}->{max_amount_diff} = $::form->parse_amount(\%::myconfig, $::form->{settings}->{max_amount_diff});
   }
 
@@ -584,8 +614,9 @@ sub save_report_single {
       $self->track_progress(progress => $row / @{ $self->data } * 100) if $row % 1000 == 0;
       my $data_row = $self->{data}[$row];
 
+      my $object = $data_row->{object_to_save} || $data_row->{object};
       do_statement($::form, $sth, $query, $report->id,       $_, $row + 1, $data_row->{info_data}{ $info_methods[$_] }) for 0 .. $#info_methods;
-      do_statement($::form, $sth, $query, $report->id, $o1 + $_, $row + 1, $data_row->{object}->${ \ $methods[$_] })    for 0 .. $#methods;
+      do_statement($::form, $sth, $query, $report->id, $o1 + $_, $row + 1, $object->${ \ $methods[$_] })                for 0 .. $#methods;
       do_statement($::form, $sth, $query, $report->id, $o2 + $_, $row + 1, $data_row->{raw_data}{ $raw_methods[$_] })   for 0 .. $#raw_methods;
 
       do_statement($::form, $sth2, $query2, $report->id, $row + 1, 'information', $_) for @{ $data_row->{information} || [] };
@@ -674,8 +705,9 @@ sub save_report_multi {
       my $o1 = $off1->{$row_ident};
       my $o2 = $off2->{$row_ident};
 
+      my $object = $data_row->{object_to_save} || $data_row->{object};
       do_statement($::form, $sth, $query, $report->id,       $_, $row + $n_header_rows, $data_row->{info_data}{ $info_methods->{$row_ident}->[$_] }) for 0 .. $#{ $info_methods->{$row_ident} };
-      do_statement($::form, $sth, $query, $report->id, $o1 + $_, $row + $n_header_rows, $data_row->{object}->${ \ $methods->{$row_ident}->[$_] })    for 0 .. $#{ $methods->{$row_ident} };
+      do_statement($::form, $sth, $query, $report->id, $o1 + $_, $row + $n_header_rows, $object->${ \ $methods->{$row_ident}->[$_] })                for 0 .. $#{ $methods->{$row_ident} };
       do_statement($::form, $sth, $query, $report->id, $o2 + $_, $row + $n_header_rows, $data_row->{raw_data}{ $raw_methods->{$row_ident}->[$_] })   for 0 .. $#{ $raw_methods->{$row_ident} };
 
       do_statement($::form, $sth2, $query2, $report->id, $row + $n_header_rows, 'information', $_) for @{ $data_row->{information} || [] };
@@ -698,13 +730,16 @@ sub init_worker {
 
   return $self->{type} eq 'customers_vendors' ? SL::Controller::CsvImport::CustomerVendor->new(@args)
        : $self->{type} eq 'contacts'          ? SL::Controller::CsvImport::Contact->new(@args)
+       : $self->{type} eq 'billing_addresses' ? SL::Controller::CsvImport::AdditionalBillingAddress->new(@args)
        : $self->{type} eq 'addresses'         ? SL::Controller::CsvImport::Shipto->new(@args)
        : $self->{type} eq 'parts'             ? SL::Controller::CsvImport::Part->new(@args)
        : $self->{type} eq 'inventories'       ? SL::Controller::CsvImport::Inventory->new(@args)
        : $self->{type} eq 'projects'          ? SL::Controller::CsvImport::Project->new(@args)
        : $self->{type} eq 'orders'            ? SL::Controller::CsvImport::Order->new(@args)
+       : $self->{type} eq 'delivery_orders'   ? SL::Controller::CsvImport::DeliveryOrder->new(@args)
        : $self->{type} eq 'bank_transactions' ? SL::Controller::CsvImport::BankTransaction->new(@args)
        : $self->{type} eq 'ar_transactions'   ? SL::Controller::CsvImport::ARTransaction->new(@args)
+       : $self->{type} eq 'ap_transactions'   ? SL::Controller::CsvImport::APTransaction->new(@args)
        :                                        die "Program logic error";
 }
 
@@ -733,9 +768,13 @@ sub cleanup_reports {
 }
 
 sub check_task_server {
+  if (!$::auth->client->{task_server_user_id}) {
+    flash('error', t8('The task server is required for this module but not enabled for the current client. Please enable it for the client "#1" in the administration section.', $::auth->client->{name}));
+  }
+
   return 1 if $_[0]->task_server->is_running;
 
-  flash('info', t8('The task server is not running at the moment but needed for this module'));
+  flash('warning', t8('The task server is not running at the moment but needed for this module'));
 
   1;
 }

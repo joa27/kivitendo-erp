@@ -1,0 +1,157 @@
+\documentclass[paper=a4,fontsize=10pt]{scrartcl}
+\usepackage{kiviletter}
+
+
+% Variablen, die in settings verwendet werden
+\newcommand{\lxlangcode} {<%template_meta.language.template_code%>}
+\newcommand{\lxmedia} {<%media%>}
+\newcommand{\lxcurrency} {<%currency%>}
+\newcommand{\kivicompany} {<%employee_company%>}
+
+% settings: Einstellungen, Logo, Briefpapier, Kopfzeile, Fusszeile
+\input{insettings.tex}
+
+
+<%if template_meta.formname == "sales_estimate"%>
+  \renewcommand{\angebot}{\kostenvoranschlag}
+<%end%>
+
+
+% laufende Kopfzeile:
+\ourhead{\kundennummer}{<%customernumber%>}{\angebot}{<%quonumber%>}{<%transdate%>}
+
+\setkomavar{info0}[\vorgangsbez]    {<%transaction_description%>}
+\setkomavar{info1}[\datum]          {<%transdate%>}
+\setkomavar{info2}[\kundennummer]   {<%customernumber%>}
+\setkomavar{info4}[\angebot{}~\nr]  {<%quonumber%>}
+\setkomavar{info5}[\ansprechpartner]{<%employee_name%>}
+\setkomavar{info6}[\textTelefon]    {<%employee_tel%>}
+\setkomavar{info7}[\textEmail]      {<%employee_email%>}
+\setkomavar{fromname}               {<%employee_name%>}
+
+\begin{document}
+
+\setkomavar{signature}{%
+  <%employee_company%>%
+  \ifhmode\\\fi
+  <%salesman_name%>%
+}
+
+\setkomavar{title}{\angebot~<%quonumber%>}
+
+<%if shiptoname%>%
+  \makeatletter
+  \begin{lrbox}\shippingAddressBox
+    \parbox{\useplength{toaddrwidth}}{
+      \backaddr@format{\scriptsize\usekomafont{backaddress}%
+        \strut\abweichendeLieferadresse
+      }
+      \par\smallskip
+      \setlength{\parskip}{\z@}
+      \par
+      \normalsize
+      <%shiptoname%>\par
+      <%shiptodepartment_1%>\par
+      <%shiptodepartment_2%>\par
+      <%if shiptocontact%> <%shiptocontact%><%else%><%cp_title%> <%cp_givenname%> <%cp_name%><%end if%>\par
+      <%shiptostreet%>\par
+      <%shiptozipcode%> <%shiptocity%>\par
+      <%shiptocountry%>
+    }
+  \end{lrbox}
+  \makeatother
+<%end shiptoname%>%
+
+
+\begin{letter}{
+    <%name%>              \strut\\
+    <%department_1%>      \ifhmode\\\fi
+    <%department_2%>      \ifhmode\\\fi
+    <%cp_title%> <%cp_givenname%> <%cp_name%> \ifhmode\\\fi
+    <%street%>            \ifhmode\\\fi
+    <%zipcode%> <%city%>  \ifhmode\\\fi
+    <%country%>           %
+  }
+
+  % Bei Kontaktperson Anrede nach Geschlecht unterscheiden.
+  % Bei natürlichen Personen persönliche Anrede, sonst allgemeine Anrede.
+  \opening{
+    \Ifstr{<%cp_name%>}{}
+    {<%if natural_person%><%greeting%> <%name%>,<%else%>\anrede<%end if%>}
+    {
+      \Ifstr{<%cp_gender%>}{f}
+      {\anredefrau}
+      {\anredeherr}
+      <%cp_title%> <%cp_name%>,
+    }
+  }
+  \thispagestyle{kivitendo.letter.first}
+
+  \angebotsformel
+
+
+  \begin{PricingTabular*}[price/colspec = K, pricetotal/colspec = K]
+    % eigentliche Tabelle
+    \FakeTable{
+    <%foreach number%>%
+      <%runningnumber%> &%
+      <%number%> &%
+      \textbf{<%description%>}%
+      <%if longdescription%>\ExtraDescription{<%longdescription%>}<%end longdescription%>%
+      <%if reqdate%>\ExtraDescription{\lieferdatum: <%reqdate%>}<%end reqdate%>%
+      <%if serialnumber%>\ExtraDescription{\seriennummer: <%serialnumber%>}<%end serialnumber%>%
+      <%if ean%>\ExtraDescription{\ean: <%ean%>}<%end ean%>%
+      <%if projectnumber%>\ExtraDescription{\projektnummer: <%projectnumber%>}<%end projectnumber%>%
+      &%
+      <%qty%> <%unit%> &%
+      <%sellprice%>\,\currency&%
+      <%if optional%>\optional<%else%><%linetotal%>\,\currency<%if p_discount%>\par{\sffamily\scriptsize{(-<%p_discount%>\,\%)}}<%end p_discount%><%end optional%>
+      \tabularnewline
+      <%if discount_sub%>%
+        \rlap{\zwischensumme}& & & & &
+        <%discount_sub%>\,\currency
+        \tabularnewline
+      <%end%>%
+    <%end number%>%
+    }
+    \begin{PricingTotal}
+      % Tabellenende letzte Seite
+      \nettobetrag & <%subtotal%>\\
+      <%foreach tax%>%
+        <%taxdescription%> & <%tax%>\\
+      <%end tax%>%
+      \bfseries\schlussbetrag &  \bfseries <%ordtotal%>\\
+    \end{PricingTotal}
+  \end{PricingTabular*}
+
+  <%if notes%>%
+    <%notes%>%
+    \medskip
+  <%end notes%>%
+
+  <%if delivery_term%>%
+    \lieferung ~<%delivery_term.description_long%>\\
+  <%end delivery_term%>%
+
+  \angebotdanke\\
+  <%if reqdate%>%
+    \angebotgueltig~<%reqdate%>.
+  <%end reqdate%>%
+  \angebotfragen
+
+
+  \angebotagb
+
+  \closing{\gruesse}
+
+  \begin{minipage}{\textwidth}
+    \rule{\linewidth}{.2pt}\par
+    \auftragerteilt\par\bigskip
+    \nurort:\rule[-.5ex]{8cm}{.2pt}\ , \den\ \rule[-.5ex]{5cm}{.2pt}\par\bigskip
+
+    \unterschrift/\stempel:\rule[-.5ex]{6cm}{.2pt}
+  \end{minipage}
+
+
+\end{letter}
+\end{document}

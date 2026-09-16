@@ -1,0 +1,110 @@
+[% USE T8 %]
+[% USE HTML %]
+[% USE LxERP %]
+[% USE P %]
+
+<div class="wrapper center">
+
+<form method="post" action="controller.pl" id="todo_quotations_orders_form">
+[% P.hidden_tag('action', 'Order/dispatch') %]
+[% P.hidden_tag('callback', HTML.escape(callback)) %]
+
+<table class="tbl-list wi-moderate">
+  <caption>
+    [% IF orders_mode %]
+      [% IF is_for_sales && is_for_purchase %]
+        [% 'Overdue sales orders and purchase orders' | $T8 %]
+      [% ELSIF is_for_sales %]
+        [% 'Overdue sales orders' | $T8 %]
+      [% ELSE %]
+        [% 'Overdue purchase orders' | $T8 %]
+      [% END %]
+    [% ELSE %]
+      [% IF is_for_sales && is_for_purchase %]
+        [% 'Overdue sales quotations and requests for quotations' | $T8 %]
+      [% ELSIF is_for_sales %]
+        [% 'Overdue sales quotations' | $T8 %]
+      [% ELSE %]
+        [% 'Overdue requests for quotations' | $T8 %]
+      [% END %]
+    [% END %]
+  </caption>
+  <thead>
+    <tr>
+     <th>&nbsp;</th>
+     <th>[% 'Date' | $T8 %]</th>
+     <th>
+       [%- IF orders_mode %]
+         [% 'Reqdate' | $T8 %]
+       [%- ELSE %]
+         [% 'Valid until' | $T8 %]
+       [%- END %]
+     </th>
+     <th>
+       [%- IF orders_mode %]
+         [% 'Sales order' | $T8 %] / [% 'Purchase order' | $T8 %]
+       [%- ELSE %]
+         [% 'Sales quotation' | $T8 %] / [% 'Request quotation' | $T8 %]
+       [%- END %]
+     </th>
+     <th>[% 'Customer' | $T8 %] / [% 'Vendor' | $T8 %]</th>
+     <th>[% 'Transaction description' | $T8 %]</th>
+     <th>[% 'Amount' | $T8 %]</th>
+     <th>[% 'Employee' | $T8 %]</th>
+    </tr>
+  </thead>
+  <tbody>
+    [% FOREACH row = ENTRIES %]
+    [%- IF orders_mode %]
+      [% SET RIGHT_TO_EDIT = ((row.vc == 'customer' && AUTH.assert('sales_order_edit', 1)) || (row.vc == 'vendor' && AUTH.assert('purchase_order_edit', 1))) %]
+    [%- ELSE %]
+      [% SET RIGHT_TO_EDIT = ((row.vc == 'customer' && AUTH.assert('sales_quotation_edit', 1)) || (row.vc == 'vendor' && AUTH.assert('request_quotation_edit', 1))) %]
+    [%- END %]
+    <tr>
+     <td>
+      [% IF RIGHT_TO_EDIT %]
+        [% P.checkbox_tag("ids[]", value=HTML.escape(row.id), checked="0") %]
+      [% END %]
+     </td>
+     <td>[% HTML.escape(row.transdate) %]</td>
+     <td>[% HTML.escape(row.reqdate) %]</td>
+     <td>
+      <a href="[% edit_url | html %]&amp;vc=[% row.vc | html %]&amp;id=[% row.id | html %]">
+       [%- IF orders_mode %]
+         [%- IF row.vc == 'customer' %]
+           [% 'Sales Order' | $T8 %]
+         [%- ELSE %]
+           [% 'Purchase Order' | $T8 %]
+         [%- END %]
+         [% HTML.escape(row.ordnumber) %]
+       [%- ELSE %]
+         [%- IF row.vc == 'customer' %]
+           [% 'Sales quotation' | $T8 %]
+         [%- ELSE %]
+           [% 'Request quotation' | $T8 %]
+         [%- END %]
+         [% HTML.escape(row.quonumber) %]
+       [% END %]
+      </a>
+     </td>
+     <td>
+      [% IF row.vc == 'customer' %]
+        [% HTML.escape(row.customer) %]
+      [% ELSE %]
+        [% HTML.escape(row.vendor) %]
+      [% END %]
+     </td>
+     <td>[% HTML.escape(row.transaction_description) %]</td>
+     <td>[% HTML.escape(LxERP.format_amount(row.amount, 2)) %]</td>
+     <td>[% HTML.escape(row.employee) %]</td>
+    </tr>
+    [% END %]
+  </tbody>
+</table>
+
+<div>
+  [% P.submit_tag('action_close_quotations_orders', orders_mode ? LxERP.t8('Close Orders') : LxERP.t8('Close Quotations')) %]
+</div>
+</form>
+
+</div><!-- /.wrapper -->

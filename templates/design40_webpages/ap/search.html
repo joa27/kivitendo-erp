@@ -1,0 +1,249 @@
+[% USE T8 %]
+[% USE P %]
+[% USE LxERP %]
+
+<form method="post" name="search" action="ap.pl" id="form">
+ [% P.hidden_tag("sort", "transdate") %]
+ [% P.hidden_tag("action") %]
+
+<div class="wrapper">
+[% INCLUDE 'common/search_profile_panel.html' %]
+</div>
+
+<div class="wrapper">
+
+<table class="tbl-horizontal">
+  <caption>[% 'Vendor & Order' | $T8 %]</caption>
+  <colgroup> <col class="wi-small"><col class="wi-wide"> </colgroup>
+  <tbody>
+    <tr>
+      <th>[% 'Vendor' | $T8 %]</th>
+      <td>[% P.input_tag("vendor", vendor, class="initial_focus wi-normal", value) %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Contact Person' | $T8 %]</th>
+      <td>[% P.input_tag("cp_name", cp_name, class="wi-normal") %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Department' | $T8 %]</th>
+      <td>[% P.select_tag('department_id', ALL_DEPARTMENTS, default=department_id, title_key = 'description', with_empty = 1, class="wi-normal") %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Part Description' | $T8 %]</th>
+      <td>[% P.input_tag("parts_description", parts_description, class="wi-normal") %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Notes' | $T8 %]</th>
+      <td>[% P.input_tag("notes", notes, class="wi-normal") %]</td>
+    </tr>
+    <tr>
+    <tr>
+      <th>[% 'Internal Notes' | $T8 %]</th>
+      <td>[% P.input_tag("intnotes", intnotes, class="wi-normal") %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Transaction description' | $T8 %]</th>
+      <td>[% P.input_tag("transaction_description", transaction_description, class="wi-normal") %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Full Text' | $T8 %]</th>
+      <td>[% P.input_tag('fulltext', fulltext, class="wi-normal") %]</td>
+    </tr>
+
+  </tbody>
+</table>
+
+<table class="tbl-horizontal">
+  <caption>[% 'Dates & Numbers' | $T8 %]</caption>
+  <colgroup> <col class="wi-small"><col class="wi-wide"> </colgroup>
+  <tbody>
+    <tr>
+      <th>[% 'Invoice Date' | $T8 %]</th>
+      <td><span class="wi-date">[% P.date_tag('transdatefrom', transdatefrom) %] [% 'Bis' | $T8 %] [% P.date_tag('transdateto', transdateto) %] </span></td>
+    </tr>
+    <tr>
+      <th>[% 'Due Date' | $T8 %]</th>
+      <td><span class="wi-date">[% P.date_tag('duedatefrom', duedatefrom) %] [% 'Bis' | $T8 %] [% P.date_tag('duedateto', duedateto) %] </span></td>
+    </tr>
+    <tr>
+      <th>[% 'Date Paid' | $T8 %]</th>
+      <td><span class="wi-date">[% P.date_tag('datepaidfrom', datepaidfrom) %] [% 'Bis' | $T8 %] [% P.date_tag('datepaidto', datepaidto) %]</span></td>
+    </tr>
+    <tr>
+      <th>[% 'Insert Date' | $T8 %]</th>
+      <td><span class="wi-date">[% P.date_tag('insertdatefrom', insertdatefrom) %] [% 'Bis' | $T8 %] [% P.date_tag('insertdateto', insertdateto) %] </span></td>
+    </tr>
+    <tr>
+      <th>[% 'Invoice Number' | $T8 %]</th>
+      <td>[% P.input_tag("invnumber", invnumber, class="wi-normal") %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Order Number' | $T8 %]</th>
+      <td>[% P.input_tag("ordnumber", ordnumber, class="wi-normal") %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Part Number' | $T8 %]</th>
+      <td>[% P.input_tag("parts_partnumber", parts_partnumber, class="wi-normal") %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Serial Number' | $T8 %]</th>
+      <td>[% P.input_tag("parts_serialnumber", parts_serialnumber) %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Project Number' | $T8 %]</th>
+      <td>[% P.project.picker("project_id", project_id, active="both", valid="both", class="wi-normal") %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Steuersatz' | $T8 %]</th>
+      <td>[% P.select_tag('taxzone_id', ALL_TAXZONES, default=taxzone_id, with_empty=1, title_key='description', class="wi-normal") %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Payment Term' | $T8 %]</th>
+      <td>[% P.select_tag('payment_id', ALL_PAYMENT_TERMS, default=payment_id, with_empty=1, title_key='description', class="wi-normal") %]</td>
+    </tr>
+  </tbody>
+</table>
+
+<table class="tbl-horizontal">
+  <caption>[% 'Status' | $T8 %]</caption>
+  <colgroup> <col class="wi-small"><col class="wi-wide"> </colgroup>
+  <tbody>
+    <tr>
+      <th>[% 'Open' | $T8 %]</th>
+      <td>[% P.checkbox_tag('open', value="Y", checked=open, for_submit=1) %]</td>
+    </tr>
+    <tr>
+      <th>[% 'Closed' | $T8 %]</th>
+      <td>[% P.checkbox_tag('closed', value="Y", checked=closed, for_submit=1) %]</td>
+    </tr>
+  </tbody>
+</table>
+
+</div><!-- /.wrapper -->
+<div class="form-addition control-panel">
+
+  <h3>[% 'Include in Report' | $T8 %]</h3>
+
+  <div class="list col">
+    <h4>[% 'Dates' | $T8 %]</h4>
+    <div>
+      [% P.checkbox_tag('l_transdate', label=LxERP.t8('Invoice Date'), value='Y', checked=l_transdate, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_datepaid', label=LxERP.t8('Date Paid'), value='Y', checked=l_datepaid, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_duedate', label=LxERP.t8('Due Date'), value='Y', checked=l_duedate, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_insertdate', label=LxERP.t8('Insert Date'), value='Y', checked=l_insertdate, for_submit=1) %]
+    </div>
+  </div>
+
+  <div class="list col">
+    <h4>[% 'Numbers & IDs' | $T8 %]</h4>
+    <div>
+      [% P.checkbox_tag('l_id', label=LxERP.t8('ID'), value='Y', checked=l_id, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_invnumber', label=LxERP.t8('Invoice Number'), value='Y', checked=l_invnumber, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_ordnumber', label=LxERP.t8('Order Number'), value='Y', checked=l_ordnumber, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_globalprojectnumber', label=LxERP.t8('Document Project Number'), value='Y', checked=l_globalprojectnumber, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_globalprojectdescription', label=LxERP.t8('Document Project Description'), value='Y', checked=l_globalprojectdescription, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_transaction_description', label=LxERP.t8('Transaction description'), value='Y', checked=l_transaction_description, for_submit=1) %]
+    </div>
+  </div>
+
+  <div class="list col">
+    <h4>[% 'Amounts' | $T8 %]</h4>
+    <div>
+      [% P.checkbox_tag('l_netamount', label=LxERP.t8('Amount'), value='Y', checked=l_netamount, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_tax', label=LxERP.t8('Tax'), value='Y', checked=l_tax, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_subtotal', label=LxERP.t8('Subtotal'), value='Y', checked=l_subtotal, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_amount', label=LxERP.t8('Total'), value='Y', checked=l_amount, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_paid', label=LxERP.t8('Paid'), value='Y', checked=l_paid, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_due', label=LxERP.t8('Amount Due'), value='Y', checked=l_due, for_submit=1) %]
+    </div>
+  </div>
+
+  <div class="list col">
+    <h4>[% 'Handling' | $T8 %]</h4>
+    <div>
+      [% P.checkbox_tag('l_employee', label=LxERP.t8('Employee'), value='Y', checked=l_employee, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_buyer', label=LxERP.t8('Buyer'), value='Y', checked=l_buyer, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_notes', label=LxERP.t8('Notes'), value='Y', checked=l_notes, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_intnotes', label=LxERP.t8('Internal Notes'), value='Y', checked=l_intnotes, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_payment_approved', label=LxERP.t8('Payment Approved'), value='Y', checked=l_payment_approved, for_submit=1) %]
+    </div>
+  </div>
+
+  <div class="list col">
+    <h4>[% 'Miscellaneous' | $T8 %]</h4>
+    <div>
+      [% P.checkbox_tag('l_department', label=LxERP.t8('Department'), value='Y', checked=l_department, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_charts', label=LxERP.t8('Chart'), value='Y', checked=l_charts, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_taxzone', label=LxERP.t8('Steuersatz'), value='Y', checked=l_taxzone, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_payment_terms', label=LxERP.t8('Payment Terms'), value='Y', checked=l_payment_terms, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_direct_debit', label=LxERP.t8('direct debit'), value='Y', checked=l_direct_debit, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_debit_chart', label=LxERP.t8('Debit Account'), value='Y', checked=l_debit_chart, for_submit=1) %]
+    </div>
+    <div>
+      [% P.checkbox_tag('l_items', label=LxERP.t8('Positions'), value='Y', checked=l_items, for_submit=1) %]
+    </div>
+  </div>
+
+  <div class="list col">
+  <h4>[% 'Vendor' | $T8 %]</h4>
+  <div>
+    [% P.checkbox_tag('l_name', label=LxERP.t8('Vendor'), value='Y', checked=l_name, for_submit=1) %]
+  </div>
+  <div>
+    [% P.checkbox_tag('l_vendornumber', label=LxERP.t8('Vendor Number'), value='Y', checked=l_vendornumber, for_submit=1) %]
+  </div>
+  <div>
+    [% P.checkbox_tag('l_country', label=LxERP.t8('Country'), value='Y', checked=l_country, for_submit=1) %]
+  </div>
+  <div>
+    [% P.checkbox_tag('l_ustid', label=LxERP.t8('USt-IdNr.'), value='Y', checked=l_ustid, for_submit=1) %]
+  </div>
+</div>
+
+</div><!-- /.form-addition -->
+
+</form>

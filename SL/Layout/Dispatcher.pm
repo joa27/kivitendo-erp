@@ -8,6 +8,8 @@ use SL::Layout::Login;
 use SL::Layout::Classic;
 use SL::Layout::V3;
 use SL::Layout::Javascript;
+use SL::Layout::Material;
+use SL::Layout::MobileLogin;
 
 sub new {
   my ($class, %params) = @_;
@@ -18,6 +20,8 @@ sub new {
   return SL::Layout::Admin->new      if $params{style} eq 'admin';
   return SL::Layout::AdminLogin->new if $params{style} eq 'admin_login';
   return SL::Layout::Login->new      if $params{style} eq 'login';
+  return SL::Layout::Material->new   if $params{style} eq 'mobile';
+  return SL::Layout::MobileLogin->new if $params{style} eq 'mobile_login';
   return SL::Layout::None->new;
 }
 
@@ -167,6 +171,12 @@ Non-existing files will be pruned from the list.
 
 Backwards compatible alias for C<add_stylesheets>. Deprecated.
 
+=item C<static_stylesheets>
+
+Can be overwritten in sub-layouts to return a list of needed stylesheets. The
+values will be resolved by the actual layout in addition to the
+C<add_stylesheets> accumulator.
+
 =item C<add_javascripts>
 
 Adds the list of arguments to the list of used javascripts.
@@ -178,6 +188,13 @@ Non-existing files will be pruned from the list.
 =item C<use_javascript>
 
 Backwards compatible alias for C<add_javascripts>. Deprecated.
+
+
+=item C<static_javascripts>
+
+Can be overwritten in sub-layouts to return a list of needed javascripts. The
+values will be resolved by the actual layout in addition to the
+C<add_javascripts> accumulator.
 
 =item C<add_javascripts_inline>
 

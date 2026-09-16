@@ -4,6 +4,7 @@ use strict;
 
 use Carp;
 use List::Util qw(max);
+use Scalar::Util qw(blessed);
 
 use SL::Common;
 use SL::MoreCommon;
@@ -11,7 +12,9 @@ use SL::ReportGenerator;
 
 use Exporter 'import';
 our @EXPORT = qw(
-  action_report_generator_export_as_pdf action_report_generator_export_as_csv
+  action_report_generator_export_as_pdf
+  action_report_generator_export_as_csv
+  action_report_generator_export_as_chart
   action_report_generator_back report_generator_do
   report_generator_list_objects
 );
@@ -25,7 +28,7 @@ sub _setup_action_bar {
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       action => [
-        $type eq 'pdf' ? $::locale->text('PDF export') : $::locale->text('CSV export'),
+        $type eq 'pdf' ? $::locale->text('PDF export') : $type eq 'csv' ? $::locale->text('CSV export') : $::locale->text('Chart export'),
         submit => [ '#report_generator_form', { $key => "${value}report_generator_export_as_${type}" } ],
       ],
       action => [
@@ -91,6 +94,27 @@ sub action_report_generator_export_as_csv {
   print $::form->parse_html_template('report_generator/csv_export_options', { 'HIDDEN' => \@form_values });
 }
 
+sub action_report_generator_export_as_chart {
+  my ($self) = @_;
+
+  delete $::form->{action_report_generator_export_as_chart};
+
+  if ($::form->{report_generator_chart_options_set}) {
+    $self->report_generator_do('Chart');
+    return;
+  }
+
+  my $fields      = delete $::form->{report_generator_chart_fields};
+  my @form_values = $::form->flatten_variables(grep { ($_ ne 'login') && ($_ ne 'password') } keys %{ $::form });
+
+  $::form->{title} = $::locale->text('Chart export -- options');
+
+  _setup_action_bar($self, 'chart'); # Sub not exported, therefore don't call via object.
+
+  $::form->header;
+  print $::form->parse_html_template('report_generator/chart_export_options', { 'HIDDEN' => \@form_values, fields => $fields });
+}
+
 sub action_report_generator_back {
   $_[0]->report_generator_do('HTML');
 }
@@ -126,16 +150,24 @@ sub report_generator_list_objects {
   my @columns     = $params{report}->get_visible_columns('HTML');
 
   for my $obj (@{ $params{objects} || [] }) {
-    my %data = map {
-      my $def = $column_defs->{$_};
-      $_ => {
-        raw_data => $def->{raw_data} ? $def->{raw_data}->($obj) : '',
-        data     => $def->{sub}      ? $def->{sub}->($obj)
-                  : $obj->can($_)    ? $obj->$_
-                  :                    $obj->{$_},
-        link     => $def->{obj_link} ? $def->{obj_link}->($obj) : '',
-      },
-    } @columns;
+    my %data;
+
+    if (blessed($obj) && $obj->isa('SL::Controller::Helper::ReportGenerator::ControlRow::Base')) {
+      $obj->set_data($params{report});
+      next;
+
+    } else {
+      %data = map {
+        my $def = $column_defs->{$_};
+        my $tmp;
+        $tmp->{raw_data} = $def->{raw_data} ? $def->{raw_data}->($obj) : '';
+        $tmp->{data}     = $def->{sub}      ? $def->{sub}->($obj)
+                         : $obj->can($_)    ? $obj->$_
+                         :                    $obj->{$_};
+        $tmp->{link}     = $def->{obj_link} ? $def->{obj_link}->($obj) : '';
+        $_ => $tmp;
+      } @columns;
+    }
 
     $params{data_callback}->(\%data) if $params{data_callback};
 
@@ -250,6 +282,14 @@ already (column definitions, title, sort handling etc).
 =item C<objects>
 
 Mandatory. An array reference of RDBO models to output.
+
+An element of the array can also be an instance of a control row, i.e.
+an instance of a class derived from
+C<SL::Controller::Helper::ReportGenerator::ControlRow::Base>.
+See also:
+
+L<SL::Controller::Helper::ReportGenerator::ControlRow>
+L<SL::Controller::Helper::ReportGenerator::ControlRow::*>
 
 =item C<data_callback>
 

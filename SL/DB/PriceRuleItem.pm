@@ -99,6 +99,11 @@ sub pricegroup {
   SL::DB::Pricegroup->load_cached($_[0]->value_int);
 }
 
+sub cvar_config {
+  die "not a cvar price rule item" unless $_[0]->type eq 'cvar';
+  &custom_variable_configs
+}
+
 sub full_description {
   my ($self) = @_;
 
@@ -128,7 +133,36 @@ sub full_description {
      : $op eq 'lt' ? t8('Transdate is before #1', $self->value_date_as_date)
      : $op eq 'gt' ? t8('Transdate is after #1',  $self->value_date_as_date)
      : do { die "unknown op $op for type $type" } )
+  : $type eq 'cvar' ? $self->cvar_rule_description($type, $op)
   : do { die "unknown type $type" }
+}
+
+sub cvar_rule_description {
+  my ($self, $type, $op) = @_;
+  my $config      = $self->cvar_config;
+  my $description = $config->description;
+
+  t8('Custom Variables (Abbreviation)') . ' ' . (
+      $config->type eq 'select'   ? t8("#1 is #2", $description, $self->value_text)
+    : $config->type eq 'customer' ? t8("#1 is #2", $description, $self->customer->displayable_name)
+    : $config->type eq 'vendor'   ? t8("#1 is #2", $description, $self->vendor->displayable_name)
+    : $config->type eq 'part'     ? t8("#1 is #2", $description, $self->part->displayable_name)
+    : $config->type eq 'number'   ? (
+          $op eq 'eq' ? t8('#1 equals #2',             $description, $self->value_num_as_number)
+        : $op eq 'lt' ? t8('#1 less than #2',          $description, $self->value_num_as_number)
+        : $op eq 'gt' ? t8('#1 more than #2',          $description, $self->value_num_as_number)
+        : $op eq 'le' ? t8('#1 equal or less than #2', $description, $self->value_num_as_number)
+        : $op eq 'ge' ? t8('#1 equal or more than #2', $description, $self->value_num_as_number)
+        : do { die "unknown op $op for type ", $config->type }
+      )
+     : $config->type eq 'date'     ? (
+           $op eq 'eq' ? t8('#1 is #2',        $description, $self->value_date_as_date)
+         : $op eq 'lt' ? t8('#1 is before #2', $description, $self->value_date_as_date)
+         : $op eq 'gt' ? t8('#1 is after #2',  $description, $self->value_date_as_date)
+         : do { die "unknown op $op for type ", $config->type }
+       )
+    : do { die "unknown type " . $config->type }
+  );
 }
 
 sub validate {

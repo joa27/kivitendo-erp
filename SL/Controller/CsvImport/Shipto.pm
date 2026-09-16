@@ -24,13 +24,14 @@ sub check_objects {
 
   $self->controller->track_progress(phase => 'building data', progress => 0);
 
-  my $i;
+  my $i = 0;
   my $num_data = scalar @{ $self->controller->data };
   foreach my $entry (@{ $self->controller->data }) {
     $self->controller->track_progress(progress => $i/$num_data * 100) if $i % 100 == 0;
 
     $self->check_vc($entry, 'trans_id');
     $entry->{object}->module('CT');
+    $self->check_country_optional($entry, 'shiptocountry_id', 'shiptocountry');
   } continue {
     $i++;
   }
@@ -108,6 +109,7 @@ sub setup_displayable_columns {
   $self->add_displayable_columns({ name => 'shiptocity',         description => $::locale->text('City')                          },
                                  { name => 'shiptocontact',      description => $::locale->text('Contact')                       },
                                  { name => 'shiptocountry',      description => $::locale->text('Country')                       },
+                                 { name => 'shiptocountry_id',   description => $::locale->text('Country (database ID)')         },
                                  { name => 'shiptodepartment_1', description => $::locale->text('Department 1')                  },
                                  { name => 'shiptodepartment_2', description => $::locale->text('Department 2')                  },
                                  { name => 'shiptoemail',        description => $::locale->text('E-mail')                        },

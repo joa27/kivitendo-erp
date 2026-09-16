@@ -1,0 +1,94 @@
+[%- USE T8 %]
+[%- USE L %]
+[%- USE LxERP %]
+[%- USE P %]
+
+<form action='controller.pl' method='post' id='filter_form'>
+ <div class="wrapper">
+
+  [% BLOCK filter_toggle_panel %]
+   <table id='filter_table' class='tbl-horizontal'>
+    <tbody>
+     <tr>
+      <th align="right">[% 'Stock Counting' | $T8 %]</th>
+      <td>
+       [% L.select_tag('filter.counting_id', SELF.countings,
+                       default         => filter.counting_id,
+                       title_key       => 'name',
+                       value_key       => 'id',
+                       with_empty      => 1,
+                       class           => 'wi-lightwide',
+                       'data-validate' => 'required',
+                       onchange        =>'kivi.validate_form("#filter_form") && kivi.submit_form_with_action($("#filter_form"), "StockCountingReconciliation/list")') %]
+      </td>
+     </tr>
+     <tr>
+       <th>[% 'Part' | $T8 %]</th>
+       <td>
+         [% IF SELF.counting.part_id %]
+           <span class="data wi-lightwide">[% SELF.counting.part.displayable_name %]</span>
+           [% P.hidden_tag('filter.part_id', SELF.counting.part_id) %]
+         [% ELSE %]
+         [% P.part.picker('filter.part_id',
+                          filter.part_id,
+                          class    = 'wi-lightwide',
+                          onchange = 'kivi.validate_form("#filter_form") && kivi.submit_form_with_action($("#filter_form"), "StockCountingReconciliation/list")') %]
+         [% END %]
+       </td>
+     </tr>
+     <tr>
+       <th>[% 'Partsgroup' | $T8 %]</th>
+       <td>
+         [% IF SELF.counting.partsgroup_id %]
+           <span class="data wi-lightwide">[% SELF.counting.partsgroup.partsgroup %]</span>
+           [% P.hidden_tag('filter.part.partsgroup_id', SELF.counting.partsgroup_id) %]
+         [% ELSE %]
+         [% L.select_tag('filter.part.partsgroup_id', SELF.partsgroups,
+                         default    = filter.part.partsgroup_id,
+                         title_key  = 'partsgroup',
+                         value_key  = 'id',
+                         with_empty = 1,
+                         class      = 'wi-lightwide',
+                         onchange   = 'kivi.validate_form("#filter_form") && kivi.submit_form_with_action($("#filter_form"), "StockCountingReconciliation/list")') %]
+         [% END %]
+       </td>
+     </tr>
+     <tr>
+       <th>[% 'Warehouse' | $T8 %]</th>
+       <td>
+         [% IF SELF.counting.bin_id %]
+           <span class="data wi-lightwide">[% SELF.counting.bin.full_description %]</span>
+           [% P.hidden_tag('filter.bin_id', SELF.counting.bin_id) %]
+         [% ELSE %]
+         [% P.warehouse.wh_bin_select('dummy_wh',
+                                      bin_name    = 'filter.bin_id',
+                                      with_empty  = 1,
+                                      bin_default = filter.bin_id,
+                                      class       = 'wi-lightwide') %]
+         [% END %]
+       </td>
+     </tr>
+     <tr>
+       <th>[% 'Include not encountered' | $T8 %]</th>
+       <td>[% P.checkbox_tag('custom_filter.include_not_encountered',
+                             checked  = FORM.custom_filter.include_not_encountered,
+                             onchange = 'kivi.validate_form("#filter_form") && kivi.submit_form_with_action($("#filter_form"), "StockCountingReconciliation/list")') %]
+       </td>
+     </tr>
+    </tbody>
+   </table>
+
+   [% L.hidden_tag('sort_by', FORM.sort_by) %]
+   [% L.hidden_tag('sort_dir', FORM.sort_dir) %]
+   [% L.hidden_tag('page', FORM.page) %]
+
+   <div class="buttons">
+    [% L.button_tag('$("#filter_form").clearForm()', LxERP.t8('Reset')) %]
+   </div>
+
+   [% END # /BLOCK filter_toggle_panel %]
+   [% SET display_status = 'open' %]
+   [% INCLUDE 'common/toggle_panel.html' %]
+
+ </div>
+</form>

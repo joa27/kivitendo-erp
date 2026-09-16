@@ -23,8 +23,8 @@ sub build_std_url {
 
   my $form     = $main::form;
 
-  my $script = $form->{script};
-
+  my $script   = $form->{script};
+  my $fragment;
   my @parts;
 
   foreach my $key (@_) {
@@ -33,6 +33,10 @@ sub build_std_url {
     if ($key =~ /(.*?)=(.*)/) {
       if ($1 eq 'script') {
         $script = $2;
+
+      } elsif ($1 eq 'fragment') {
+        $fragment = $2;
+
       } else {
         push @parts, $key;
       }
@@ -44,7 +48,7 @@ sub build_std_url {
     }
   }
 
-  my $url = "${script}?" . join('&', @parts);
+  my $url = "${script}?" . join('&', @parts) . (defined $fragment ? "#$fragment" : '');
 
   $main::lxdebug->leave_sub(2);
 
@@ -181,10 +185,9 @@ sub calculate_qty {
   }, @header_sort;
 
   $form->{formel} = $formel;
-  $form->{title}  = $locale->text("Please enter values");
-  $form->header(no_layout => 1);
-  print $form->parse_html_template("generic/calculate_qty", { "HEADER"    => \@header,
-                                                              "VARIABLES" => \@variable, });
+  my $html = $form->parse_html_template("generic/calculate_qty", { "HEADER"    => \@header,
+                                                                   "VARIABLES" => \@variable, });
+  print $::form->ajax_response_header, $html;
 
   $main::lxdebug->leave_sub();
 }
@@ -236,10 +239,10 @@ sub show_history {
 
   my $callback = build_std_url(qw(action longdescription trans_id_type input_name));
   my $restriction;
-  if ( $form->{trans_id_type} eq 'glid' ) {
-    $restriction = "AND ( snumbers LIKE 'invnumber%' OR what_done LIKE '%Buchungsnummer%' OR snumbers LIKE 'gltransaction%' OR snumbers LIKE 'emailjournal%' ) ";
-  } elsif ( $form->{trans_id_type} eq 'id' ) {
-    $restriction = " AND ( snumbers NOT LIKE 'invnumber_%' AND snumbers NOT LIKE 'gltransaction%' AND snumbers NOT LIKE 'emailjournal%' AND (what_done NOT LIKE '%Buchungsnummer%' OR what_done IS null))";
+  if ( $form->{trans_id_type} eq 'glid' ) { # for invoices
+    $restriction = "AND ( snumbers LIKE 'invnumber%' OR what_done LIKE '%Buchungsnummer%' OR snumbers LIKE 'gltransaction%' OR (snumbers LIKE 'emailjournal%' AND what_done ~ 'invoice|credit_note') ) ";
+  } elsif ( $form->{trans_id_type} eq 'id' ) { # for non invoices
+    $restriction = " AND ( snumbers NOT LIKE 'invnumber_%' AND snumbers NOT LIKE 'gltransaction%' AND (what_done NOT LIKE '%Buchungsnummer%' AND what_done NOT LIKE '%invoice%' OR what_done IS null))";
   } else {
     $restriction = '';
   };
@@ -333,62 +336,7 @@ sub retrieve_partunits {
 
 # -------------------------------------------------------------------------
 
-sub cov_selection_internal {
-  $main::lxdebug->enter_sub();
 
-  my $form     = $main::form;
-  my %myconfig = %main::myconfig;
-  my $locale   = $main::locale;
-
-  my $order_by = "name";
-  $order_by = $form->{"order_by"} if (defined($form->{"order_by"}));
-  my $order_dir = 1;
-  $order_dir = $form->{"order_dir"} if (defined($form->{"order_dir"}));
-
-  my $type = $form->{"is_vendor"} ? $locale->text("vendor") : $locale->text("customer");
-
-  my $covs = Common->retrieve_customers_or_vendors(\%myconfig, $form, $order_by, $order_dir, $form->{"is_vendor"}, $form->{"allow_both"});
-  map({ $covs->[$_]->{"selected"} = $_ ? 0 : 1; } (0..$#{$covs}));
-
-  if (0 == scalar(@{$covs})) {
-    $form->show_generic_information(sprintf($locale->text("No %s was found matching the search parameters."), $type));
-  } elsif (1 == scalar(@{$covs})) {
-    $::request->{layout}->add_javascripts_inline("cov_selected('1')");
-  }
-
-  my $callback = "$form->{script}?action=cov_selection_internal&";
-  map({ $callback .= "$_=" . $form->escape($form->{$_}) . "&" }
-      (qw(name input_name input_id is_vendor allow_both), grep({ /^[fl]_/ } keys %$form)));
-
-  my @header_sort = qw(name address contact);
-  my %header_title = ( "name" => $locale->text("Name"),
-                       "address" => $locale->text("Address"),
-                       "contact" => $locale->text("Contact"),
-                       );
-
-  my @header =
-    map(+{ "column_title" => $header_title{$_},
-           "column" => $_,
-           "callback" => $callback . "order_by=${_}&order_dir=" . ($order_by eq $_ ? 1 - $order_dir : $order_dir),
-         },
-        @header_sort);
-
-  foreach my $cov (@{ $covs }) {
-    $cov->{address} = "$cov->{street}, $cov->{zipcode} $cov->{city}";
-    $cov->{address} =~ s{^,}{}x;
-    $cov->{address} =~ s{\ +}{\ }gx;
-
-    $cov->{contact} = join " ", map { $cov->{$_} } qw(cp_gender cp_title cp_givenname cp_name);
-    $cov->{contact} =~ s{\ +}{\ }gx;
-  }
-
-  $form->{"title"} = $form->{is_vendor} ? $locale->text("Select a vendor") : $locale->text("Select a customer");
-  $form->header();
-  print($form->parse_html_template("generic/cov_selection", { "HEADER" => \@header,
-                                                              "COVS" => $covs, }));
-
-  $main::lxdebug->leave_sub();
-}
 
 
 # Functions to call add routines beneath different reports

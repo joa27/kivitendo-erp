@@ -7,6 +7,7 @@ use parent qw(Rose::Object);
 use Carp;
 use IO::File;
 use List::Util qw(first);
+use MIME::Base64;
 use SL::Request qw(flatten);
 use SL::MoreCommon qw(uri_encode);
 use SL::Presenter;
@@ -14,7 +15,7 @@ use SL::Presenter;
 use Rose::Object::MakeMethods::Generic
 (
   scalar                  => [ qw(action_name) ],
-  'scalar --get_set_init' => [ qw(js) ],
+  'scalar --get_set_init' => [ qw(js p) ],
 );
 
 #
@@ -29,6 +30,7 @@ sub url_for {
   my %params      = ref($_[0]) eq 'HASH' ? %{ $_[0] } : @_;
   my $controller  = delete($params{controller}) || $self->controller_name;
   my $action      = $params{action}             || 'dispatch';
+  my $fragment    = delete $params{fragment};
 
   my $script;
   if ($controller =~ m/\.pl$/) {
@@ -41,7 +43,7 @@ sub url_for {
 
   my $query       = join '&', map { uri_encode($_->[0]) . '=' . uri_encode($_->[1]) } @{ flatten(\%params) };
 
-  return "${script}?${query}";
+  return "${script}?${query}" . (defined $fragment ? "#$fragment" : '');
 }
 
 sub redirect_to {
@@ -53,7 +55,7 @@ sub redirect_to {
     SL::Helper::Flash::delay_flash();
   }
 
-  return $self->render(SL::ClientJS->new->redirect_to($self->url_for(@_))) if $::request->is_ajax;
+  return $self->render(SL::ClientJS->new->redirect_to($url)) if $::request->is_ajax;
 
   print $::request->{cgi}->redirect($url);
 }
@@ -73,6 +75,7 @@ sub render {
     header     => 1,
     layout     => 1,
     process    => 1,
+    status     => '200 ok',
   );
   $options->{$_} //= $defaults{$_} for keys %defaults;
   $options->{type} = lc $options->{type};
@@ -129,7 +132,8 @@ sub render {
                         :                              'application/json';
 
       print $::form->create_http_response(content_type => $content_type,
-                                          charset      => 'UTF-8');
+                                          charset      => 'UTF-8',
+                                          (status      => $options->{status}) x !!$options->{status});
     }
   }
 
@@ -152,25 +156,36 @@ sub send_file {
   }
 
   my $content_type    =  $params{type} || 'application/octet_stream';
+  my $content_disposition = $params{content_disposition} || 'attachment';
   my $attachment_name =  $params{name} || (!ref($file_name_or_content) ? $file_name_or_content : '');
   $attachment_name    =~ s:.*//::g;
 
-  print $::form->create_http_response(content_type        => $content_type,
-                                      content_disposition => 'attachment; filename="' . $attachment_name . '"',
-                                      content_length      => $size);
-
-  if (!ref $file_name_or_content) {
-    $::locale->with_raw_io(\*STDOUT, sub { print while <$file> });
-    $file->close;
-    unlink $file_name_or_content if $params{unlink};
+  if ($::request->is_ajax || $params{ajax}) {
+    my $octets = ref $file_name_or_content ? $file_name_or_content : \ do { local $/ = undef; <$file> };
+    $self->js->save_file(MIME::Base64::encode_base64($$octets), $content_type, $size, $attachment_name);
+    $self->js->render unless $params{js_no_render};
   } else {
-    $::locale->with_raw_io(\*STDOUT, sub { print $$file_name_or_content });
+    print $::form->create_http_response(content_type        => $content_type,
+                                        content_disposition => $content_disposition . '; filename="' . $attachment_name . '"',
+                                        content_length      => $size);
+
+    if (!ref $file_name_or_content) {
+      $::locale->with_raw_io(\*STDOUT, sub { print while <$file> });
+      $file->close;
+      unlink $file_name_or_content if $params{unlink};
+    } else {
+      $::locale->with_raw_io(\*STDOUT, sub { print $$file_name_or_content });
+    }
   }
 
   return 1;
 }
 
 sub presenter {
+  return SL::Presenter->get;
+}
+
+sub init_p {
   return SL::Presenter->get;
 }
 
@@ -404,7 +419,7 @@ both by C<$template>'s reference type and by the supplied options. The
 actual rendering is handled by L<SL::Presenter/render>.
 
 If C<$template> is a normal scalar (not a reference) then it is meant
-to be a template file name relative to the C<templates/webpages>
+to be a template file name relative to the C<templates/design40_webpages>
 directory. The file name to use is determined by the C<type> option.
 
 If C<$template> is a reference to a scalar then the referenced
@@ -478,7 +493,7 @@ by the calling function. No header is generated due to C<output>.
                               { output => 0 });
 
 Example: Render a JavaScript template
-"templates/webpages/todo/single_item.js" and send it to the
+"templates/design40_webpages/todo/single_item.js" and send it to the
 browser. Typical use for actions called via AJAX:
 
   $self->render('todo/single_item', { type => 'js' },
@@ -527,6 +542,9 @@ L</controller_name>.
 
 The action to call is given by C<$params{action}>. It defaults to
 C<dispatch>.
+
+If C<$params{fragment}> is present, it's used as the fragment of the resulting
+URL.
 
 All other key/value pairs in C<%params> are appended as GET parameters
 to the URL.

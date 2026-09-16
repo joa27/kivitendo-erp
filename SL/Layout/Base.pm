@@ -3,6 +3,9 @@ package SL::Layout::Base;
 use strict;
 use parent qw(Rose::Object);
 
+use SL::Version;
+
+use File::Slurp qw(read_file);
 use List::MoreUtils qw(uniq);
 use Time::HiRes qw();
 
@@ -19,6 +22,7 @@ use Rose::Object::MakeMethods::Generic (
 
 use SL::Menu;
 use SL::Presenter;
+use SL::System::Process;
 
 my %menu_cache;
 
@@ -36,14 +40,50 @@ sub init_sublayouts_by_name {
   {}
 }
 
+sub webpages_path {
+  "templates/design40_webpages";
+}
+
+sub webpages_fallback_path {
+}
+
+sub html_dialect {
+  'transitional'
+}
+
+sub allow_stylesheet_fallback {
+  1
+}
+
 sub get {
   $_[0]->sub_layouts;
   return grep { $_ } ($_[0]->sub_layouts_by_name->{$_[1]});
 }
 
+sub _current_git_ref {
+  my $git_dir = SL::System::Process::exe_dir() . '/.git';
+
+  return unless -d $git_dir;
+
+  my $content = eval { scalar(read_file($git_dir . '/HEAD')) };
+
+  return unless ($content // '') =~ m{\Aref: ([^\r\n]+)};
+
+  $content = eval { scalar(read_file($git_dir . '/' . $1)) };
+
+  return unless ($content // '') =~ m{\A([0-9a-fA-F]+)};
+
+  return $1;
+}
+
 sub init_auto_reload_resources_param {
-  return '' unless $::lx_office_conf{debug}->{auto_reload_resources};
-  return sprintf('?rand=%d-%d-%d', Time::HiRes::gettimeofday(), int(rand 1000000000000));
+  my $value;
+
+  $value   = sprintf('%d-%d-%d', Time::HiRes::gettimeofday(), int(rand 1000000000000)) if $::lx_office_conf{debug}->{auto_reload_resources};
+  $value ||= _current_git_ref();
+  $value ||= SL::Version->get_version;
+
+  return $value ? "?rand=${value}" : '';
 }
 
 ##########################################
@@ -82,8 +122,11 @@ sub init_sub_layouts_by_name { +{} }
 
 
 #########################################
-# Interface
+# Stylesheets
 ########################################
+
+# override in sub layouts
+sub static_stylesheets {}
 
 sub add_stylesheets {
   &use_stylesheet;
@@ -92,7 +135,7 @@ sub add_stylesheets {
 sub use_stylesheet {
   my $self = shift;
   push @{ $self->{stylesheets} ||= [] }, @_ if @_;
-  @{ $self->{stylesheets} ||= [] };
+    (map { $_->use_stylesheet } $self->sub_layouts), $self->static_stylesheets, @{ $self->{stylesheets} ||= [] };
 }
 
 sub stylesheets {
@@ -100,23 +143,24 @@ sub stylesheets {
   my $css_path = $self->get_stylesheet_for_user;
 
   return uniq grep { $_ } map { $self->_find_stylesheet($_, $css_path)  }
-    $self->use_stylesheet, map { $_->stylesheets } $self->sub_layouts;
+    $self->use_stylesheet;
 }
 
 sub _find_stylesheet {
   my ($self, $stylesheet, $css_path) = @_;
 
-  return "$css_path/$stylesheet" if -f "$css_path/$stylesheet";
-  return "css/$stylesheet"       if -f "css/$stylesheet";
-  return $stylesheet             if -f $stylesheet;
+  return "$css_path/$stylesheet" if -f "public/$css_path/$stylesheet";
+  return "css/$stylesheet"       if -f "public/css/$stylesheet" && $self->allow_stylesheet_fallback;
+  return $stylesheet             if -f "public/$stylesheet";
+  return $stylesheet             if $stylesheet =~ /^http/; # external
 }
 
 sub get_stylesheet_for_user {
   my $css_path = 'css';
   if (my $user_style = $::myconfig{stylesheet}) {
     $user_style =~ s/\.css$//; # nuke trailing .css, this is a remnant of pre 2.7.0 stylesheet handling
-    if (-d "$css_path/$user_style" &&
-        -f "$css_path/$user_style/main.css") {
+    if (-d "public/$css_path/$user_style" &&
+        -f "public/$css_path/$user_style/main.css") {
       $css_path = "$css_path/$user_style";
     } else {
       $css_path = "$css_path/kivitendo";
@@ -128,6 +172,13 @@ sub get_stylesheet_for_user {
   return $css_path;
 }
 
+#########################################
+# Javascripts
+########################################
+
+# override in sub layouts
+sub static_javascripts {}
+
 sub add_javascripts {
   &use_javascript
 }
@@ -135,21 +186,22 @@ sub add_javascripts {
 sub use_javascript {
   my $self = shift;
   push @{ $self->{javascripts} ||= [] }, @_ if @_;
-  @{ $self->{javascripts} ||= [] };
+  map({ $_->use_javascript } $self->sub_layouts), $self->static_javascripts, @{ $self->{javascripts} ||= [] };
 }
 
 sub javascripts {
   my ($self) = @_;
 
   return uniq grep { $_ } map { $self->_find_javascript($_)  }
-    map({ $_->javascripts } $self->sub_layouts), $self->use_javascript;
+     $self->use_javascript;
 }
 
 sub _find_javascript {
   my ($self, $javascript) = @_;
 
-  return "js/$javascript"        if -f "js/$javascript";
-  return $javascript             if -f $javascript;
+  return "js/$javascript"        if -f "public/js/$javascript";
+  return $javascript             if -f "public/$javascript";
+  return $javascript             if $javascript =~ /^http/;
 }
 
 
@@ -262,14 +314,85 @@ For the C<*_content> callbacks this works if you just remember to dispatch to th
     $_[0]->SUPER::post_content
   }
 
-For the stylesheet and javascript callbacks things are hard, because of the
-backwards compatibility, and the built-in sanity checks. The best way currently
-is to just add your content and dispatch to the base method.
 
-  sub stylesheets {
-    $_[0]->add_stylesheets(qw(mystyle1.css mystyle2.css);
-    $_[0]->SUPER::stylesheets;
+Stylesheets and Javascripts can be added to every layout and sub-layout at
+runtime with L<SL::Layout::Dispatcher/add_stylesheets> and
+L<SL::Layout::Dispatcher/add_javascripts> (C<use_stylesheets> and
+C<use_javascripts> are aliases for backwards compatibility):
+
+  $layout->add_stylesheets("custom.css");
+  $layout->add_javascripts("app.js", "widget.js");
+
+Or they can be overwritten in sub layouts with the calls
+L<SL::Layout::Displatcher/static_stylesheets> and
+L<SL::Layout::Dispatcher/static_javascripts>:
+
+  sub static_stylesheets {
+    "custom.css"
   }
+
+  sub static_javascripts {
+    qw(app.css widget.js)
+  }
+
+Note how these are relative to the base dirs of the currently selected
+stylesheets. Javascripts are resolved relative to the C<js/> basedir.
+
+Setting directly with C<stylesheets> and C<javascripts> is eprecated.
+
+
+=head1 BEHAVIOUR SWITCHES FOR SUB LAYOUTS
+
+Certain methods have been added to adjust behaviour in sub layouts. Most of these are single case uses.
+
+=over 4
+
+=item * sublayouts_by_name
+
+Contains a map that holds named sublayouts. If a sublayout needs to targeted
+directly, the compositing layout needs to add it here. Initially introduced for
+the ActionPlan.
+
+=item * webpages_path
+
+Overrides the default webpages path "templates/design40_webpages". Used
+for mobile and design40 styles.
+
+Note that this does not have fallback behaviour by default. It is intended for
+stylesheets where the templates are so incompatible that a complete fork of the
+templates dir is sensible.
+
+=item * webpages_fallback_path
+
+Allows partial template sets to fallback to other paths in case a template
+wasn't found. Intended to be used in conjunction with L</webpages_path>.
+
+Note: in case a template can't be found at all, generic/error.html will be
+rendered, and the fallback doesn't work in this case.
+
+
+=item * allow_stylesheet_fallback
+
+Defaults to true. The default behaviour is that stylesheets not found in the
+stylesheet path of the user will fallback to files found in css/. This is
+usually desirable for shared stuff like common.css, which contains behaviour
+styling. If a stylesheet comes from a separate generator, this can be used to
+turn falllback off. Files can still be included with the complete path though.
+A request for "common.css" would not find "css/common.css", but a request for
+"css/common.css" would be found.
+
+Also see the next section L</GORY DETAILS ABOUT JAVASCRIPT AND STYLESHEET OVERLOADING>
+
+=item * html_dialect
+
+Default 'transitional'. Controls the html dialect that the header will
+generate. Used in combination with template overriding for html5.
+
+See also L<SL::Form/header>
+
+=back
+
+
 
 =head1 GORY DETAILS ABOUT JAVASCRIPT AND STYLESHEET OVERLOADING
 

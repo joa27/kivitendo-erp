@@ -15,11 +15,18 @@ my %mail_strings = (
   salutation_general                          => t8('Salutation general'),
   salutation_punctuation_mark                 => t8('Salutation punctuation mark'),
   preset_text_sales_quotation                 => t8('Preset email text for sales quotations'),
+  preset_text_sales_order_intake              => t8('Preset email text for sales order intakes'),
   preset_text_sales_order                     => t8('Preset email text for sales orders'),
   preset_text_sales_delivery_order            => t8('Preset email text for sales delivery orders'),
   preset_text_invoice                         => t8('Preset email text for sales invoices'),
+  preset_text_invoice_direct_debit            => t8('Preset email text for sales invoices with direct debit'),
+  preset_text_sales_reclamation               => t8('Preset email text for sales reclamations'),
+  preset_text_credit_note                     => t8('Preset email text for credit notes'),
   preset_text_request_quotation               => t8('Preset email text for requests (rfq)'),
+  preset_text_purchase_quotation_intake       => t8('Preset email text for purchase quotation intakes'),
   preset_text_purchase_order                  => t8('Preset email text for purchase orders'),
+  preset_text_purchase_order_confirmation     => t8('Preset email text for purchase orders confirmations'),
+  preset_text_purchase_reclamation            => t8('Preset email text for purchase reclamations'),
   preset_text_periodic_invoices_email_body    => t8('Preset email body for periodic invoices'),
   preset_text_periodic_invoices_email_subject => t8('Preset email subject for periodic invoices'),
 );
@@ -174,11 +181,24 @@ sub edit_email_strings {
       $language->{$_} = $translations{$language->{id}};
     }
   }
+  my %placeholder_specs = (
+    preset_text_sales_delivery_order => SL::DB::DeliveryOrder->new()->email_replacement_specs()->{options},
+    preset_text_sales_quotation      => SL::DB::Order->new()->email_replacement_specs()->{options},
+    preset_text_sales_order          => SL::DB::Order->new()->email_replacement_specs()->{options},
+    preset_text_sales_order_intake   => SL::DB::Order->new()->email_replacement_specs()->{options},
+    preset_text_invoice              => SL::DB::Invoice->new()->email_replacement_specs()->{options},
+    preset_text_invoice_direct_debit => SL::DB::Invoice->new()->email_replacement_specs()->{options},
+    preset_text_purchase_order       => SL::DB::Order->new()->email_replacement_specs()->{options},
+    preset_text_purchase_order_confirmation => SL::DB::Order->new()->email_replacement_specs()->{options},
+    preset_text_purchase_quotation_intake => SL::DB::Order->new()->email_replacement_specs()->{options},
+    preset_text_request_quotation    => SL::DB::Order->new()->email_replacement_specs()->{options},
+  );
   setup_generictranslations_edit_email_strings_action_bar();
 
   $form->{title} = $locale->text('Edit preset email strings');
+  $::request->{layout}->use_javascript(map { "${_}.js" } qw(ckeditor5/ckeditor ckeditor5/translations/de));
   $form->header();
-  print $form->parse_html_template('generictranslations/edit_email_strings',{ 'MAIL_STRINGS' => \%mail_strings });
+  print $form->parse_html_template('generictranslations/edit_email_strings',{ 'MAIL_STRINGS' => \%mail_strings, PLACEHOLDER_SPECS => \%placeholder_specs });
 
   $main::lxdebug->leave_sub();
 }
@@ -210,6 +230,48 @@ sub save_email_strings {
   $main::lxdebug->leave_sub();
 }
 
+sub edit_zugferd_notes {
+  $::auth->assert('config');
+
+  $::form->get_lists('languages' => 'LANGUAGES');
+
+  my $translation_list = GenericTranslations->list(translation_type => 'ZUGFeRD/notes');
+  my %translations     = map { ( ($_->{language_id} || 'default') => $_->{translation} ) } @{ $translation_list };
+
+  unshift @{ $::form->{LANGUAGES} }, { 'id' => 'default', };
+
+  foreach my $language (@{ $::form->{LANGUAGES} }) {
+    $language->{translation} = $translations{$language->{id}};
+  }
+
+  setup_generictranslations_edit_zugferd_notes_action_bar();
+
+  $::form->{title} = $::locale->text('Edit Factur-X/ZUGFeRD notes');
+  $::form->header;
+  print $::form->parse_html_template('generictranslations/edit_zugferd_notes');
+}
+
+sub save_zugferd_notes {
+  $::auth->assert('config');
+
+  $::form->get_lists('languages' => 'LANGUAGES');
+
+  unshift @{ $::form->{LANGUAGES} }, { };
+
+  foreach my $language (@{ $::form->{LANGUAGES} }) {
+    GenericTranslations->save(
+      translation_type => 'ZUGFeRD/notes',
+      translation_id   => undef,
+      language_id      => $language->{id},
+      translation      => $::form->{"translation__" . ($language->{id} || 'default')},
+    );
+  }
+
+  $::form->{message} = $::locale->text('The Factur-X/ZUGFeRD notes have been saved.');
+
+  edit_zugferd_notes();
+}
+
 sub setup_generictranslations_edit_greetings_action_bar {
   my %params = @_;
 
@@ -237,6 +299,7 @@ sub setup_generictranslations_edit_sepa_strings_action_bar {
     );
   }
 }
+
 sub setup_generictranslations_edit_email_strings_action_bar {
   my %params = @_;
 
@@ -245,6 +308,20 @@ sub setup_generictranslations_edit_email_strings_action_bar {
       action => [
         t8('Save'),
         submit    => [ '#form', { action => "save_email_strings" } ],
+        accesskey => 'enter',
+      ],
+    );
+  }
+}
+
+sub setup_generictranslations_edit_zugferd_notes_action_bar {
+  my %params = @_;
+
+  for my $bar ($::request->layout->get('actionbar')) {
+    $bar->add(
+      action => [
+        t8('Save'),
+        submit    => [ '#form', { action => "save_zugferd_notes" } ],
         accesskey => 'enter',
       ],
     );

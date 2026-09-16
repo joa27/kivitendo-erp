@@ -9,45 +9,52 @@ use parent qw(SL::DB::Object);
 __PACKAGE__->meta->table('oe');
 
 __PACKAGE__->meta->columns(
-  amount                  => { type => 'numeric', precision => 15, scale => 5 },
-  closed                  => { type => 'boolean', default => 'false' },
-  cp_id                   => { type => 'integer' },
-  currency_id             => { type => 'integer', not_null => 1 },
-  cusordnumber            => { type => 'text' },
-  customer_id             => { type => 'integer' },
-  delivered               => { type => 'boolean', default => 'false' },
-  delivery_customer_id    => { type => 'integer' },
-  delivery_term_id        => { type => 'integer' },
-  delivery_vendor_id      => { type => 'integer' },
-  department_id           => { type => 'integer' },
-  employee_id             => { type => 'integer' },
-  expected_billing_date   => { type => 'date' },
-  globalproject_id        => { type => 'integer' },
-  id                      => { type => 'integer', not_null => 1, sequence => 'id' },
-  intnotes                => { type => 'text' },
-  itime                   => { type => 'timestamp', default => 'now()' },
-  language_id             => { type => 'integer' },
-  marge_percent           => { type => 'numeric', precision => 15, scale => 5 },
-  marge_total             => { type => 'numeric', precision => 15, scale => 5 },
-  mtime                   => { type => 'timestamp' },
-  netamount               => { type => 'numeric', precision => 15, scale => 5 },
-  notes                   => { type => 'text' },
-  order_probability       => { type => 'integer', default => '0', not_null => 1 },
-  ordnumber               => { type => 'text', not_null => 1 },
-  payment_id              => { type => 'integer' },
-  proforma                => { type => 'boolean', default => 'false' },
-  quonumber               => { type => 'text' },
-  quotation               => { type => 'boolean', default => 'false' },
-  reqdate                 => { type => 'date' },
-  salesman_id             => { type => 'integer' },
-  shippingpoint           => { type => 'text' },
-  shipto_id               => { type => 'integer' },
-  shipvia                 => { type => 'text' },
-  taxincluded             => { type => 'boolean' },
-  taxzone_id              => { type => 'integer', not_null => 1 },
-  transaction_description => { type => 'text' },
-  transdate               => { type => 'date', default => 'now' },
-  vendor_id               => { type => 'integer' },
+  amount                     => { type => 'numeric', precision => 15, scale => 5 },
+  billing_address_id         => { type => 'integer' },
+  buyer_id                   => { type => 'integer' },
+  closed                     => { type => 'boolean', default => 'false' },
+  cp_id                      => { type => 'integer' },
+  currency_id                => { type => 'integer', not_null => 1 },
+  cusordnumber               => { type => 'text' },
+  customer_id                => { type => 'integer' },
+  delivered                  => { type => 'boolean', default => 'false' },
+  delivery_customer_id       => { type => 'integer' },
+  delivery_term_id           => { type => 'integer' },
+  delivery_vendor_id         => { type => 'integer' },
+  department_id              => { type => 'integer' },
+  employee_id                => { type => 'integer' },
+  exchangerate               => { type => 'numeric', precision => 15, scale => 5 },
+  expected_billing_date      => { type => 'date' },
+  globalproject_id           => { type => 'integer' },
+  id                         => { type => 'integer', not_null => 1, sequence => 'id' },
+  intnotes                   => { type => 'text' },
+  itime                      => { type => 'timestamp', default => 'now()' },
+  language_id                => { type => 'integer' },
+  marge_percent              => { type => 'numeric', precision => 15, scale => 5 },
+  marge_total                => { type => 'numeric', precision => 15, scale => 5 },
+  mtime                      => { type => 'timestamp' },
+  netamount                  => { type => 'numeric', precision => 15, scale => 5 },
+  notes                      => { type => 'text' },
+  order_probability          => { type => 'integer', default => '0', not_null => 1 },
+  order_status_id            => { type => 'integer' },
+  ordnumber                  => { type => 'text', not_null => 1 },
+  payment_id                 => { type => 'integer' },
+  proforma                   => { type => 'boolean', default => 'false' },
+  quonumber                  => { type => 'text' },
+  record_type                => { type => 'enum', check_in => [ 'request_quotation', 'sales_quotation', 'purchase_quotation_intake', 'purchase_order', 'sales_order_intake', 'sales_order', 'purchase_order_confirmation' ], db_type => 'order_types', not_null => 1 },
+  reqdate                    => { type => 'date' },
+  salesman_id                => { type => 'integer' },
+  shippingpoint              => { type => 'text' },
+  shipto_id                  => { type => 'integer' },
+  shipvia                    => { type => 'text' },
+  tax_point                  => { type => 'date' },
+  tax_point_start            => { type => 'date' },
+  taxincluded                => { type => 'boolean' },
+  taxzone_id                 => { type => 'integer', not_null => 1 },
+  transaction_description    => { type => 'text' },
+  transdate                  => { type => 'date', default => 'now' },
+  vendor_confirmation_number => { type => 'text' },
+  vendor_id                  => { type => 'integer' },
 );
 
 __PACKAGE__->meta->primary_key_columns([ 'id' ]);
@@ -55,6 +62,16 @@ __PACKAGE__->meta->primary_key_columns([ 'id' ]);
 __PACKAGE__->meta->allow_inline_column_values(1);
 
 __PACKAGE__->meta->foreign_keys(
+  billing_address => {
+    class       => 'SL::DB::AdditionalBillingAddress',
+    key_columns => { billing_address_id => 'id' },
+  },
+
+  buyer => {
+    class       => 'SL::DB::Employee',
+    key_columns => { buyer_id => 'id' },
+  },
+
   contact => {
     class       => 'SL::DB::Contact',
     key_columns => { cp_id => 'cp_id' },
@@ -105,6 +122,11 @@ __PACKAGE__->meta->foreign_keys(
     key_columns => { language_id => 'id' },
   },
 
+  order_status => {
+    class       => 'SL::DB::OrderStatus',
+    key_columns => { order_status_id => 'id' },
+  },
+
   payment_terms => {
     class       => 'SL::DB::PaymentTerm',
     key_columns => { payment_id => 'id' },
@@ -132,4 +154,4 @@ __PACKAGE__->meta->foreign_keys(
 );
 
 1;
-;
+

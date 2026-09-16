@@ -6,26 +6,9 @@ use parent qw(Rose::Object);
 
 use Carp;
 use Template;
+use List::Util qw(first);
 
-use SL::Presenter::Chart;
-use SL::Presenter::CustomerVendor;
-use SL::Presenter::DeliveryOrder;
-use SL::Presenter::EscapedText;
-use SL::Presenter::Invoice;
-use SL::Presenter::GL;
-use SL::Presenter::Letter;
-use SL::Presenter::Order;
-use SL::Presenter::Part;
-use SL::Presenter::Project;
-use SL::Presenter::Record;
-use SL::Presenter::RequirementSpec;
-use SL::Presenter::RequirementSpecItem;
-use SL::Presenter::RequirementSpecTextBlock;
-use SL::Presenter::SepaExport;
-use SL::Presenter::ShopOrder;
-use SL::Presenter::Text;
-use SL::Presenter::Tag;
-use SL::Presenter::BankAccount;
+use SL::Presenter::EscapedText qw(is_escaped);
 
 use Rose::Object::MakeMethods::Generic (
   scalar => [ qw(need_reinit_widgets) ],
@@ -61,34 +44,21 @@ sub render {
   croak "Unsupported 'template' reference type: " . ref($template) if ref($template) && (ref($template) !~ m/^(?:SCALAR|SL::Presenter::EscapedText)$/);
 
   # Look for the file given by $template if $template is not a reference.
-  my $source;
-  if (!ref $template) {
-    my $ext = $options->{type} eq 'text' ? 'txt' : $options->{type};
-    $source = "templates/webpages/${template}.${ext}";
-    croak "Template file ${source} not found" unless -f $source;
-
-  } elsif (ref($template) eq 'SCALAR') {
-    # Normal scalar reference: hand over to Template
-    $source = $template;
-
-  } else {
-    # Instance of SL::Presenter::EscapedText. Get reference to its content.
-    $source = \$template->{text};
-  }
+  my $source = resolve_template($template, $options->{type});
 
   # If no processing is requested then return the content.
   if (!$options->{process}) {
     # If $template is a reference then don't try to read a file.
     my $ref = ref $template;
-    return $template                                                                if $ref eq 'SL::Presenter::EscapedText';
-    return SL::Presenter::EscapedText->new(text => ${ $template }, is_escaped => 1) if $ref eq 'SCALAR';
+    return $template                  if $ref eq 'SL::Presenter::EscapedText';
+    return is_escaped(${ $template }) if $ref eq 'SCALAR';
 
     # Otherwise return the file's content.
     my $file    = IO::File->new($source, "r") || croak("Template file ${source} could not be read");
     my $content = do { local $/ = ''; <$file> };
     $file->close;
 
-    return SL::Presenter::EscapedText->new(text => $content, is_escaped => 1);
+    return is_escaped($content);
   }
 
   # Processing was requested. Set up all variables.
@@ -108,11 +78,44 @@ sub render {
   my $parser = $self->get_template;
   $parser->process($source, \%params, \$output) || croak $parser->error;
 
-  return SL::Presenter::EscapedText->new(text => $output, is_escaped => 1);
+  return is_escaped($output);
+}
+
+sub resolve_template {
+  my ($template, $type) = @_;
+  $type //= 'html';
+
+
+  my $source;
+  if (!ref $template) {
+    my $webpages_path     = $::request->layout->webpages_path;
+    my $webpages_fallback = $::request->layout->webpages_fallback_path;
+
+    my $ext = $type eq 'text' ? 'txt' : $type;
+
+    $source = first { -f } map { "${_}/${template}.${ext}" } grep { defined } $webpages_path, $webpages_fallback;
+
+    croak "Template file ${template} not found" unless $source;
+
+  } elsif (ref($template) eq 'SCALAR') {
+    # Normal scalar reference: hand over to Template
+    $source = $template;
+
+  } else {
+    # Instance of SL::Presenter::EscapedText. Get reference to its content.
+    $source = \$template->{text};
+  }
+
+  return $source;
 }
 
 sub get_template {
   my ($self) = @_;
+
+  my $webpages_path     = $::request->layout->webpages_path;
+  my $webpages_fallback = $::request->layout->webpages_fallback_path;
+
+  my $include_path = join ':', grep defined, $webpages_path, $webpages_fallback;
 
   # Make locales.pl parse generic/exception.html, too:
   # $::form->parse_html_template("generic/exception")
@@ -122,36 +125,14 @@ sub get_template {
                     ABSOLUTE     => 1,
                     CACHE_SIZE   => 0,
                     PLUGIN_BASE  => 'SL::Template::Plugin',
-                    INCLUDE_PATH => '.:templates/webpages',
+                    INCLUDE_PATH => ".:$include_path",
                     COMPILE_EXT  => '.tcc',
                     COMPILE_DIR  => $::lx_office_conf{paths}->{userspath} . '/templates-cache',
-                    ERROR        => 'templates/webpages/generic/exception.html',
+                    ERROR        => "${webpages_path}/generic/exception.html",
                     ENCODING     => 'utf8',
                   }) || croak;
 
   return $self->{template};
-}
-
-sub escape {
-  my ($self, $text) = @_;
-
-  return SL::Presenter::EscapedText->new(text => $text);
-}
-
-sub escaped_text {
-  my ($self, $text) = @_;
-
-  return SL::Presenter::EscapedText->new(text => $text, is_escaped => 1);
-}
-
-sub escape_js {
-  my ($self, $text) = @_;
-
-  $text =~ s|\\|\\\\|g;
-  $text =~ s|\"|\\\"|g;
-  $text =~ s|\n|\\n|g;
-
-  return SL::Presenter::EscapedText->new(text => $text, is_escaped => 1);
 }
 
 1;
@@ -176,14 +157,17 @@ SL::Presenter - presentation layer class
   # Higher-level rendering of certain objects:
   use SL::DB::Customer;
 
-  my $linked_customer_name = $presenter->customer($customer, display => 'table-cell');
+  my $linked_customer_name = $customer->presenter->customer(display => 'table-cell');
 
   # Render a list of links to sales/purchase records:
   use SL::DB::Order;
+  use SL::Presenter::Record qw(grouped_record_list);
 
-  my $quotation = SL::DB::Manager::Order->get_first(where => { quotation => 1 });
+  my $quotation = SL::DB::Manager::Order->get_first(
+    where => [ or => ['record_type' => 'sales_quotation',
+                      'record_type' => 'request_quotation' ]]);
   my $records   = $quotation->linked_records(direction => 'to');
-  my $html      = $presenter->grouped_record_list($records);
+  my $html      = grouped_record_list($records);
 
 =head1 CLASS FUNCTIONS
 
@@ -220,7 +204,7 @@ What is rendered and how C<$template> is interpreted is determined
 both by C<$template>'s reference type and by the supplied options.
 
 If C<$template> is a normal scalar (not a reference) then it is meant
-to be a template file name relative to the C<templates/webpages>
+to be a template file name relative to the C<templates/design40_webpages>
 directory. The file name to use is determined by the C<type> option.
 
 If C<$template> is a reference to a scalar then the referenced
@@ -308,35 +292,6 @@ it at all:
     'customer/contact',
     { type => 'json', process => 0 }
   );
-
-=item C<escape $text>
-
-Returns an HTML-escaped version of C<$text>. Instead of a string an
-instance of the thin proxy-object L<SL::Presenter::EscapedText> is
-returned.
-
-It is safe to call C<escape> on an instance of
-L<SL::Presenter::EscapedText>. This is a no-op (the same instance will
-be returned).
-
-=item C<escaped_text $text>
-
-Returns an instance of L<SL::Presenter::EscapedText>. C<$text> is
-assumed to be a string that has already been HTML-escaped.
-
-It is safe to call C<escaped_text> on an instance of
-L<SL::Presenter::EscapedText>. This is a no-op (the same instance will
-be returned).
-
-=item C<escape_js $text>
-
-Returns a JavaScript-escaped version of C<$text>. Instead of a string
-an instance of the thin proxy-object L<SL::Presenter::EscapedText> is
-returned.
-
-It is safe to call C<escape> on an instance of
-L<SL::Presenter::EscapedText>. This is a no-op (the same instance will
-be returned).
 
 =item C<get_template>
 
